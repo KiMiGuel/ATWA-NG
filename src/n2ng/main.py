@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 try:
     from . import __version__
 except ImportError:
-    __version__ = "1.4.1"
+    __version__ = "1.4.2"
 
 
 THEME = {
@@ -1058,17 +1058,23 @@ class AirodumpWorker(threading.Thread):
     def _stop_process(self):
         if not self._proc:
             return
+        proc = self._proc
+        self._proc = None
         try:
             if self._paused.is_set():
-                self._proc.send_signal(signal.SIGCONT)
-            self._proc.terminate()
-            self._proc.wait(timeout=2)
+                proc.send_signal(signal.SIGCONT)
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()  # reap: no zombies
         except Exception:
             try:
-                self._proc.kill()
+                proc.kill()
+                proc.wait()
             except Exception:
                 pass
-        self._proc = None
         self._paused.clear()
 
     def _launch(self, cmd: list[str]) -> tuple[bool, str | None]:
@@ -1124,12 +1130,14 @@ class AirodumpWorker(threading.Thread):
         return self._launch(cmd)
 
     def start_lock(self, mon_iface: str, channel: int, bssid: str, prefix: str) -> tuple[bool, str | None]:
-        self._prefix = prefix
+        # Distinct -w prefix for lock captures so scan/lock file sets never collide.
+        lock_prefix = prefix if prefix.endswith("_lock") else f"{prefix}_lock"
+        self._prefix = lock_prefix
         self._last_mon_iface = mon_iface
         self._last_band = None
         self._last_channel = channel
         self._last_bssid = bssid
-        cmd = self._build_base_cmd(prefix)
+        cmd = self._build_base_cmd(lock_prefix)
         cmd.extend(["-c", str(channel), "--bssid", bssid, mon_iface])
         return self._launch(cmd)
 
@@ -1342,6 +1350,7 @@ class AttackController:
         except Exception:
             try:
                 proc.kill()
+                proc.wait(timeout=2)  # reap: no zombies
             except Exception:
                 pass
         return True
@@ -1366,6 +1375,11 @@ class AttackController:
                     os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                 except (ProcessLookupError, OSError):
                     pass
+        for p in procs:
+            try:
+                p.wait(timeout=2)  # reap: no zombies
+            except Exception:
+                pass
         return killed
 
     def deauth_all(self, bssid: str, mon_iface: str, count: int = 10, clients: list[str] | None = None):
@@ -2884,7 +2898,7 @@ class N2NgApp:
 
     def _show_column_menu(self, event):
         """Right-click on a column header shows the hide/show menu."""
-        if self.tree.identify_region(event.y) != "heading":
+        if self.tree.identify_region(event.x, event.y) != "heading":
             return
         menu = tk.Menu(self.root, tearoff=0, bg=THEME["panel"], fg=THEME["fg"])
         for col, heading, *_ in self.NETWORK_COLUMNS:
@@ -2984,7 +2998,7 @@ class N2NgApp:
         return [c["station"] for c in self.clients if c.get("bssid") == bssid and c.get("station")]
 
     def _on_network_double_click(self, event):
-        if self.tree.identify_region(event.y) != "cell":
+        if self.tree.identify_region(event.x, event.y) != "cell":
             return
         item = self.tree.selection()
         if not item:
@@ -2993,7 +3007,7 @@ class N2NgApp:
         self._lock_target(bssid)
 
     def _on_tree_button_three(self, event):
-        region = self.tree.identify_region(event.y)
+        region = self.tree.identify_region(event.x, event.y)
         if region == "heading":
             self._show_column_menu(event)
         elif region == "cell":
@@ -3159,7 +3173,7 @@ class N2NgApp:
             self.pause_btn.config(text="Pause Scan", state=tk.DISABLED, width=10)
             return
         self.pause_btn.config(text="Pause Scan", state=tk.NORMAL)
-        self.capture_manager.set_active_cap(Path(f"{prefix}-01.cap"))
+        self.capture_manager.set_active_cap(Path(f"{prefix}_lock-01.cap"))
         self._poll_capture()
         self.channel_pill.config(text=f"LOCKED: CH {ch}", bg="green")
         self._update_target_card(net)
