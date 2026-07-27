@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 try:
     from . import __version__
 except ImportError:
-    __version__ = "1.1.0"
+    __version__ = "1.4.0"
 
 
 THEME = {
@@ -366,6 +366,18 @@ def classify_22000(path: Path) -> str:
     except OSError:
         return VERDICT_NONE
     return classify_22000_text(text)
+
+
+def wpa02_record_keys(text: str) -> set[tuple[str, str, str]]:
+    """Dedupe keys for WPA*02 records: (AP MAC, client MAC, M1 ANonce)."""
+    keys = set()
+    for line in text.splitlines():
+        if not line.startswith("WPA*02*"):
+            continue
+        fields = line.split("*")
+        if len(fields) > 4:
+            keys.add((fields[2], fields[3], fields[4]))
+    return keys
 
 
 def default_hashcat_wordlist() -> Path | None:
@@ -1425,6 +1437,17 @@ class CaptureManager:
         else:
             return
         if rc and rc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+            new_text = tmp.read_text(errors="ignore")
+            if out22000.exists():
+                try:
+                    existing_text = out22000.read_text(errors="ignore")
+                except OSError:
+                    existing_text = ""
+                if wpa02_record_keys(new_text) and wpa02_record_keys(new_text) <= wpa02_record_keys(existing_text):
+                    # Identical record(s) (same BSSID + client MAC + M1 ANonce)
+                    # already captured: skip the duplicate write.
+                    tmp.unlink(missing_ok=True)
+                    return
             shutil.move(str(tmp), str(out22000))
             self._classify(out22000)
         elif tmp.exists():
@@ -1439,11 +1462,13 @@ class CaptureManager:
         if verdict == VERDICT_AUTHORIZED and not self.handshake_found:
             # The AP accepted the client's proof: this handshake is crackable.
             self.handshake_found = True
-            self.queue.put(("handshake", {"file": str(path), "type": "handshake"}))
-        elif verdict == VERDICT_CHALLENGE and not self.challenge_seen and not self.handshake_found:
-            # M1+M2 only: possibly a failed/wrong-password auth. Keep capturing.
+            self.queue.put(("handshake", {"file": str(path), "type": "handshake", "note": "full handshake (verified)"}))
+        elif verdict == VERDICT_CHALLENGE and not self.handshake_found:
+            # M1+M2 only: crackable but unverified (may be a failed auth).
+            # Still counts as a capture: report it and stop auto-deauth.
             self.challenge_seen = True
-            self.queue.put(("challenge", {"file": str(path), "type": "handshake"}))
+            self.handshake_found = True
+            self.queue.put(("handshake", {"file": str(path), "type": "handshake", "note": "M1+M2 (crackable, unverified)"}))
         if "WPA*01" in text and not self.pmkid_found:
             self.pmkid_found = True
             self.queue.put(("pmkid", {"file": str(path), "type": "pmkid"}))
@@ -1736,6 +1761,21 @@ class HashcatDialog(tk.Toplevel):
         if not hashcat.installed:
             self._append("hashcat is not installed.\n")
             return
+        hash_path = Path(self.hash_var.get())
+        if is_supported_capture(hash_path):
+            # Raw capture passed to mode 22000: convert via hcxpcapngtool first.
+            self._append(f"Converting {hash_path.name} to .22000...\n")
+            manager = CaptureManager(queue.Queue(), lambda msg: None)
+            result = manager.convert_to_22000(hash_path)
+            if not result.ok or not result.output:
+                self._append(f"Conversion failed: {result.message}\n")
+                return
+            hash_path = result.output
+            self.hash_var.set(str(hash_path))
+            self._append(f"Converted -> {hash_path}\n")
+        if not hash_path.exists() or hash_path.stat().st_size == 0:
+            self._append(f"Hash file missing or empty: {hash_path}\n")
+            return
         usable, runtime = DependencyChecker._hashcat_backend_status(hashcat)
         if not usable:
             self._append(runtime + "\n")
@@ -1754,10 +1794,19 @@ class HashcatDialog(tk.Toplevel):
 
     def _run_hashcat(self, cmd: list[str]):
         # Worker thread: never touch Tk from here, just feed the queue.
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for line in self.proc.stdout:
-            self._out_queue.put(("line", line))
-        rc = self.proc.wait()
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception as exc:
+            self._out_queue.put(("line", f"Failed to launch hashcat: {exc}\n"))
+            self._out_queue.put(("done", (1, "failed")))
+            return
+        try:
+            for line in self.proc.stdout:
+                self._out_queue.put(("line", line))
+            rc = self.proc.wait()
+        except Exception as exc:
+            self._out_queue.put(("line", f"hashcat error: {exc}\n"))
+            rc = 1
         state = "cracked/exhausted" if rc == 0 else ("aborted" if rc in (130, 143, -15) else "failed")
         self._out_queue.put(("done", (rc, state)))
 
@@ -3267,6 +3316,9 @@ class N2NgApp:
                     break
                 if event == "handshake":
                     self._notify_capture("WPA Handshake Captured", payload["file"])
+                    note = payload.get("note")
+                    if note:
+                        self._log(f"Capture type: {note}")
                 elif event == "challenge":
                     self._log(f"Handshake UNVERIFIED (M1+M2 challenge only — possible failed auth, keep capturing): {payload['file']}")
                 elif event == "convert_done":
@@ -3711,7 +3763,7 @@ class N2NgApp:
             self._log(f"Merge output failed verification; sources left untouched: {[c.name for c in caps]}")
             return
         if not self._verify_merged_capture(caps, output):
-            self._log("Warning: hcxpcapngtool found no WPA records in the merged output; sources left untouched.")
+            self._log("Warning: merged output has fewer WPA records than the sources; sources left untouched.")
             return
         archive_dir = capture_root() / ".archive" / time.strftime("%Y-%m-%d")
         archive_dir.mkdir(parents=True, exist_ok=True)
@@ -3733,7 +3785,9 @@ class N2NgApp:
         source_records = sum(self._hcx_wpa_records(cap, hcx.path) for cap in caps)
         if source_records == 0:
             return True
-        return self._hcx_wpa_records(output, hcx.path) > 0
+        # Verify-before-delete: the merged file must yield at least the
+        # combined valid record count of the originals.
+        return self._hcx_wpa_records(output, hcx.path) >= source_records
 
     def _hcx_wpa_records(self, cap: Path, hcx_path: str) -> int:
         """Return the number of WPA records hcxpcapngtool extracts from cap, 0 on failure."""
