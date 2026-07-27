@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 try:
     from . import __version__
 except ImportError:
-    __version__ = "1.4.2"
+    __version__ = "1.5.0"
 
 
 THEME = {
@@ -1138,6 +1138,14 @@ class AirodumpWorker(threading.Thread):
         self._last_channel = channel
         self._last_bssid = bssid
         cmd = self._build_base_cmd(lock_prefix)
+        # Lock captures must always produce CSV (UI parsing) and pcap
+        # (CaptureManager handshake polling) regardless of scan settings.
+        fmt_idx = cmd.index("--output-format") + 1
+        fmts = cmd[fmt_idx].split(",")
+        for required in ("csv", "pcap"):
+            if required not in fmts:
+                fmts.append(required)
+        cmd[fmt_idx] = ",".join(fmts)
         cmd.extend(["-c", str(channel), "--bssid", bssid, mon_iface])
         return self._launch(cmd)
 
@@ -1319,6 +1327,7 @@ class AttackController:
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                encoding="utf-8", errors="replace",
                 start_new_session=True,
             )
             with self._lock:
@@ -1436,6 +1445,12 @@ class CaptureManager:
         return 0
 
     def poll(self):
+        try:
+            self._poll_once()
+        except Exception as exc:
+            self.log(f"Capture poll error: {exc}")
+
+    def _poll_once(self):
         if not self.active_cap or not self.active_cap.exists():
             return
         size = self.get_size()
@@ -1461,7 +1476,11 @@ class CaptureManager:
         else:
             return
         if rc and rc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
-            new_text = tmp.read_text(errors="ignore")
+            try:
+                new_text = tmp.read_text(errors="ignore")
+            except OSError:
+                tmp.unlink(missing_ok=True)
+                return
             if out22000.exists():
                 try:
                     existing_text = out22000.read_text(errors="ignore")
@@ -1797,7 +1816,12 @@ class HashcatDialog(tk.Toplevel):
             hash_path = result.output
             self.hash_var.set(str(hash_path))
             self._append(f"Converted -> {hash_path}\n")
-        if not hash_path.exists() or hash_path.stat().st_size == 0:
+        try:
+            hash_missing = not hash_path.exists() or hash_path.stat().st_size == 0
+        except OSError as exc:
+            self._append(f"Hash file unreadable: {exc}\n")
+            return
+        if hash_missing:
             self._append(f"Hash file missing or empty: {hash_path}\n")
             return
         usable, runtime = DependencyChecker._hashcat_backend_status(hashcat)
@@ -1819,7 +1843,7 @@ class HashcatDialog(tk.Toplevel):
     def _run_hashcat(self, cmd: list[str]):
         # Worker thread: never touch Tk from here, just feed the queue.
         try:
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         except Exception as exc:
             self._out_queue.put(("line", f"Failed to launch hashcat: {exc}\n"))
             self._out_queue.put(("done", (1, "failed")))
@@ -1859,6 +1883,10 @@ class HashcatDialog(tk.Toplevel):
     def _force_stop(self):
         if self.proc and self.proc.poll() is None:
             self.proc.kill()
+            try:
+                self.proc.wait(timeout=2)  # reap: no zombies
+            except Exception:
+                pass
 
 
 class WpsScanner(threading.Thread):
@@ -1880,7 +1908,7 @@ class WpsScanner(threading.Thread):
         else:
             self.callback("error", "wash/reaver not found")
             return
-        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", start_new_session=True)
         while not self._stop.is_set():
             line = self._proc.stdout.readline()
             if not line:
@@ -1948,6 +1976,8 @@ class AirodumpRawView:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._thread = threading.Thread(target=self._reader, daemon=True)
@@ -1969,6 +1999,7 @@ class AirodumpRawView:
             except Exception:
                 try:
                     self._proc.kill()
+                    self._proc.wait(timeout=2)  # reap: no zombies
                 except Exception:
                     pass
             self._proc = None
