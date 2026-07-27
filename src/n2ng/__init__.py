@@ -1,6 +1,6 @@
 """N2-ng package."""
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 __all__ = ["run", "__version__"]
 
