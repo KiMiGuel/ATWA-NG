@@ -66,6 +66,10 @@ Built for **Kali Linux**. Tested on caffeine. Approved by anyone who's ever forg
 | Configurable output formats (csv, pcap, kismet) | ✅ | `-w` prefix only |
 | Manufacturer detection | ✅ | `-M` flag needed |
 | WPS Scan integration | ✅ | Separate `wash` tool |
+| PMKID clientless attack (scapy, PMF-immune) | ✅ (v1.6) | `hcxdumptool` session |
+| Smart Attack: PMF/WPA3-aware auto-routing (PMKID → deauth → downgrade pivot) | ✅ (v1.6) | Manual target triage |
+| WPA3/transition/PMF target profiling | ✅ (v1.6) | ❌ |
+| Hashcat rules + nonce-error-corrections (hashcat v7) | ✅ (v1.6) | Manual flags |
 
 ---
 

