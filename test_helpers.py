@@ -720,3 +720,27 @@ def test_smart_attack_wpa2_deauths_until_handshake(monkeypatch):
     attack.deauth_all.assert_called_once_with(
         "AA:BB:CC:DD:EE:FF", "wlan0mon", count=5, clients=["22:33:44:55:66:77"]
     )
+
+
+def test_challenge_then_authorized_upgrades_to_handshake(tmp_path):
+    """Regression guard for the v1.4.0-era silent gate revert (commit 7abb12c).
+
+    Invariant: an M1+M2 challenge (messagepair 0) must NOT satisfy the capture
+    gate — auto-deauth keeps running — and a later AUTHORIZED record must still
+    fire the handshake event. If a future change makes CHALLENGE set
+    handshake_found, this test fails immediately.
+    """
+    manager = _n2ng.CaptureManager(_n2ng.queue.Queue(), lambda _msg: None)
+    challenge = tmp_path / "challenge.22000"
+    challenge.write_text(_eapol_line("00") + "\n")
+    manager._classify(challenge)
+    event, _ = manager.queue.get_nowait()
+    assert event == "challenge"
+    assert manager.handshake_found is False  # gate NOT satisfied -> keep capturing
+
+    authorized = tmp_path / "authorized.22000"
+    authorized.write_text(_eapol_line("02") + "\n")
+    manager._classify(authorized)
+    event, _ = manager.queue.get_nowait()
+    assert event == "handshake"
+    assert manager.handshake_found is True
