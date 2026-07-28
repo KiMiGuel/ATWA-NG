@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 try:
     from . import __version__
 except ImportError:
-    __version__ = "1.6.0"
+    __version__ = "1.7.0"
 
 
 THEME = {
@@ -2504,6 +2504,7 @@ class N2NgApp:
         self.attack = AttackController(lambda msg: self.queue.put(("log", msg)))
         self._pmkid_attacker: PmkidAttacker | None = None
         self._smart_worker: SmartAttackOrchestrator | None = None
+        self._omni_worker = None
 
         self.networks: dict[str, dict] = {}
         self._networks_prev: dict[str, dict] = {}
@@ -2861,6 +2862,7 @@ class N2NgApp:
         tk.Button(self.attack_frame, text="Reaver WPS Attack", command=self._reaver_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
         tk.Button(self.attack_frame, text="PMKID Attack (Clientless)", command=self._pmkid_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
         tk.Button(self.attack_frame, text="Smart Attack (Auto)", command=self._smart_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
+        tk.Button(self.attack_frame, text="OMNI Attack (All Stages)", command=self._omni_attack, bg="#333333", fg=THEME["accent"], font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
         tk.Button(self.attack_frame, text="Stop Attack", command=self._stop_attack, bg=THEME["error"], fg="#ffffff", font=self._ui_font_bold).pack(fill=tk.X, padx=5, pady=3)
 
         self.legacy_visible = tk.BooleanVar(value=False)
@@ -3687,10 +3689,63 @@ class N2NgApp:
         )
         self._smart_worker.start()
 
+    def _omni_attack(self):
+        if not self.locked_target or not self.mon_iface:
+            messagebox.showwarning("N2-ng", "Lock a target first.")
+            return
+        sta_mac = self._our_mac()
+        if not sta_mac:
+            messagebox.showwarning("N2-ng", "Could not determine our MAC address.")
+            return
+        if self._omni_worker and self._omni_worker.is_alive():
+            messagebox.showwarning("N2-ng", "An OMNI Attack is already running.")
+            return
+        bssid = self.locked_target["bssid"]
+        essid = self.locked_target.get("essid", "")
+        cmd = ["omni-attack", "-a", bssid, self.mon_iface]
+        if not self._confirm_attack(cmd):
+            return
+        try:
+            from .omni import OmniAttackOrchestrator
+        except ImportError:
+            from omni import OmniAttackOrchestrator
+        target_dir = capture_root() / sanitize_essid(essid, bssid)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        profile = security_profile(self.locked_target)
+        wordlist = default_hashcat_wordlist()
+        default_rules = Path("/usr/share/hashcat/rules/best64.rule")
+        rules = default_rules if default_rules.exists() else None
+        session = f"omni-{int(time.time())}"
+        if wordlist is not None:
+            build_crack_cmd = lambda batch: build_hashcat_command(
+                batch, wordlist, session=session, rules=rules, nonce_error_corrections=64
+            )
+        else:
+            build_crack_cmd = None
+        log_via_queue = lambda msg: self.queue.put(("log", msg))
+        pmkid_factory = lambda: PmkidAttacker(
+            bssid, essid, self.mon_iface, sta_mac, pmkid_output_path(essid, bssid),
+            log_via_queue, event_queue=self.queue, attempts=3, timeout=10,
+        )
+        self._omni_worker = OmniAttackOrchestrator(
+            self.locked_target, profile, self.mon_iface, sta_mac,
+            self.attack, self.capture_manager, log_via_queue,
+            event_queue=self.queue,
+            pmkid_factory=pmkid_factory,
+            target_dir=target_dir,
+            build_crack_cmd=build_crack_cmd,
+            wps_lines=list(self.wps_lines),
+            wordlist=wordlist,
+            crack_rules=rules,
+            clients=self._target_client_macs(bssid),
+        )
+        self._omni_worker.start()
+        self._log(f"OMNI Attack started on {essid} ({bssid})")
+
     def _stop_attack(self):
         self.auto_deauth_var.set(False)
         stopped = self.attack.stop_all()
-        for worker in (self._pmkid_attacker, self._smart_worker):
+        for worker in (self._pmkid_attacker, self._smart_worker, self._omni_worker):
             if worker and worker.is_alive():
                 worker.stop()
                 stopped += 1
@@ -3764,6 +3819,8 @@ class N2NgApp:
                 elif event == "pmkid_file":
                     self._notify_capture("PMKID Captured", payload)
                     self._refresh_history(select_path=Path(payload))
+                elif event == "omni_stage":
+                    self.status.config(text=f"OMNI: {payload}", bg=THEME["panel"], fg=THEME["fg"])
                 elif event == "wps_line":
                     self.wps_lines.append(payload)
                     self._update_wps_text()

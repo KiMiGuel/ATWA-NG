@@ -744,3 +744,119 @@ def test_challenge_then_authorized_upgrades_to_handshake(tmp_path):
     event, _ = manager.queue.get_nowait()
     assert event == "handshake"
     assert manager.handshake_found is True
+
+
+# ------------------------------------------------------------------
+# v1.7.0: OMNI Attack orchestrator
+# ------------------------------------------------------------------
+
+from n2ng.omni import EvilTwinStage, OmniAttackOrchestrator, wps_state
+
+
+class _OmniPmkidBase:
+    def __init__(self, result_path=None):
+        self.result_path = result_path
+
+    def start(self):
+        pass
+
+    def is_alive(self):
+        return False
+
+    def stop(self):
+        pass
+
+
+def _make_omni(net, profile, **kw):
+    attack = Mock()
+    capture = Mock(handshake_found=False, pmkid_found=False)
+    logs = []
+    params = dict(
+        mon_iface="wlan0mon",
+        sta_mac="11:22:33:44:55:66",
+        run_cmd=lambda cmd, timeout: (1, ""),
+        pmkid_factory=lambda: _OmniPmkidBase(),
+        pmkid_window=1,
+        deauth_interval=0,
+        max_deauth_rounds=2,
+    )
+    params.update(kw)
+    omni = OmniAttackOrchestrator(
+        net, profile, params.pop("mon_iface"), params.pop("sta_mac"),
+        attack, capture, logs.append, **params,
+    )
+    return omni, attack, capture, logs
+
+
+_OMNI_NET = {"bssid": "AA:BB:CC:DD:EE:FF", "essid": "Net", "channel": "6",
+             "privacy": "WPA2", "cipher": "CCMP", "auth": "PSK"}
+
+
+def test_omni_pmkid_success_escapes_to_crack(tmp_path):
+    (tmp_path / "cap.22000").write_text("WPA*01*aa11\n")
+    profile = _n2ng.security_profile(_OMNI_NET)
+    omni, attack, _capture, _logs = _make_omni(
+        _OMNI_NET, profile,
+        pmkid_factory=lambda: _OmniPmkidBase(result_path=tmp_path / "cap.22000"),
+        target_dir=tmp_path,
+        build_crack_cmd=lambda batch: ["hashcat", str(batch)],
+        run_cmd=lambda cmd, timeout: (0, "Recovered........: 1/1 (100.00%) Digests"),
+    )
+    omni.run()
+
+    stages = [(r["stage"], r["result"]) for r in omni.stage_results]
+    assert stages == [("PROFILE", "OK"), ("PMKID", "OK"), ("CRACK", "OK")]
+    assert omni.succeeded_stage == "PMKID"
+    attack.deauth_all.assert_not_called()
+
+
+def test_omni_wps_skipped_when_locked(tmp_path):
+    profile = _n2ng.security_profile(_OMNI_NET)
+    omni, attack, capture, _logs = _make_omni(
+        _OMNI_NET, profile,
+        wps_lines=["AA:BB:CC:DD:EE:FF  6  -45  2.0  Yes  Vendor  Net"],
+        target_dir=tmp_path,
+    )
+    # Handshake lands on first deauth round so the chain terminates promptly.
+    attack.deauth_all.side_effect = lambda *a, **k: setattr(capture, "handshake_found", True)
+    omni.run()
+
+    results = {r["stage"]: r["result"] for r in omni.stage_results}
+    assert results["WPS"] == "SKIP"
+    assert results["HANDSHAKE"] == "OK"
+    assert omni.succeeded_stage == "HANDSHAKE"
+
+
+def test_omni_pmf_required_skips_handshake(tmp_path):
+    wpa3_net = dict(_OMNI_NET, privacy="WPA3", auth="SAE")
+    profile = _n2ng.security_profile(wpa3_net)
+    omni, attack, _capture, _logs = _make_omni(wpa3_net, profile, target_dir=tmp_path)
+    omni.run()
+
+    results = {r["stage"]: r["result"] for r in omni.stage_results}
+    assert results["HANDSHAKE"] == "SKIP"
+    assert results["EVILTWIN"] == "STUB"
+    attack.deauth_all.assert_not_called()
+
+
+def test_omni_crack_batch_dedups_records(tmp_path):
+    (tmp_path / "a.22000").write_text("WPA*01*aa\nWPA*02*bb\n")
+    (tmp_path / "b.22000").write_text("WPA*01*aa\nWPA*01*cc\n")
+    omni, _a, _c, _l = _make_omni(_OMNI_NET, _n2ng.security_profile(_OMNI_NET), target_dir=tmp_path)
+
+    assert omni.collect_22000_records() == ["WPA*01*aa", "WPA*02*bb", "WPA*01*cc"]
+
+
+def test_eviltwin_stage_stub_raises():
+    try:
+        EvilTwinStage().run()
+    except NotImplementedError:
+        return
+    raise AssertionError("EvilTwinStage.run() must raise NotImplementedError")
+
+
+def test_wps_state_parsing():
+    assert wps_state("AA:BB:CC:DD:EE:FF", ["AA:BB:CC:DD:EE:FF  6  -45  2.0  Yes  V  Net"]) == "locked"
+    assert wps_state("AA:BB:CC:DD:EE:FF", ["AA:BB:CC:DD:EE:FF  6  -45  2.0  No   V  Net"]) == "enabled"
+    assert wps_state("AA:BB:CC:DD:EE:FF", []) == "unknown"
+    assert wps_state("AA:BB:CC:DD:EE:FF", ["garbage line"]) == "unknown"

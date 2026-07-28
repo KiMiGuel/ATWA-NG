@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.0
+
+### Added
+- OMNI Attack (All Stages): `src/n2ng/omni.py` — `OmniAttackOrchestrator`, an adaptive all-stage chain per locked target: PROFILE → PMKID (30s window) → WPS (pixie-dust first, then paced reaver with lockout-aware abort) → HANDSHAKE (directed deauth, skipped when PMF required) → EVILTWIN (stub) → ONLINE (strictly budgeted: ≤20 default PINs / ≤5 passwords, single pass, never loops) → CRACK (batches all target .22000 records, hashcat with `-r` rules + `--nonce-error-corrections`)
+- First success short-circuits; Stop Attack kills the orchestrator and all stage workers; live stage indicator in the status bar; per-stage result + timing report
+- `EvilTwinStage` stub (WPA3 transition-mode downgrade) — raises NotImplementedError, marked "coming v1.8"
+- `wps_state()` wash-output parser (enabled / locked / unknown)
+- New tests: state-machine transitions, WPS skip-when-locked, PMF skip of handshake stage, crack batch assembly/dedup, stub behavior
+
+### Changed
+- No changes to existing attacks or the capture verdict gate (invariant tests guard both)
+
 ## 1.6.0
 
 Research-driven upgrade (see `research/`): PMKID methodology (hashcat 22000), PMF/802.11w-aware routing, WPA3 transition-mode handling, hashcat v7 capture-tolerance flags.
