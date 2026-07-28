@@ -25,7 +25,7 @@ def test_module_launch_has_no_duplicate_import_warning():
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "n2-ng 1.1.0"
+    assert result.stdout.strip() == f"n2-ng {_n2ng.__version__}"
     assert "RuntimeWarning" not in result.stderr
 
 
@@ -552,3 +552,171 @@ def test_capture_gate_pmkid_still_fires(tmp_path):
     event, _payload = manager.queue.get_nowait()
     assert event == "pmkid"
     assert manager.pmkid_found is True
+
+
+# ------------------------------------------------------------------
+# v1.6.0: security profiling, attack routing, PMKID helpers
+# ------------------------------------------------------------------
+
+security_profile = _n2ng.security_profile
+recommend_attack = _n2ng.recommend_attack
+
+
+def _net(privacy="", cipher="", auth=""):
+    return {"privacy": privacy, "cipher": cipher, "auth": auth}
+
+
+def test_security_profile_wpa2_psk():
+    profile = security_profile(_net("WPA2", "CCMP", "PSK"))
+    assert profile["wpa3"] is False
+    assert profile["transition"] is False
+    assert profile["pmf"] == "unknown"
+
+
+def test_security_profile_wpa3_transition():
+    profile = security_profile(_net("WPA3 WPA2", "CCMP", "SAE PSK"))
+    assert profile["wpa3"] is True
+    assert profile["transition"] is True
+    assert profile["pmf"] == "capable"
+
+
+def test_security_profile_pure_wpa3_requires_pmf():
+    profile = security_profile(_net("WPA3", "CCMP", "SAE"))
+    assert profile["wpa3"] is True
+    assert profile["transition"] is False
+    assert profile["pmf"] == "required"
+
+
+def test_security_profile_wep_and_open():
+    assert security_profile(_net("WEP", "WEP", ""))["wep"] is True
+    assert security_profile(_net("WEP", "WEP", ""))["pmf"] == "none"
+    assert security_profile(_net("OPN", "", ""))["open"] is True
+
+
+def test_recommend_attack_pmkid_first_for_wpa2():
+    plan = recommend_attack(security_profile(_net("WPA2", "CCMP", "PSK")))
+    assert plan[0]["id"] == "pmkid"
+    assert any(step["id"] == "deauth_handshake" for step in plan)
+
+
+def test_recommend_attack_no_deauth_when_pmf_required():
+    plan = recommend_attack(security_profile(_net("WPA3", "CCMP", "SAE")))
+    ids = [step["id"] for step in plan]
+    assert "pmkid" in ids
+    assert "sae-online" in ids
+    assert "deauth_handshake" not in ids
+
+
+def test_recommend_attack_transition_suggests_downgrade_and_deauth():
+    plan = recommend_attack(security_profile(_net("WPA3 WPA2", "CCMP", "SAE PSK")))
+    ids = [step["id"] for step in plan]
+    assert ids[0] == "pmkid"
+    assert "downgrade" in ids
+    assert "deauth_handshake" in ids
+
+
+def test_recommend_attack_wep_and_open():
+    assert recommend_attack(security_profile(_net("WEP", "WEP", "")))[0]["id"] == "arpreplay"
+    assert recommend_attack(security_profile(_net("OPN", "", "")))[0]["id"] == "none"
+
+
+def test_extract_pmkid_finds_rsn_kde():
+    pmkid = bytes(range(16))
+    frame = b"\x88\x8e" + b"\x00" * 20 + _n2ng.PMKID_KDE + pmkid + b"\x00" * 4
+    assert _n2ng.extract_pmkid(frame) == pmkid
+    assert _n2ng.extract_pmkid(b"no kde here") is None
+    # Truncated KDE must not match.
+    assert _n2ng.extract_pmkid(b"\x00\x0f\xac\x04" + b"\x01" * 10) is None
+
+
+def test_build_pmkid_22000_line_format():
+    line = _n2ng.build_pmkid_22000_line(bytes(range(16)), "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66", "Cafe")
+    assert line == "WPA*01*000102030405060708090a0b0c0d0e0f*aabbccddeeff*112233445566*43616665***"
+
+
+def test_pmkid_output_path_under_target_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(_n2ng, "user_home", lambda: tmp_path)
+    path = _n2ng.pmkid_output_path("Cafe", "AA:BB:CC:DD:EE:FF")
+    assert path.parent == tmp_path / "hs" / "n2-ng" / "Cafe_AA-BB-CC-DD-EE-FF"
+    assert path.name.startswith("pmkid_")
+    assert path.suffix == ".22000"
+
+
+def test_hashcat_command_with_rules_and_nonce_corrections(tmp_path):
+    hash_file = tmp_path / "capture.22000"
+    wordlist = tmp_path / "words.txt"
+    rules = tmp_path / "best64.rule"
+
+    command = _n2ng.build_hashcat_command(
+        hash_file, wordlist, rules=rules, nonce_error_corrections=64
+    )
+
+    assert command == [
+        "hashcat", "-m", "22000", "-a", "0",
+        "--nonce-error-corrections=64",
+        str(hash_file), str(wordlist), "-r", str(rules),
+    ]
+
+
+def test_hashcat_command_defaults_unchanged(tmp_path):
+    hash_file = tmp_path / "capture.22000"
+    wordlist = tmp_path / "words.txt"
+    command = _n2ng.build_hashcat_command(hash_file, wordlist)
+    assert command == ["hashcat", "-m", "22000", "-a", "0", str(hash_file), str(wordlist)]
+
+
+class _FakePmkidAttacker:
+    """Test double: starts instantly, finds nothing, dies immediately."""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        self.result_path = None
+        _FakePmkidAttacker.instances.append(self)
+
+    def start(self):
+        pass
+
+    def is_alive(self):
+        return False
+
+    def stop(self):
+        pass
+
+
+def test_smart_attack_pmf_required_never_deauths(monkeypatch):
+    monkeypatch.setattr(_n2ng, "PmkidAttacker", _FakePmkidAttacker)
+    monkeypatch.setattr(_n2ng, "pmkid_output_path", lambda e, b: Path("/tmp/x.22000"))
+    logs = []
+    attack = Mock()
+    capture = Mock(handshake_found=False, pmkid_found=False)
+    net = {"bssid": "AA:BB:CC:DD:EE:FF", "essid": "Net", "privacy": "WPA3", "cipher": "CCMP", "auth": "SAE"}
+
+    orchestrator = _n2ng.SmartAttackOrchestrator(
+        net, "wlan0mon", "11:22:33:44:55:66", attack, capture, logs.append,
+    )
+    orchestrator.run()
+
+    attack.deauth_all.assert_not_called()
+    assert any("PMF" in msg for msg in logs)
+
+
+def test_smart_attack_wpa2_deauths_until_handshake(monkeypatch):
+    monkeypatch.setattr(_n2ng, "PmkidAttacker", _FakePmkidAttacker)
+    monkeypatch.setattr(_n2ng, "pmkid_output_path", lambda e, b: Path("/tmp/x.22000"))
+    logs = []
+    capture = Mock(handshake_found=False, pmkid_found=False)
+    attack = Mock()
+    # Handshake lands after the first deauth burst.
+    attack.deauth_all.side_effect = lambda *a, **k: setattr(capture, "handshake_found", True)
+    net = {"bssid": "AA:BB:CC:DD:EE:FF", "essid": "Net", "privacy": "WPA2", "cipher": "CCMP", "auth": "PSK"}
+
+    orchestrator = _n2ng.SmartAttackOrchestrator(
+        net, "wlan0mon", "11:22:33:44:55:66", attack, capture, logs.append,
+        clients=["22:33:44:55:66:77"], interval=0,
+    )
+    orchestrator.run()
+
+    attack.deauth_all.assert_called_once_with(
+        "AA:BB:CC:DD:EE:FF", "wlan0mon", count=5, clients=["22:33:44:55:66:77"]
+    )

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0
+
+Research-driven upgrade (see `research/`): PMKID methodology (hashcat 22000), PMF/802.11w-aware routing, WPA3 transition-mode handling, hashcat v7 capture-tolerance flags.
+
+### Added
+- PMKID Attack (Clientless) button: scapy-based clientless PMKID capture — open-system auth + RSN association request, extracts the PMKID from the AP's unprotected EAPOL M1 and writes a hashcat `-m 22000` (WPA*01) file straight into the target folder. No client required; works under PMF
+- Smart Attack (Auto) button: PMF-aware adaptive attack chain — profiles the target, tries quiet PMKID first, falls back to directed deauth only when PMF is not required, and logs the correct pivot (WPA2 downgrade twin for transition mode, online SAE for pure WPA3) instead of wasting deauths that 802.11w drops
+- Security profiling: WPA2/WPA3/transition/WEP/open classification with PMF status (`security_profile`, `recommend_attack`); shown as a Profile badge in the target card
+- Hashcat dialog: optional rules file (`-r`) and hashcat v7 `--nonce-error-corrections` override for noisy PMKID/handshake captures
+- Stop Attack now also stops PMKID/Smart Attack worker threads
+
+### Fixed
+- Capture gate: CHALLENGE-only handshakes (M1+M2, messagepair 0) again log a warning and keep capturing instead of falsely stopping auto-deauth (restores the v1.1.0 documented behavior)
+- `--version` test now tracks the package version instead of a hardcoded string
+
 ## 1.1.0
 
 ### Added
