@@ -5,6 +5,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
 # Build/scan artifacts
 build/
 bin/
