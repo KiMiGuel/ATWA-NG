@@ -196,3 +196,62 @@ the window; not a failure).
 Test scripts (not part of the package, scratch/no need to keep):
 `/tmp/claude-1000/-home-KaliMa-N2-NG-v2/b67427d2-9dfb-4d13-b381-f57191ec0a16/scratchpad/verify_interface_fix.py`
 and `verify_tx_witness.py` in the same directory.
+
+## Update — 2026-08-25, GUI punch list items 2-7 done + packaging + repo init
+
+User approved a staged roadmap to "done" (functional fixes → packaging →
+repo hygiene → rename sweep → publish decision, the last one explicitly
+deferred) and said to run through it autonomously. Completed in this
+run:
+
+**GUI punch list, all items now done:**
+- #2 columns: `_build_target_tree()` now has a horizontal scrollbar
+  (`tree_frame` + grid layout) and every column is `stretch=False` so
+  manual widths stick instead of being auto-compressed.
+- #3 row banding: `row_odd` tag now uses `THEME["panel_alt"]` instead of
+  `THEME["panel"]` — a real contrast jump vs. the old near-identical bg/panel.
+- #4 + #6 signal graph + capture size, merged (same root cause): the
+  scan loop's `signal_sample` event now fires on `self.selected_bssid`
+  (not just `locked_bssid`), and `_on_target_select` seeds the graph
+  immediately with `ap.signal` on single-click. Added
+  `_start_selected_capture_watch()` — a lightweight per-selection
+  watcher showing the KB total of any existing capture files for that
+  target, backing off via `self._busy` so it never fights a running
+  attack's own `_watch_capture_size`. Double-click-to-lock unchanged
+  (already existed); Lock still also reachable via the existing flow.
+  Note: "capture size on mere selection" doesn't have an exact v1
+  precedent — v1's `_select_target` conflated select+lock entirely, so
+  this is a best-effort interpretation (shows existing on-disk capture
+  size for the target, live-updating), not a byte-for-byte port.
+- #5 Stop Attack: moved from the bottom of the attack-button stack into
+  `title_row`, next to Unlock. Removed from `attack_buttons` list;
+  simplified `_set_busy()` since the text-match special-case is no
+  longer needed.
+- #7 log verbosity: both `deauth()` call sites (`_auto_deauth_run`,
+  `_pincer_run`) now log the actual frame count returned instead of
+  discarding it.
+
+Visually spot-checked via a screenshot (GUI launched, no live APs
+scanned) — Stop Attack position and horizontal scrollbar confirmed
+correct. Row banding/signal graph/capture-size need a real scan session
+to see against actual rows/data — not yet re-verified live with real
+APs present, only code-level + a no-data smoke test.
+
+**Packaging:** `README.md`, `.gitignore` added. `--version` wired up in
+`cli.py`'s `build_parser()` (was already tracked in `__init__.py`, just
+not exposed). LICENSE deliberately skipped — tied to the publish
+decision (public vs. private), which is explicitly deferred, so
+premature to pick one now.
+
+**Repo hygiene:** `git init` + baseline commit (`d836273`, 52 files,
+"Initial commit: n2ngv2 hybrid rebuild baseline"). Local only, no
+remote configured, matching the TOP SECRET / no-GitHub-push rule.
+
+67/67 hermetic tests still pass throughout.
+
+**Next and only remaining item before the (separately deferred) publish
+decision: the rename sweep.** Blocked on knowing the actual new name —
+not yet given. The 4 hardcoded strings needing the sweep: `"n2-ng"`
+(storage.py capture root), `"n2ng2"` (gui/settings.py config path),
+`"n2ng_hostapd_"/"n2ng_dnsmasq_"` (eviltwin.py temp prefixes),
+`"n2ng2_wps_"` (oneshot.py temp prefix).
