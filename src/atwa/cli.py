@@ -1,5 +1,5 @@
-"""ATWA-NG unified CLI — fully self-contained, no external runtime
-dependencies on any other project's code.
+"""ATWA-NG Airwave Teardown Wireless Auditing-Next Gen
+	System's Down.
 
   - scan: channel-hopping AP/client discovery, backed by a
     locally-compiled scanning engine (scanner.py).
@@ -353,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     from . import __version__
 
     parser = argparse.ArgumentParser(
-        prog="atwa", description="ATWA-NG — unified WiFi security auditing"
+        prog="atwa", description="ATWA-NG — Airwave Teardown Wireless Auditing-NextGen"
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -385,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=int, default=15)
     p.set_defaults(func=_cmd_wps_recon)
 
-    p = sub.add_parser("crack-cap", help="crack a WPA/WEP capture directly (not hashcat)")
+    p = sub.add_parser("crack-cap", help="crack a WPA/WEP capture directly")
     p.add_argument("capfile")
     p.add_argument("wordlist")
     p.add_argument("--bssid")
@@ -464,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_wps_oneshot)
 
-    p = sub.add_parser("gui", help="launch the desktop GUI (ATWA-NG's own copy, see gui/)")
+    p = sub.add_parser("gui", help="launch the desktop GUI")
     p.add_argument("--demo", action="store_true")
     p.set_defaults(func=_cmd_gui)
 
@@ -473,7 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("wordlist")
     p.set_defaults(func=_cmd_crack)
 
-    p = sub.add_parser("eviltwin", help="rogue AP + captive portal (new CLI wiring, was GUI-only)")
+    p = sub.add_parser("eviltwin", help="rogue AP + captive portal")
     p.add_argument("iface_ap")
     p.add_argument("iface_mon")
     p.add_argument("bssid")
