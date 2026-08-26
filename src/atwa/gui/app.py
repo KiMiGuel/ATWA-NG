@@ -72,6 +72,7 @@ class App:
         self.aps: dict[str, AccessPoint] = {}
         self.selected_bssid: str | None = None
         self._select_capture_watch_stop: threading.Event | None = None
+        self._lock_capture_proc = None  # subprocess.Popen | None
         self.mon_iface: str | None = None
         self.own_mac: str | None = None
         self._permanent_mac: str | None = None  # set aside while MAC is randomized, for restore
@@ -934,11 +935,16 @@ class App:
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_target_select(self, _event=None):
-        """Single click/selection: preview only — detail panel + client
-        list. Does NOT touch the radio. User feedback (2026-08-19):
-        auto-locking on every single click changed the channel just from
-        browsing the list, which fights a scan in progress. Locking is
-        now a deliberate double-click (_on_target_double_click)."""
+        """Single click/selection: v1 parity restored 2026-08-26 (user's
+        explicit request — "I want it how n2-ng's works"). v1's single
+        click both previewed AND locked the channel in one step; a
+        2026-08-19 change split those into select-vs-double-click to stop
+        browsing from disrupting an active scan, but that also broke the
+        fast graph/capture-size feedback v1 had, since both of those only
+        update quickly *because* locking restricts the scanner to one
+        channel and starts a real capture. Restoring single-click-locks to
+        get that behavior back; double-click still works too (redundant,
+        harmless — see _on_target_double_click)."""
         sel = self.tree.selection()
         if not sel:
             return
@@ -966,6 +972,8 @@ class App:
         if ap.signal is not None:
             self.signal_graph.add_sample(ap.signal)
         self._start_selected_capture_watch(ap)
+        if ap.channel:
+            self._lock_channel(ap)
 
     def _start_selected_capture_watch(self, ap: AccessPoint):
         """Live KB readout of any existing capture data for the selected
@@ -997,10 +1005,9 @@ class App:
         threading.Thread(target=watch, daemon=True).start()
 
     def _on_target_double_click(self, _event=None):
-        """Double-click: the deliberate action that actually locks the
-        channel (v1 discipline, main.py _select_target — but v1 used a
-        single click; split here per direct user feedback so browsing
-        the list doesn't fight an active scan)."""
+        """Redundant with single-click since 2026-08-26 (select now locks
+        too, see _on_target_select) — harmless no-op re-lock, kept so
+        double-click still does something sensible rather than nothing."""
         bssid = self.selected_bssid
         if not bssid:
             return
@@ -1013,7 +1020,13 @@ class App:
         return sel[0] if sel else None
 
     def _lock_channel(self, ap: AccessPoint):
-        """Stop hopping and park the adapter on ap's channel (v1 _lock_channel)."""
+        """Stop hopping and park the adapter on ap's channel (v1 _lock_channel).
+        Also launches a real vendored-airodump-ng capture restricted to this
+        bssid/channel (v1's Worker.start_lock, main.py:1267-1285) so the
+        capture-size KB readout actually grows from real on-disk data, not
+        just a static existing-file check."""
+        if self.channel_locked and self.locked_bssid == ap.bssid and self._lock_capture_proc is not None:
+            return  # already locked to this exact target with a live capture running
         self.channel_locked = True
         self.locked_bssid = ap.bssid
         self.locked_channel = ap.channel
@@ -1034,6 +1047,50 @@ class App:
                 return f"channel {ap.channel}"
 
             self._run_bg(f"Set channel {ap.channel}", work)
+            self._start_lock_capture(ap)
+
+    def _start_lock_capture(self, ap: AccessPoint):
+        """Real vendored airodump-ng, restricted to ap's channel+bssid,
+        writing continuously to disk — same mechanism v1 used
+        (Worker.start_lock). Stopped by _unlock_channel/_stop_lock_capture."""
+        self._stop_lock_capture()
+        import subprocess
+
+        from ..scan_airodump import AIRODUMP_NG_BIN
+        from ..storage import target_capture_dir
+
+        if not AIRODUMP_NG_BIN.exists():
+            self._log(f"lock capture skipped: {AIRODUMP_NG_BIN} not built")
+            return
+        out_dir = target_capture_dir(ap.ssid, ap.bssid)
+        prefix = str(out_dir / "lock")
+        cmd = [
+            str(AIRODUMP_NG_BIN), "--output-format", "pcap,csv", "--write-interval", "1",
+            "-w", prefix, "-c", str(ap.channel), "--bssid", ap.bssid, self.mon_iface,
+        ]
+        try:
+            self._lock_capture_proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            self._log(f"lock capture failed to start: {exc}")
+            self._lock_capture_proc = None
+
+    def _stop_lock_capture(self):
+        proc = self._lock_capture_proc
+        self._lock_capture_proc = None
+        if proc is None:
+            return
+        import signal as signal_mod
+
+        try:
+            proc.send_signal(signal_mod.SIGINT)
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def _unlock_channel(self):
         """Resume hopping the full channel range (v1 _unlock_channel)."""
@@ -1044,6 +1101,7 @@ class App:
         self.locked_channel = None
         self._lock_lost_since = None
         self._scan_channels = None
+        self._stop_lock_capture()
         self.channel_lock_var.set("SCANNING ALL CHANNELS")
         self.lock_pill.configure(bg=self.THEME["error"], fg="#1a0000")
         self._log("Channel lock released; scanning all channels")
@@ -2012,6 +2070,7 @@ class App:
     def _on_close(self):
         self._scanning.clear()
         self._stop_event.set()
+        self._stop_lock_capture()
         self._save_settings()
         if self.mon_iface and "demo" not in self.mon_iface:
             try:

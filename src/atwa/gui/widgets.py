@@ -56,7 +56,16 @@ class SignalGraph:
             y = h - ((dbm + 90) / 60) * h
             self.canvas.create_text(4, min(max(y, 8), h - 8), text=label, fill=THEME["muted"],
                                      anchor="w", font=("TkDefaultFont", 7))
-        if len(self.samples) < 2:
+        if len(self.samples) < 1:
+            return
+        if len(self.samples) == 1:
+            # A single seeded sample (e.g. right after selecting a target,
+            # before the next scan hop lands a second reading) still needs
+            # to render as *something* rather than nothing — draw it as a
+            # dot instead of falling through to the line-drawing math below,
+            # which divides by len(samples)-1 and would ZeroDivisionError.
+            y = h - ((max(-90, min(-30, self.samples[0])) + 90) / 60) * h
+            self.canvas.create_oval(-3, y - 3, 3, y + 3, fill=THEME["accent"], outline="")
             return
         step = w / (len(self.samples) - 1)
         points = []
