@@ -73,6 +73,7 @@ class App:
         self.selected_bssid: str | None = None
         self._select_capture_watch_stop: threading.Event | None = None
         self._lock_capture_proc = None  # subprocess.Popen | None
+        self._crack_proc_holder: dict = {}  # {"proc": subprocess.Popen} while a crack runs
         self.mon_iface: str | None = None
         self.own_mac: str | None = None
         self._permanent_mac: str | None = None  # set aside while MAC is randomized, for restore
@@ -1444,6 +1445,10 @@ class App:
         self.auto_deauth_var.set(False)
         if hasattr(self, "_auto_deauth_stop"):
             self._auto_deauth_stop.set()
+        crack_proc = self._crack_proc_holder.get("proc")
+        if crack_proc is not None and crack_proc.poll() is None:
+            crack_proc.terminate()
+            self._log("stop requested: terminated the running crack process (John/aircrack-ng)")
         self._log("stop requested (OMNI/Smart/WPS-bruteforce/auto-deauth loops will exit at their "
                    "next check; a single blocking call in progress will still finish on its own timeout)")
 
@@ -1885,7 +1890,8 @@ class App:
                 cracker = JohnCracker()
             except JohnUnavailableError as exc:
                 return str(exc)
-            results = cracker.crack(hashfile, wordlist)
+            self._crack_proc_holder.clear()
+            results = cracker.run_streaming(hashfile, wordlist, self._progress_fn, self._crack_proc_holder)
             if not results:
                 return "no passwords recovered"
             self._queue.put(("info", "\n".join(f"{k}: {v}" for k, v in results.items())))
@@ -1917,7 +1923,8 @@ class App:
                 cracker = AirCracker(bssid)
             except AircrackUnavailableError as exc:
                 return str(exc)
-            results = cracker.crack(capfile, wordlist)
+            self._crack_proc_holder.clear()
+            results = cracker.run_streaming(capfile, wordlist, self._progress_fn, self._crack_proc_holder)
             if not results:
                 return "no password recovered"
             self._queue.put(("info", "\n".join(f"{k}: {v}" for k, v in results.items())))
