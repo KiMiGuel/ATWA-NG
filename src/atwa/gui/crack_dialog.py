@@ -184,7 +184,7 @@ class CrackDialog(tk.Toplevel):
             if not lines:
                 self._queue.put(("done", "Found hash files, but they were all empty."))
                 return
-            batch = directory / "_n2ng_crack_batch.22000"
+            batch = directory / "_atwa_crack_batch.22000"
             batch.write_text("\n".join(lines) + "\n")
             self._queue.put(("line", f"Merged {len(all_hashes)} file(s), {len(lines)} unique hash line(s) -> {batch.name}\n"))
             self._queue.put(("line", "Running john...\n"))

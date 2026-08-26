@@ -1,8 +1,9 @@
-# N2-NGv2
+# ATWA-NG
 
-WiFi security auditing tool: v1's scanning engine (vendored aircrack-ng
-source) combined with a native, from-scratch attack/crypto engine
-(WPS pixie-dust, PMKID, WEP PTW, handshake capture) and a Tkinter GUI.
+Airwave Teardown Wireless Auditing - nextgen. WiFi security auditing
+tool: v1's scanning engine (vendored aircrack-ng source) combined with a
+native, from-scratch attack/crypto engine (WPS pixie-dust, PMKID, WEP
+PTW, handshake capture) and a Tkinter GUI.
 
 For authorized security testing only — against networks and devices you
 own or are explicitly authorized to test.
@@ -16,12 +17,12 @@ pip install -e .
 ## Usage
 
 ```bash
-n2ngv2 --help
-n2ngv2 --version
-n2ngv2 gui          # launch the GUI (needs root for monitor mode/injection)
+atwa --help
+atwa --version
+atwa gui          # launch the GUI (needs root for monitor mode/injection)
 ```
 
-See `n2ngv2 <command> --help` for CLI subcommands (`scan`, `deauth`,
+See `atwa <command> --help` for CLI subcommands (`scan`, `deauth`,
 `handshake`, `pmkid`, `wps`, `wep`, `crack`, `eviltwin`, and others).
 
 ## Requirements

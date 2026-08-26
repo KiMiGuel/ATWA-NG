@@ -142,7 +142,7 @@ def scan(iface: str, duration: float = 10.0, channel: int | None = None,
             f"cd {_VENDOR_ROOT} && autoreconf -i && ./configure && make"
         )
 
-    with tempfile.TemporaryDirectory(prefix="n2ngv2_scan_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="atwa_scan_") as tmp:
         prefix = os.path.join(tmp, "scan")
         cmd = [str(AIRODUMP_NG_BIN), "--output-format", "csv",
                "--write-interval", "1", "-w", prefix]

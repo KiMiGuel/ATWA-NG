@@ -1,4 +1,4 @@
-"""Persistent GUI settings — JSON at ~/.config/n2ng2/settings.json.
+"""Persistent GUI settings — JSON at ~/.config/atwa/settings.json.
 
 Ported concept from v1's Settings (main.py:1060-1139: JSON, defaults+
 merge, chown back to the real user under sudo so config isn't
@@ -28,7 +28,7 @@ DEFAULTS: dict = {
 
 
 def settings_path() -> Path:
-    return user_home() / ".config" / "n2ng2" / "settings.json"
+    return user_home() / ".config" / "atwa" / "settings.json"
 
 
 class Settings:

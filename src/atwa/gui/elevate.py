@@ -20,8 +20,8 @@ from pathlib import Path
 def ensure_root(demo: bool) -> None:
     """No-op if already root or in --demo mode (demo never touches
     hardware, matching v1's `if not args.demo: ensure_root()`). Otherwise
-    prompts for a sudo password and re-execs `n2ng2 gui` as root,
-    replacing this process's exit code with the re-exec'd one."""
+    prompts for a sudo password and re-execs `python -m atwa.cli gui` as
+    root, replacing this process's exit code with the re-exec'd one."""
     if demo or os.geteuid() == 0:
         return
 
@@ -31,7 +31,7 @@ def ensure_root(demo: bool) -> None:
     root = tk.Tk()
     root.withdraw()
     password = simpledialog.askstring(
-        "N2-NG v2 requires root", "Enter sudo password:", show="*", parent=root,
+        "ATWA-NG requires root", "Enter sudo password:", show="*", parent=root,
     )
     root.destroy()
     if not password:
@@ -43,7 +43,7 @@ def ensure_root(demo: bool) -> None:
     if xauthority.exists():
         env["XAUTHORITY"] = str(xauthority)
 
-    args = ["sudo", "-S", sys.executable, "-m", "n2ngv2.cli", "gui"]
+    args = ["sudo", "-S", sys.executable, "-m", "atwa.cli", "gui"]
     proc = subprocess.Popen(
         args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, env=env,

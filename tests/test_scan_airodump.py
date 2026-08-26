@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from n2ngv2.scan_airodump import (
+from atwa.scan_airodump import (
     AIRODUMP_NG_BIN,
     AirodumpNotBuilt,
     Network,
@@ -137,14 +137,14 @@ def test_parse_beacon_field_name_variants():
 
 def test_scan_raises_when_binary_not_built(monkeypatch, tmp_path):
     fake_bin = tmp_path / "airodump-ng"  # deliberately not created
-    monkeypatch.setattr("n2ngv2.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr("atwa.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
     with pytest.raises(AirodumpNotBuilt):
         scan("wlan0", duration=1.0)
 
 
 def test_scan_error_message_includes_build_instructions(monkeypatch, tmp_path):
     fake_bin = tmp_path / "airodump-ng"
-    monkeypatch.setattr("n2ngv2.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr("atwa.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
     with pytest.raises(AirodumpNotBuilt, match="autoreconf"):
         scan("wlan0", duration=1.0)
 
@@ -155,7 +155,7 @@ def test_scan_closes_stdin_on_the_subprocess(monkeypatch, tmp_path):
     stdin=subprocess.DEVNULL, or a real invocation can block forever."""
     fake_bin = tmp_path / "airodump-ng"
     fake_bin.write_text("")
-    monkeypatch.setattr("n2ngv2.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr("atwa.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
 
     captured_kwargs = {}
 
@@ -171,7 +171,7 @@ def test_scan_closes_stdin_on_the_subprocess(monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr("n2ngv2.scan_airodump.time.sleep", lambda _s: None)
+    monkeypatch.setattr("atwa.scan_airodump.time.sleep", lambda _s: None)
 
     scan("wlan0", duration=0.01)
     assert captured_kwargs.get("stdin") == subprocess.DEVNULL

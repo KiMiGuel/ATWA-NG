@@ -91,7 +91,7 @@ class AirodumpScanner(threading.Thread):
 
     def _build_base_cmd(self, prefix: str) -> list[str]:
         if not AIRODUMP_NG_BIN.exists():
-            raise AirodumpNotBuilt(f"{AIRODUMP_NG_BIN} not built — see N2-NGv2/STATUS.md")
+            raise AirodumpNotBuilt(f"{AIRODUMP_NG_BIN} not built — see ATWA-NG/STATUS.md")
         return [
             str(AIRODUMP_NG_BIN),
             "--write-interval", str(self.write_interval),
@@ -233,13 +233,13 @@ def scan_live(iface: str, duration: float = 10.0, band: str = "Both",
     scan_airodump.py), return whatever was captured.
 
     `prefix=None` (the default) uses a fresh temp directory per call —
-    the original default was a fixed "/tmp/n2ngv2_scan" path, which
+    the original default was a fixed "/tmp/atwa_scan" path, which
     would collide if two scans ever ran concurrently and never cleaned
     up its output files afterward. Pass an explicit prefix if you want a
     stable, inspectable location instead."""
     tmpdir = None
     if prefix is None:
-        tmpdir = tempfile.mkdtemp(prefix="n2ngv2_scan_")
+        tmpdir = tempfile.mkdtemp(prefix="atwa_scan_")
         prefix = str(Path(tmpdir) / "scan")
 
     scanner = AirodumpScanner()

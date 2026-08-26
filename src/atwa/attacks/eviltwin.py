@@ -278,13 +278,13 @@ def run_eviltwin(
         ap_chan = channel if 1 <= channel <= 13 else 6
 
         hconf = tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
-                                            prefix="n2ng_hostapd_", delete=False)
+                                            prefix="atwa_hostapd_", delete=False)
         hconf.write(_hostapd_conf(iface_ap, ssid, ap_chan))
         hconf.flush(); hconf.close()
         tmpfiles.append(hconf.name)
 
         dconf = tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
-                                            prefix="n2ng_dnsmasq_", delete=False)
+                                            prefix="atwa_dnsmasq_", delete=False)
         dconf.write(_dnsmasq_conf(iface_ap))
         dconf.flush(); dconf.close()
         tmpfiles.append(dconf.name)

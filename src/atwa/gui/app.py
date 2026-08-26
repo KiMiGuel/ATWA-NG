@@ -1,4 +1,4 @@
-"""N2-NG v2 GUI — Tkinter, mimics v1's layout/aesthetic (updated), wired to
+"""ATWA-NG GUI — Tkinter, mimics v1's layout/aesthetic (updated), wired to
 v2's own native attack functions throughout (never subprocess-wraps an
 attack tool; John/hcxpcapngtool/pcapfix/mergecap are generic file-format
 utilities, same category as v1's DependencyChecker tools, not attack logic).
@@ -56,7 +56,7 @@ CHANNEL_LOCK_TIMEOUT = 30.0
 class App:
     def __init__(self, root: tk.Tk, demo: bool = False):
         self.root = root
-        self.root.title(f"N2-NG v2 — {__version__}")
+        self.root.title(f"ATWA-NG — {__version__}")
         self.root.geometry("1320x780")
         self.root.minsize(760, 480)
 
@@ -535,9 +535,9 @@ class App:
                 elif kind == "busy":
                     self._set_busy(payload)
                 elif kind == "error":
-                    messagebox.showerror("N2-NG v2", payload)
+                    messagebox.showerror("ATWA-NG", payload)
                 elif kind == "info":
-                    messagebox.showinfo("N2-NG v2", payload)
+                    messagebox.showinfo("ATWA-NG", payload)
         except queue.Empty:
             pass
         self.root.after(100, self._drain_queue)
@@ -565,7 +565,7 @@ class App:
         Generic fix at this one choke point instead of threading progress
         callbacks through every individual attack function."""
         if self._busy:
-            messagebox.showwarning("N2-NG v2", "Another attack is already running. Use Stop Attack first.")
+            messagebox.showwarning("ATWA-NG", "Another attack is already running. Use Stop Attack first.")
             return
         # A prior attack's "Stop Attack" leaves this set; without clearing
         # it here, every later attack that reads self._stop_event (Caffe
@@ -690,7 +690,7 @@ class App:
     def _start_monitor(self):
         iface = self.adapter_var.get()
         if not iface:
-            messagebox.showwarning("N2-NG v2", "Select an adapter first.")
+            messagebox.showwarning("ATWA-NG", "Select an adapter first.")
             return
 
         def work():
@@ -738,7 +738,7 @@ class App:
 
     def _start_scan(self):
         if not self.mon_iface:
-            messagebox.showwarning("N2-NG v2", "Start monitor mode first.")
+            messagebox.showwarning("ATWA-NG", "Start monitor mode first.")
             return
         if self._scanning.is_set():
             return
@@ -1063,10 +1063,10 @@ class App:
 
     def _require_target(self) -> AccessPoint | None:
         if not self.selected_bssid or self.selected_bssid not in self.aps:
-            messagebox.showwarning("N2-NG v2", "Select a target from the scan list first.")
+            messagebox.showwarning("ATWA-NG", "Select a target from the scan list first.")
             return None
         if not self.mon_iface:
-            messagebox.showwarning("N2-NG v2", "Start monitor mode first.")
+            messagebox.showwarning("ATWA-NG", "Start monitor mode first.")
             return None
         return self.aps[self.selected_bssid]
 
@@ -1144,7 +1144,7 @@ class App:
             return
         client = self._selected_client()
         if not client:
-            messagebox.showwarning("N2-NG v2", "No client selected — pick one from the Clients list.")
+            messagebox.showwarning("ATWA-NG", "No client selected — pick one from the Clients list.")
             return
         if not self._confirm_attack("Deauth Client", f"Send 64 deauth frames to {client} on {ap.bssid} ({ap.ssid or '<hidden>'})."):
             return
@@ -1160,7 +1160,7 @@ class App:
         if not ap:
             return
         if not self.own_mac:
-            messagebox.showwarning("N2-NG v2", "Own MAC not known yet — restart monitor mode.")
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
             return
         if not self._confirm_attack("PMKID Attack", f"Clientless PMKID capture against {ap.bssid} ({ap.ssid or '<hidden>'})."):
             return
@@ -1245,13 +1245,13 @@ class App:
         if not ap:
             return
         if not ap.ssid:
-            messagebox.showwarning("N2-NG v2", "WEP attack needs a known SSID (this AP's SSID hasn't been seen yet).")
+            messagebox.showwarning("ATWA-NG", "WEP attack needs a known SSID (this AP's SSID hasn't been seen yet).")
             return
         if not self.own_mac:
-            messagebox.showwarning("N2-NG v2", "Own MAC not known yet — restart monitor mode.")
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
             return
         key_len = 13
-        if not messagebox.askyesno("N2-NG v2", "WEP attack: use WEP-104 (13-byte key)? Choose No for WEP-40 (5-byte)."):
+        if not messagebox.askyesno("ATWA-NG", "WEP attack: use WEP-104 (13-byte key)? Choose No for WEP-40 (5-byte)."):
             key_len = 5
         if not self._confirm_attack("WEP Attack", f"Fake-auth + ARP replay + PTW key recovery against {ap.bssid} ({ap.ssid})."):
             return
@@ -1270,10 +1270,10 @@ class App:
         if not ap:
             return
         if not ap.clients:
-            messagebox.showwarning("N2-NG v2", "Caffe Latte needs a visible client — lock a WEP AP with at least one client listed.")
+            messagebox.showwarning("ATWA-NG", "Caffe Latte needs a visible client — lock a WEP AP with at least one client listed.")
             return
         client_mac = next(iter(ap.clients))
-        key_len = 13 if messagebox.askyesno("N2-NG v2", "WEP Caffe Latte: use WEP-104 (13-byte)? No = WEP-40 (5-byte).") else 5
+        key_len = 13 if messagebox.askyesno("ATWA-NG", "WEP Caffe Latte: use WEP-104 (13-byte)? No = WEP-40 (5-byte).") else 5
         if not self._confirm_attack(
             "WEP Caffe Latte",
             f"Client-only WEP attack against {client_mac} (client of {ap.bssid}).\n"
@@ -1297,7 +1297,7 @@ class App:
         own vendored/self-compiled aireplay-ng already has a real, working
         -4/--chopchop; driving it from here is future work."""
         messagebox.showwarning(
-            "N2-NG v2",
+            "ATWA-NG",
             "WEP Chopchop is disabled — its decryption math doesn't work "
             "against real WEP encryption (verified offline, not just "
             "untested).\n\nThis project's own vendored aireplay-ng build "
@@ -1309,7 +1309,7 @@ class App:
         if not ap:
             return
         if not ap.ssid:
-            messagebox.showwarning("N2-NG v2", "WPS attack needs a known SSID.")
+            messagebox.showwarning("ATWA-NG", "WPS attack needs a known SSID.")
             return
         if not self._confirm_attack("WPS Null-PIN", f"One-shot null-PIN attempt against {ap.bssid} ({ap.ssid})."):
             return
@@ -1328,7 +1328,7 @@ class App:
         if not ap:
             return
         if not ap.ssid:
-            messagebox.showwarning("N2-NG v2", "WPS attack needs a known SSID.")
+            messagebox.showwarning("ATWA-NG", "WPS attack needs a known SSID.")
             return
         if not self._confirm_attack(
             "WPS Pixie-Dust",
@@ -1356,10 +1356,10 @@ class App:
         if not ap:
             return
         if not ap.ssid:
-            messagebox.showwarning("N2-NG v2", "WPS attack needs a known SSID.")
+            messagebox.showwarning("ATWA-NG", "WPS attack needs a known SSID.")
             return
         warned = messagebox.askokcancel(
-            "N2-NG v2",
+            "ATWA-NG",
             "WPS bruteforce is currently EXPERIMENTAL — across multiple live sessions "
             "it has never completed a real M2→M3 exchange against a test AP (see "
             "STATUS.md). It may just time out repeatedly. Continue anyway?",
@@ -1409,7 +1409,7 @@ class App:
             self.auto_deauth_var.set(False)
             return
         if self._busy:
-            messagebox.showwarning("N2-NG v2", "Another attack is already running. Use Stop Attack first.")
+            messagebox.showwarning("ATWA-NG", "Another attack is already running. Use Stop Attack first.")
             self.auto_deauth_var.set(False)
             return
         self._auto_deauth_stop = threading.Event()
@@ -1509,12 +1509,12 @@ class App:
         if not ap:
             return
         if not ap.ssid:
-            messagebox.showwarning("N2-NG v2", "Evil Twin needs a known SSID.")
+            messagebox.showwarning("ATWA-NG", "Evil Twin needs a known SSID.")
             return
         iface_ap = self.iface_ap_var.get().strip()
         if not iface_ap:
             messagebox.showerror(
-                "N2-NG v2",
+                "ATWA-NG",
                 "No AP interface configured.\n\n"
                 "Pick one in the toolbar's 'AP iface' dropdown (the ACHM "
                 "adapter, in managed mode, distinct from the scan/monitor "
@@ -1523,7 +1523,7 @@ class App:
             return
         if iface_ap == self.mon_iface:
             messagebox.showerror(
-                "N2-NG v2",
+                "ATWA-NG",
                 f"AP interface ({iface_ap}) is the same as the monitor "
                 f"interface ({self.mon_iface}).\n\n"
                 "Evil Twin needs two separate adapters: one to host the "
@@ -1569,7 +1569,7 @@ class App:
         if not ap:
             return
         if not self.alfa_pair:
-            messagebox.showwarning("N2-NG v2", "PINCER needs both Alfa adapters connected (AWUS036ACHM + AWUS1900).")
+            messagebox.showwarning("ATWA-NG", "PINCER needs both Alfa adapters connected (AWUS036ACHM + AWUS1900).")
             return
         scan_iface, attack_iface = self.alfa_pair
         if not self._confirm_attack(
@@ -1677,7 +1677,7 @@ class App:
     def _capture_copy_path(self):
         paths = self._selected_capture_paths()
         if not paths:
-            messagebox.showwarning("N2-NG v2", "Select a capture first.")
+            messagebox.showwarning("ATWA-NG", "Select a capture first.")
             return
         self.root.clipboard_clear()
         self.root.clipboard_append("\n".join(paths))
@@ -1686,7 +1686,7 @@ class App:
     def _capture_inspect(self):
         paths = self._selected_capture_paths()
         if not paths:
-            messagebox.showwarning("N2-NG v2", "Select a capture first.")
+            messagebox.showwarning("ATWA-NG", "Select a capture first.")
             return
 
         def work():
@@ -1741,7 +1741,7 @@ class App:
     def _capture_convert(self):
         paths = self._selected_capture_paths()
         if not paths:
-            messagebox.showwarning("N2-NG v2", "Select a .cap/.pcap/.pcapng file first.")
+            messagebox.showwarning("ATWA-NG", "Select a .cap/.pcap/.pcapng file first.")
             return
         from ..crack.convert import cap_to_22000
 
@@ -1761,7 +1761,7 @@ class App:
     def _capture_fix(self):
         paths = self._selected_capture_paths()
         if not paths:
-            messagebox.showwarning("N2-NG v2", "Select a capture to fix first.")
+            messagebox.showwarning("ATWA-NG", "Select a capture to fix first.")
             return
         from ..crack.convert import fix_capture
 
@@ -1776,7 +1776,7 @@ class App:
     def _capture_merge(self):
         paths = self._selected_capture_paths()
         if len(paths) < 2:
-            messagebox.showwarning("N2-NG v2", "Select at least two captures to merge.")
+            messagebox.showwarning("ATWA-NG", "Select at least two captures to merge.")
             return
         from ..crack.convert import merge_captures
 
@@ -1799,11 +1799,11 @@ class App:
         hash_paths = [p for p in selected if p.endswith(".22000")]
         cap_paths = [p for p in selected if p.lower().endswith((".cap", ".pcap", ".pcapng"))]
         if not hash_paths and not cap_paths:
-            messagebox.showwarning("N2-NG v2", "Select one or more .22000 hash files or capture files first.")
+            messagebox.showwarning("ATWA-NG", "Select one or more .22000 hash files or capture files first.")
             return
         wordlist = self.wordlist_var.get()
         if not wordlist:
-            messagebox.showwarning("N2-NG v2", "Set a wordlist first (File > Set Wordlist).")
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
             return
 
         if hash_paths:
@@ -1845,7 +1845,7 @@ class App:
         bssid_match = re.search(r"([0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})$", Path(paths[0]).parent.name)
         if not bssid_match:
             messagebox.showwarning(
-                "N2-NG v2",
+                "ATWA-NG",
                 "Couldn't determine the BSSID from this file's folder name — aircrack-ng needs one "
                 "to avoid its interactive network picker. Use 'Crack Handshakes (folder)...' instead, "
                 "which lets you type a BSSID directly.",
@@ -1876,7 +1876,7 @@ class App:
 
         plan = cleanup_handshakes(dry_run=True)
         if not plan.targets:
-            messagebox.showinfo("N2-NG v2", "No target folders with captures to clean up.")
+            messagebox.showinfo("ATWA-NG", "No target folders with captures to clean up.")
             return
         total_caps = sum(len(t.cap_files) for t in plan.targets)
         total_hashes = sum(len(t.hash_files) for t in plan.targets)
@@ -1933,7 +1933,7 @@ class App:
             if missing:
                 names = ", ".join(s.name for s in missing)
                 messagebox.showwarning(
-                    "N2-NG v2",
+                    "ATWA-NG",
                     f"Required tool(s) missing: {names}\n\nMonitor mode/scanning will fail until these are installed.",
                 )
             return
@@ -1954,8 +1954,8 @@ class App:
 
     def _show_about(self):
         messagebox.showinfo(
-            "About N2-NG v2",
-            f"N2-NG v2 — {__version__}\n\n"
+            "About ATWA-NG",
+            f"ATWA-NG — {__version__}\n\n"
             "Native Python WiFi attack toolkit. No airodump-ng/aireplay-ng/"
             "reaver/hashcat wrapping for attack logic — scan/deauth/PMKID/"
             "handshake/WEP/WPS are this project's own implementations.\n\n"

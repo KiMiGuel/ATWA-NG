@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from n2ngv2 import scanner as scanner_mod
-from n2ngv2.scan_airodump import AirodumpNotBuilt
-from n2ngv2.scanner import (
+from atwa import scanner as scanner_mod
+from atwa.scan_airodump import AirodumpNotBuilt
+from atwa.scanner import (
     AirodumpScanner,
     clear_airodump_outputs,
     latest_airodump_csv_path,
@@ -228,7 +228,7 @@ def test_scan_live_uses_a_fresh_tempdir_by_default(monkeypatch, tmp_path):
     scan_live("wlan0", duration=0.01)
     scan_live("wlan0", duration=0.01)
     assert seen_prefixes[0] != seen_prefixes[1]
-    assert "n2ngv2_scan_" in seen_prefixes[0]
+    assert "atwa_scan_" in seen_prefixes[0]
 
 
 def test_scan_live_cleans_up_its_tempdir(monkeypatch, tmp_path):

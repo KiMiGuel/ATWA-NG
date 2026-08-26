@@ -149,7 +149,7 @@ class OneShot:
         )
         time.sleep(0.2)
 
-        self.tempdir = tempfile.mkdtemp(prefix="n2ng2_wps_")
+        self.tempdir = tempfile.mkdtemp(prefix="atwa_wps_")
         self.tempconf = os.path.join(self.tempdir, "wpa_supplicant.conf")
         with open(self.tempconf, "w") as f:
             f.write(

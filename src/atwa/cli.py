@@ -1,4 +1,4 @@
-"""N2-NGv2 unified CLI — fully self-contained, no runtime dependency on
+"""ATWA-NG unified CLI — fully self-contained, no runtime dependency on
 n2ng2 (2026-08-25: the whole attack/crypto engine was physically copied
 in — attacks/, wep/, wps/, crack/, radio.py, scan.py, frames.py,
 storage.py, omni.py, secure.py, deps.py, housekeeping.py — see
@@ -14,7 +14,7 @@ STATUS.md's "made independent" entry for why and how).
     crack/) and imported here with plain relative imports, exactly like
     n2ng2's own cli.py did against its own copy of these modules. Every
     import in this file and everything it calls is relative (`.`/`..`)
-    — nothing is hardcoded to the package name "n2ngv2" or "n2ng2", so
+    — nothing is hardcoded to the package name "atwa" or "n2ng2", so
     this whole folder can be renamed or moved without breaking.
   - eviltwin, gui: new/adapted CLI wiring around the same copied engine.
 """
@@ -55,7 +55,7 @@ def _cmd_scan(args) -> int:
 
 
 def _cmd_gui(args) -> int:
-    """N2-NGv2's own copy of the GUI (src/n2ngv2/gui/), physically
+    """ATWA-NG's own copy of the GUI (src/atwa/gui/), physically
     copied from N2-NG_v2's gui/ package. All its imports are relative
     (`from ..radio import ...` etc.) pointing at this package's own
     copied modules, not n2ng2's — see gui/app.py."""
@@ -86,7 +86,7 @@ def _cmd_eviltwin(args) -> int:
 # --- Native attacks, ported verbatim from n2ng2/cli.py (same bodies,
 # same relative imports — n2ng2/cli.py's own imports were already
 # relative to its own package root, and this file sits at the same
-# depth in n2ngv2, so they resolve identically against the copied
+# depth in atwa, so they resolve identically against the copied
 # modules with zero changes required). ------------------------------
 
 def _cmd_deauth(args) -> int:
@@ -285,7 +285,7 @@ def _cmd_wash(args) -> int:
     let it run for `duration`, then SIGINT and collect what it printed
     (subprocess.run(timeout=) raises instead of doing this cleanly)."""
     if not WASH_BIN.exists():
-        print(f"error: {WASH_BIN} not built — see N2-NGv2/STATUS.md", file=sys.stderr)
+        print(f"error: {WASH_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
         return 1
     cmd = [str(WASH_BIN), "-i", args.iface]
     if args.channel:
@@ -346,7 +346,7 @@ def _cmd_crack_aircrack(args) -> int:
 def _cmd_deauth_aireplay(args) -> int:
     """v1-ported deauth: our vendored aireplay-ng, not scapy injection."""
     if not AIREPLAY_NG_BIN.exists():
-        print(f"error: {AIREPLAY_NG_BIN} not built — see N2-NGv2/STATUS.md", file=sys.stderr)
+        print(f"error: {AIREPLAY_NG_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
         return 1
     cmd = [str(AIREPLAY_NG_BIN), "-0", str(args.count), "-a", args.bssid]
     if args.client:
@@ -363,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     from . import __version__
 
     parser = argparse.ArgumentParser(
-        prog="n2ngv2", description="N2-NGv2 — v1 scanning + v2 native attacks, unified"
+        prog="atwa", description="ATWA-NG — v1 scanning + v2 native attacks, unified"
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -475,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_wps_oneshot)
 
-    p = sub.add_parser("gui", help="launch the desktop GUI (N2-NGv2's own copy, see gui/)")
+    p = sub.add_parser("gui", help="launch the desktop GUI (ATWA-NG's own copy, see gui/)")
     p.add_argument("--demo", action="store_true")
     p.set_defaults(func=_cmd_gui)
 

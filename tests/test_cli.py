@@ -7,33 +7,33 @@ import subprocess
 
 import pytest
 
-from n2ngv2 import cli as n2ngv2_cli
-from n2ngv2.cli import _run_bounded, build_parser
+from atwa import cli as atwa_cli
+from atwa.cli import _run_bounded, build_parser
 
 
 # --- argument parsing: every subcommand parses its documented shape --------
-# All handler functions are n2ngv2's own now (2026-08-25: the whole
+# All handler functions are atwa's own now (2026-08-25: the whole
 # attack/crypto engine was physically copied in, cli.py no longer
 # imports n2ng2 at all) — no more v2cli comparison needed.
 
 
 @pytest.mark.parametrize("argv,expected_func", [
-    (["scan", "wlan0"], n2ngv2_cli._cmd_scan),
-    (["deauth-aireplay", "wlan0", "AA:BB:CC:DD:EE:FF"], n2ngv2_cli._cmd_deauth_aireplay),
-    (["injection-test", "wlan0"], n2ngv2_cli._cmd_injection_test),
-    (["wash", "wlan0"], n2ngv2_cli._cmd_wash),
-    (["crack-aircrack", "cap.cap", "words.txt"], n2ngv2_cli._cmd_crack_aircrack),
-    (["deauth", "wlan0", "AA:BB:CC:DD:EE:FF"], n2ngv2_cli._cmd_deauth),
-    (["pmkid", "wlan0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"], n2ngv2_cli._cmd_pmkid),
-    (["handshake", "wlan0", "AA:BB:CC:DD:EE:FF"], n2ngv2_cli._cmd_handshake),
-    (["omni", "wlan0", "AA:BB:CC:DD:EE:FF"], n2ngv2_cli._cmd_omni),
-    (["smart", "wlan0", "AA:BB:CC:DD:EE:FF"], n2ngv2_cli._cmd_smart),
-    (["wep", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], n2ngv2_cli._cmd_wep),
-    (["wps-pixie", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], n2ngv2_cli._cmd_wps_pixie),
-    (["wps-oneshot", "wlan0", "AA:BB:CC:DD:EE:FF"], n2ngv2_cli._cmd_wps_oneshot),
-    (["gui"], n2ngv2_cli._cmd_gui),
-    (["crack", "hash.22000", "words.txt"], n2ngv2_cli._cmd_crack),
-    (["eviltwin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6"], n2ngv2_cli._cmd_eviltwin),
+    (["scan", "wlan0"], atwa_cli._cmd_scan),
+    (["deauth-aireplay", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth_aireplay),
+    (["injection-test", "wlan0"], atwa_cli._cmd_injection_test),
+    (["wash", "wlan0"], atwa_cli._cmd_wash),
+    (["crack-aircrack", "cap.cap", "words.txt"], atwa_cli._cmd_crack_aircrack),
+    (["deauth", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth),
+    (["pmkid", "wlan0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"], atwa_cli._cmd_pmkid),
+    (["handshake", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_handshake),
+    (["omni", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_omni),
+    (["smart", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_smart),
+    (["wep", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], atwa_cli._cmd_wep),
+    (["wps-pixie", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], atwa_cli._cmd_wps_pixie),
+    (["wps-oneshot", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_wps_oneshot),
+    (["gui"], atwa_cli._cmd_gui),
+    (["crack", "hash.22000", "words.txt"], atwa_cli._cmd_crack),
+    (["eviltwin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6"], atwa_cli._cmd_eviltwin),
 ])
 def test_subcommand_parses_and_wires_correct_handler(argv, expected_func):
     parser = build_parser()
@@ -120,36 +120,36 @@ def test_run_bounded_nonzero_exit_is_reported(monkeypatch):
 
 def test_deauth_aireplay_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aireplay-ng"
-    monkeypatch.setattr(n2ngv2_cli, "AIREPLAY_NG_BIN", missing)
+    monkeypatch.setattr(atwa_cli, "AIREPLAY_NG_BIN", missing)
     args = build_parser().parse_args(["deauth-aireplay", "wlan0", "AA:BB:CC:DD:EE:FF"])
-    rc = n2ngv2_cli._cmd_deauth_aireplay(args)
+    rc = atwa_cli._cmd_deauth_aireplay(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_crack_aircrack_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aircrack-ng"
-    monkeypatch.setattr(n2ngv2_cli, "AIRCRACK_NG_BIN", missing)
+    monkeypatch.setattr(atwa_cli, "AIRCRACK_NG_BIN", missing)
     args = build_parser().parse_args(["crack-aircrack", "cap.cap", "words.txt"])
-    rc = n2ngv2_cli._cmd_crack_aircrack(args)
+    rc = atwa_cli._cmd_crack_aircrack(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_wash_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "wash"
-    monkeypatch.setattr(n2ngv2_cli, "WASH_BIN", missing)
+    monkeypatch.setattr(atwa_cli, "WASH_BIN", missing)
     args = build_parser().parse_args(["wash", "wlan0"])
-    rc = n2ngv2_cli._cmd_wash(args)
+    rc = atwa_cli._cmd_wash(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_injection_test_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aireplay-ng"
-    monkeypatch.setattr(n2ngv2_cli, "AIREPLAY_NG_BIN", missing)
+    monkeypatch.setattr(atwa_cli, "AIREPLAY_NG_BIN", missing)
     args = build_parser().parse_args(["injection-test", "wlan0"])
-    rc = n2ngv2_cli._cmd_injection_test(args)
+    rc = atwa_cli._cmd_injection_test(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
@@ -176,24 +176,24 @@ class FakeLongRunningProc:
 def test_wash_sends_sigint_and_collects_output(monkeypatch, tmp_path):
     fake_bin = tmp_path / "wash"
     fake_bin.write_text("")
-    monkeypatch.setattr(n2ngv2_cli, "WASH_BIN", fake_bin)
+    monkeypatch.setattr(atwa_cli, "WASH_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
-    monkeypatch.setattr(n2ngv2_cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
 
     args = build_parser().parse_args(["wash", "wlan0", "--duration", "1"])
-    rc = n2ngv2_cli._cmd_wash(args)
+    rc = atwa_cli._cmd_wash(args)
     assert rc == 0
 
 
 def test_injection_test_sends_sigint_and_collects_output(monkeypatch, tmp_path):
     fake_bin = tmp_path / "aireplay-ng"
     fake_bin.write_text("")
-    monkeypatch.setattr(n2ngv2_cli, "AIREPLAY_NG_BIN", fake_bin)
+    monkeypatch.setattr(atwa_cli, "AIREPLAY_NG_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
-    monkeypatch.setattr(n2ngv2_cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
 
     args = build_parser().parse_args(["injection-test", "wlan0", "--duration", "1"])
-    rc = n2ngv2_cli._cmd_injection_test(args)
+    rc = atwa_cli._cmd_injection_test(args)
     assert rc == 0
 
 
@@ -203,7 +203,7 @@ def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
     in wash/injection-test."""
     fake_bin = tmp_path / "wash"
     fake_bin.write_text("")
-    monkeypatch.setattr(n2ngv2_cli, "WASH_BIN", fake_bin)
+    monkeypatch.setattr(atwa_cli, "WASH_BIN", fake_bin)
     captured = {}
 
     def fake_popen(cmd, **kwargs):
@@ -211,8 +211,8 @@ def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
         return FakeLongRunningProc(cmd, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(n2ngv2_cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
 
     args = build_parser().parse_args(["wash", "wlan0", "--duration", "1"])
-    n2ngv2_cli._cmd_wash(args)
+    atwa_cli._cmd_wash(args)
     assert captured.get("stdin") == subprocess.DEVNULL
