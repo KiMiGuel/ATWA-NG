@@ -96,9 +96,8 @@ atwa --version
    there: Inspect, Convert to 22000, Fix (malformed capture), Merge,
    Crack Selected, Copy Path, or the fuller **Crack Handshakes
    (folder)...** dialog (its own Run/Stop, streams live cracker output).
-6. Captures live at `~/hs/n2-ng/<SSID>_<BSSID>/` regardless of the
-   project's own name — that path is intentionally fixed across
-   renames.
+6. Captures live at `~/atwa-hs/<SSID>_<BSSID>/` — that path is
+   intentionally fixed across future renames.
 
 ## 5. CLI reference
 

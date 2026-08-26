@@ -1,9 +1,7 @@
 """Capture storage conventions: where captures live on disk.
 
-Ported from v1's capture_root()/sanitize_essid() (main.py:204-246) — this
-is original layout/naming logic, not a tool wrapper, so it's carried over
-directly rather than reimplemented. The path itself is a fixed convention
-(~/hs/n2-ng) the user relies on across sessions; do not change it.
+The path is a fixed convention (~/atwa-hs) so it's stable across
+sessions and renames going forward.
 """
 
 from __future__ import annotations
@@ -31,8 +29,8 @@ def user_home() -> Path:
 
 
 def capture_root(create: bool = True) -> Path:
-    """The fixed capture directory: ~/hs/n2-ng (real user home, not root's)."""
-    root = user_home() / "hs" / "n2-ng"
+    """The fixed capture directory: ~/atwa-hs (real user home, not root's)."""
+    root = user_home() / "atwa-hs"
     if create:
         root.mkdir(parents=True, exist_ok=True)
     return root

@@ -3,7 +3,7 @@ to one master file, per the user's own two-stage design — per-target
 merge first, then merge all targets together — deleting originals only
 after their replacement is verified on disk.
 
-capture_root() (~/hs/n2-ng) accumulates one folder per target seen, each
+capture_root() (~/atwa-hs) accumulates one folder per target seen, each
 holding its own raw captures and/or 22000 hash files from every attack
 run against it. That's real, fast-growing clutter (~70 target folders in
 normal use) with no cleanup path until now.
