@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Build/scan artifacts
+build/
+bin/
+graphify-out/
+
+# Captures and cracked credentials — never committed
+*.pcap
+*.pcapng
+*.cap
+*.hccapx
+*.22000

