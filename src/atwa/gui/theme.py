@@ -1,10 +1,21 @@
-"""Visual theme: v1's neon-green-on-black terminal look, polished.
+"""Visual theme: ATWA-NG's electric-blue-to-black identity.
 
-Same color identity as v1's THEME dict (main.py:34-42) — the point is a
-graphical *upgrade*, not a rebrand — but with a wider token set (panel_alt,
-border, muted) so buttons/panels/hover states have real depth instead of
-one flat panel color, plus consistent ttk styling for every widget class
-v1 left at Tk defaults.
+2026-08-26: rebranded off v1's neon-green-on-black palette to match the
+new ATWA-NG brand (electric blue fading to black). This swaps the color
+*values* only — every widget class still keys off the same semantic
+tokens (bg/panel/panel_alt/border/accent/etc.), so the rebrand is
+entirely contained here.
+
+Not yet a true pixel gradient: ttk widgets paint flat per-style
+backgrounds, not gradients, and retrofitting a real top-to-bottom canvas
+gradient behind the existing pack/grid layout would mean redoing how
+every frame is composited (each widget drawn as a canvas window instead
+of packed directly) — a bigger, riskier change than a color swap. This
+approximates the "electric blue up top, fading toward black" feel by
+making progressively deeper/lower content panels progressively darker
+(bg > panel > panel_alt, each a step closer to black), with the
+brightest blue reserved for accents/headings. A real smooth gradient is
+a legitimate follow-up once the logo's final colors are locked in.
 """
 
 from __future__ import annotations
@@ -13,18 +24,18 @@ import tkinter.font as tk_font
 from tkinter import ttk
 
 THEME = {
-    "bg": "#0a0f0a",
-    "panel": "#12170f",
-    "panel_alt": "#1b2318",
-    "border": "#2a3527",
-    "fg": "#d9ffd9",
-    "accent": "#39ff6a",
-    "accent_dim": "#1f8f3d",
-    "accent_text": "#00140a",
+    "bg": "#050b14",
+    "panel": "#03060c",
+    "panel_alt": "#010308",
+    "border": "#0d2b40",
+    "fg": "#d6f0ff",
+    "accent": "#00d9ff",
+    "accent_dim": "#0d6f96",
+    "accent_text": "#00131a",
     "warn": "#ffcc00",
     "error": "#ff5252",
-    "info": "#4dd2ff",
-    "muted": "#7f8f7a",
+    "info": "#66e0ff",
+    "muted": "#5590ad",
 }
 
 
