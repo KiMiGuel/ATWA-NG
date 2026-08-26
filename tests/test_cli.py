@@ -1,7 +1,7 @@
 """Tests for cli.py — argument parsing for all 17 subcommands, and the
 subprocess-handling logic (_run_bounded, the SIGINT-and-collect helpers
-in wash/injection-test) with subprocess mocked out. No hardware, no
-vendored binaries required to run this file."""
+in wps-recon/injection-test) with subprocess mocked out. No hardware,
+no vendored binaries required to run this file."""
 
 import subprocess
 
@@ -12,9 +12,7 @@ from atwa.cli import _run_bounded, build_parser
 
 
 # --- argument parsing: every subcommand parses its documented shape --------
-# All handler functions are atwa's own now (2026-08-25: the whole
-# attack/crypto engine was physically copied in, cli.py no longer
-# imports n2ng2 at all) — no more v2cli comparison needed.
+# All handler functions are atwa's own.
 
 
 @pytest.mark.parametrize("argv,expected_func", [

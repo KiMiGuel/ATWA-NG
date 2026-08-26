@@ -50,10 +50,9 @@ def _cmd_scan(args) -> int:
 
 
 def _cmd_gui(args) -> int:
-    """ATWA-NG's own copy of the GUI (src/atwa/gui/), physically
-    copied from N2-NG_v2's gui/ package. All its imports are relative
-    (`from ..radio import ...` etc.) pointing at this package's own
-    copied modules, not n2ng2's — see gui/app.py."""
+    """ATWA-NG's own desktop GUI (src/atwa/gui/). All its imports are
+    relative (`from ..radio import ...` etc.) pointing at this
+    package's own modules — see gui/app.py."""
     from .gui.app import main as gui_main
     from .gui.elevate import ensure_root
 
@@ -62,9 +61,9 @@ def _cmd_gui(args) -> int:
 
 
 def _cmd_eviltwin(args) -> int:
-    """EvilTwin was GUI-only in N2-NG_v2 (no CLI subcommand existed
-    yet); wiring run_eviltwin() (now this package's own copy, attacks/
-    eviltwin.py) into this CLI."""
+    """Wires run_eviltwin() (attacks/eviltwin.py) into the CLI, giving
+    the rogue-AP/captive-portal attack a scriptable entry point outside
+    the GUI."""
     from .attacks.eviltwin import run_eviltwin
     result = run_eviltwin(
         iface_ap=args.iface_ap, iface_mon=args.iface_mon,
@@ -78,11 +77,8 @@ def _cmd_eviltwin(args) -> int:
     return 1
 
 
-# --- Native attacks, ported verbatim from n2ng2/cli.py (same bodies,
-# same relative imports — n2ng2/cli.py's own imports were already
-# relative to its own package root, and this file sits at the same
-# depth in atwa, so they resolve identically against the copied
-# modules with zero changes required). ------------------------------
+# --- Native attacks: thin CLI wiring around this package's own
+# attacks/ implementations. --------------------------------------
 
 def _cmd_deauth(args) -> int:
     from .attacks.deauth import deauth
@@ -397,9 +393,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="give up after this long (default 1h; wordlist attacks can run long)")
     p.set_defaults(func=_cmd_crack_cap)
 
-    # Everything else: same argument shapes as n2ng2's original CLI,
-    # pointing at this package's own copied handler functions above
-    # (physically present now, not imported from n2ng2).
+    # Everything else: pointing at this package's own handler functions
+    # defined above.
     p = sub.add_parser("deauth", help="deauth flood (native scapy)")
     p.add_argument("iface")
     p.add_argument("bssid")

@@ -936,16 +936,16 @@ class App:
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_target_select(self, _event=None):
-        """Single click/selection: v1 parity restored 2026-08-26 (user's
-        explicit request — "I want it how n2-ng's works"). v1's single
-        click both previewed AND locked the channel in one step; a
-        2026-08-19 change split those into select-vs-double-click to stop
-        browsing from disrupting an active scan, but that also broke the
-        fast graph/capture-size feedback v1 had, since both of those only
+        """Single click/selection: originally this both previewed AND
+        locked the channel in one step; a 2026-08-19 change split those
+        into select-vs-double-click to stop browsing from disrupting an
+        active scan, but that also broke the fast graph/capture-size
+        feedback the original behavior had, since both of those only
         update quickly *because* locking restricts the scanner to one
-        channel and starts a real capture. Restoring single-click-locks to
-        get that behavior back; double-click still works too (redundant,
-        harmless — see _on_target_double_click)."""
+        channel and starts a real capture. Restored single-click-locks
+        2026-08-26 (explicit user request) to get that behavior back;
+        double-click still works too (redundant, harmless — see
+        _on_target_double_click)."""
         sel = self.tree.selection()
         if not sel:
             return
