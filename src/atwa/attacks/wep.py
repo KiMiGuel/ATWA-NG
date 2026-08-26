@@ -1,10 +1,9 @@
 """WEP attacks: fake authentication, ARP-request replay for IV harvesting,
 and turning captured frames into PTW sessions.
 
-Logic cherry-picked from aireplay-ng's documented behavior (-1 fake auth,
--3 ARP replay — see research/wep_attacks_dim03.md, sourced from
-aircrack-ng's own docs) and reimplemented natively here — not wrapping
-the aireplay-ng binary, matching this project's native-only mandate.
+Logic cherry-picked from documented fake-auth and ARP-replay attack
+behavior (see research/wep_attacks_dim03.md) and reimplemented natively
+here, matching this project's native-only mandate.
 
 Frame parsing reads raw bytes from the Dot11WEP layer onward rather than
 trusting scapy's `icv` IntField, matching this project's existing pattern
@@ -29,7 +28,7 @@ from ..wep.ptw import PTWVoteTable, compute_key
 # WEP ARP-based attack relies on (research/wep_attacks_dim02.md, dim06).
 ARP_KNOWN_PREFIX = bytes.fromhex("aaaa030000000806")
 
-# aireplay-ng's ARP-request size signature: 802.11 capture length (from
+# Known ARP-request size signature: 802.11 capture length (from
 # the Dot11 header onward, i.e. excluding RadioTap) for a WEP-encrypted
 # broadcast ARP request. 68 bytes from a wireless client, 86 from wired.
 ARP_LEN_WIRELESS = 68

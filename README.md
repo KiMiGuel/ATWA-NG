@@ -1,8 +1,9 @@
 # ATWA-NG
 
-WiFi security auditing tool: v1's scanning engine (vendored aircrack-ng
-source) combined with a native, from-scratch attack/crypto engine
-(WPS pixie-dust, PMKID, WEP PTW, handshake capture) and a Tkinter GUI.
+WiFi security auditing tool: a compiled scan engine, built from source
+directly in this repo, combined with a native, from-scratch attack/
+crypto engine (WPS pixie-dust, PMKID, WEP PTW, handshake capture) and a
+Tkinter GUI.
 
 For authorized security testing only — against networks and devices you
 own or are explicitly authorized to test.

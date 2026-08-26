@@ -1,5 +1,5 @@
-"""Tests for scan_airodump.py — CSV parsing (pure logic, no hardware)
-and the AirodumpNotBuilt guard. Fixture CSV text below is a trimmed,
+"""Tests for scan_engine.py — CSV parsing (pure logic, no hardware)
+and the ScanEngineNotBuilt guard. Fixture CSV text below is a trimmed,
 real airodump-ng-01.csv captured live during development (2026-08-25,
 wlan1), not synthesized, so field spacing/formatting matches what the
 real binary actually emits."""
@@ -8,14 +8,14 @@ import subprocess
 
 import pytest
 
-from atwa.scan_airodump import (
-    AIRODUMP_NG_BIN,
-    AirodumpNotBuilt,
+from atwa.scan_engine import (
+    HOPSCAN_BIN,
+    ScanEngineNotBuilt,
     Network,
     ScanResult,
     _csv_field,
     _format_bssid,
-    parse_airodump_csv,
+    parse_scan_csv,
     scan,
 )
 
@@ -45,22 +45,22 @@ def test_csv_field_all_empty_returns_empty_string():
     assert _csv_field({"a": "", "b": ""}, "a", "b") == ""
 
 
-# --- parse_airodump_csv: APs -------------------------------------------------
+# --- parse_scan_csv: APs -------------------------------------------------
 
 
 def test_parse_empty_text_returns_empty_result():
-    result = parse_airodump_csv("")
+    result = parse_scan_csv("")
     assert result.networks == []
     assert result.clients == []
 
 
 def test_parse_whitespace_only_returns_empty_result():
-    result = parse_airodump_csv("   \n\n  \n")
+    result = parse_scan_csv("   \n\n  \n")
     assert result.networks == []
 
 
 def test_parse_real_ap_section_fields():
-    result = parse_airodump_csv(REAL_AP_SECTION)
+    result = parse_scan_csv(REAL_AP_SECTION)
     assert len(result.networks) == 4
     infinitum = next(n for n in result.networks if n.essid == "INFINITUM2773")
     assert infinitum.bssid == "A0:95:7F:0E:F0:D4"
@@ -74,7 +74,7 @@ def test_parse_real_ap_section_fields():
 
 
 def test_parse_hidden_ssid_becomes_hidden_marker():
-    result = parse_airodump_csv(REAL_AP_SECTION)
+    result = parse_scan_csv(REAL_AP_SECTION)
     # Exactly one row in the fixture has a genuinely blank ESSID field
     # (22:87:EC:67:42:B1); the OPN row has a real ESSID, not blank.
     hidden = [n for n in result.networks if n.essid == "[Hidden]"]
@@ -83,7 +83,7 @@ def test_parse_hidden_ssid_becomes_hidden_marker():
 
 
 def test_parse_open_network_privacy():
-    result = parse_airodump_csv(REAL_AP_SECTION)
+    result = parse_scan_csv(REAL_AP_SECTION)
     open_net = next(n for n in result.networks if n.bssid == "BC:47:32:22:D1:29")
     assert open_net.privacy == "OPN"
     assert open_net.cipher == ""
@@ -95,16 +95,16 @@ def test_parse_length_prefixed_essid_becomes_hidden():
         "Cipher, Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key\n"
         "AA:BB:CC:DD:EE:FF, t, t,  6, 130, WPA2, CCMP, PSK, -50, 10, 0, 0.0.0.0, 8, <length:  8>, "
     )
-    result = parse_airodump_csv(csv_text)
+    result = parse_scan_csv(csv_text)
     assert result.networks[0].essid == "[Hidden]"
 
 
-# --- parse_airodump_csv: clients --------------------------------------------
+# --- parse_scan_csv: clients --------------------------------------------
 
 
 def test_parse_clients_section():
     text = REAL_AP_SECTION + "\n\n" + REAL_CLIENT_SECTION
-    result = parse_airodump_csv(text)
+    result = parse_scan_csv(text)
     assert len(result.clients) == 1
     client = result.clients[0]
     assert client.station == "1C:93:C4:36:D6:31"
@@ -114,7 +114,7 @@ def test_parse_clients_section():
 
 
 def test_parse_no_client_section_present():
-    result = parse_airodump_csv(REAL_AP_SECTION)
+    result = parse_scan_csv(REAL_AP_SECTION)
     assert result.clients == []
 
 
@@ -127,25 +127,25 @@ def test_parse_beacon_field_name_variants():
         "Cipher, Authentication, Power, #Beacons, #IV, LAN IP, ID-length, ESSID, Key\n"
         "AA:BB:CC:DD:EE:FF, t, t,  6, 130, WPA2, CCMP, PSK, -50, 99, 5, 0.0.0.0, 8, Test, "
     )
-    result = parse_airodump_csv(csv_text)
+    result = parse_scan_csv(csv_text)
     assert result.networks[0].beacons == "99"
     assert result.networks[0].iv == "5"
 
 
-# --- scan(): AirodumpNotBuilt guard ------------------------------------------
+# --- scan(): ScanEngineNotBuilt guard ------------------------------------------
 
 
 def test_scan_raises_when_binary_not_built(monkeypatch, tmp_path):
     fake_bin = tmp_path / "airodump-ng"  # deliberately not created
-    monkeypatch.setattr("atwa.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
-    with pytest.raises(AirodumpNotBuilt):
+    monkeypatch.setattr("atwa.scan_engine.HOPSCAN_BIN", fake_bin)
+    with pytest.raises(ScanEngineNotBuilt):
         scan("wlan0", duration=1.0)
 
 
 def test_scan_error_message_includes_build_instructions(monkeypatch, tmp_path):
     fake_bin = tmp_path / "airodump-ng"
-    monkeypatch.setattr("atwa.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
-    with pytest.raises(AirodumpNotBuilt, match="autoreconf"):
+    monkeypatch.setattr("atwa.scan_engine.HOPSCAN_BIN", fake_bin)
+    with pytest.raises(ScanEngineNotBuilt, match="autoreconf"):
         scan("wlan0", duration=1.0)
 
 
@@ -155,7 +155,7 @@ def test_scan_closes_stdin_on_the_subprocess(monkeypatch, tmp_path):
     stdin=subprocess.DEVNULL, or a real invocation can block forever."""
     fake_bin = tmp_path / "airodump-ng"
     fake_bin.write_text("")
-    monkeypatch.setattr("atwa.scan_airodump.AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr("atwa.scan_engine.HOPSCAN_BIN", fake_bin)
 
     captured_kwargs = {}
 
@@ -171,7 +171,7 @@ def test_scan_closes_stdin_on_the_subprocess(monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr("atwa.scan_airodump.time.sleep", lambda _s: None)
+    monkeypatch.setattr("atwa.scan_engine.time.sleep", lambda _s: None)
 
     scan("wlan0", duration=0.01)
     assert captured_kwargs.get("stdin") == subprocess.DEVNULL

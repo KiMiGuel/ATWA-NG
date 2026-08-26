@@ -80,8 +80,8 @@ atwa --version
    - Locks the adapter to that AP's channel (stops the broader
      multi-channel hop)
    - Starts the Signal graph updating (fills in as new readings arrive)
-   - Starts a real capture (vendored airodump-ng) restricted to that
-     AP, so the **capture size (KB)** readout next to the graph
+   - Starts a real capture (the vendored scan engine) restricted to
+     that AP, so the **capture size (KB)** readout next to the graph
      actually grows
    - Populates the **Clients** list as stations are seen talking to it
 
@@ -103,11 +103,11 @@ atwa --version
 ## 5. CLI reference
 
 ```
-atwa scan               v1-engine scan (vendored airodump-ng)
-atwa deauth-aireplay     v1-engine deauth (vendored aireplay-ng)
-atwa injection-test      test packet injection (vendored aireplay-ng -9)
-atwa wash                WPS AP recon (vendored wash, from reaver source)
-atwa crack-aircrack      crack via vendored aircrack-ng
+atwa scan               channel-hopping AP/client scan
+atwa deauth-inject       deauth flood via the injection engine
+atwa injection-test      test packet injection capability
+atwa wps-recon           WPS-enabled AP reconnaissance
+atwa crack-cap           crack a WPA/WEP capture directly (not hashcat)
 atwa deauth              deauth flood (native scapy)
 atwa pmkid               clientless PMKID capture
 atwa handshake           4-way handshake capture

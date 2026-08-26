@@ -758,7 +758,7 @@ class App:
             from ..scan import ScanResult, process_packet
 
             # One persistent hopper for the whole scanning session, not a
-            # fresh one per pass — matches how airodump-ng actually works
+            # fresh one per pass — matches how the compiled scan engine actually works
             # (confirmed via --help: one continuous hop loop, incremental
             # display, never restarts). The old design called scan() in a
             # loop, which builds a brand-new ChannelHopper every time — its
@@ -1022,7 +1022,7 @@ class App:
 
     def _lock_channel(self, ap: AccessPoint):
         """Stop hopping and park the adapter on ap's channel (v1 _lock_channel).
-        Also launches a real vendored-airodump-ng capture restricted to this
+        Also launches a real vendored scan-engine capture restricted to this
         bssid/channel (v1's Worker.start_lock, main.py:1267-1285) so the
         capture-size KB readout actually grows from real on-disk data, not
         just a static existing-file check."""
@@ -1051,22 +1051,22 @@ class App:
             self._start_lock_capture(ap)
 
     def _start_lock_capture(self, ap: AccessPoint):
-        """Real vendored airodump-ng, restricted to ap's channel+bssid,
+        """Real vendored scan engine, restricted to ap's channel+bssid,
         writing continuously to disk — same mechanism v1 used
         (Worker.start_lock). Stopped by _unlock_channel/_stop_lock_capture."""
         self._stop_lock_capture()
         import subprocess
 
-        from ..scan_airodump import AIRODUMP_NG_BIN
+        from ..scan_engine import HOPSCAN_BIN
         from ..storage import target_capture_dir
 
-        if not AIRODUMP_NG_BIN.exists():
-            self._log(f"lock capture skipped: {AIRODUMP_NG_BIN} not built")
+        if not HOPSCAN_BIN.exists():
+            self._log(f"lock capture skipped: {HOPSCAN_BIN} not built")
             return
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
         prefix = str(out_dir / "lock")
         cmd = [
-            str(AIRODUMP_NG_BIN), "--output-format", "pcap,csv", "--write-interval", "1",
+            str(HOPSCAN_BIN), "--output-format", "pcap,csv", "--write-interval", "1",
             "-w", prefix, "-c", str(ap.channel), "--bssid", ap.bssid, self.mon_iface,
         ]
         try:
@@ -1352,15 +1352,16 @@ class App:
         """DISABLED (2026-08-25): the native ICV-correction math doesn't
         work through WEP's RC4 encryption — confirmed by two independent
         offline verification tests, not just a live failure. See the
-        comment above attacks/wep_client.py's chopchop(). This project's
-        own vendored/self-compiled aireplay-ng already has a real, working
-        -4/--chopchop; driving it from here is future work."""
+        comment above attacks/wep_client.py's chopchop(). The project's
+        own compiled injection engine (vendor/aircrack-ng) already has a
+        real, working chopchop attack; driving it from here is future
+        work."""
         messagebox.showwarning(
             "ATWA-NG",
             "WEP Chopchop is disabled — its decryption math doesn't work "
             "against real WEP encryption (verified offline, not just "
-            "untested).\n\nThis project's own vendored aireplay-ng build "
-            "already has a working -4/--chopchop attack — use that for now.",
+            "untested).\n\nThe project's own compiled injection engine "
+            "already has a working chopchop attack — use that for now.",
         )
 
     def _attack_wps_null_pin(self):
@@ -2021,8 +2022,7 @@ class App:
         messagebox.showinfo(
             "About ATWA-NG",
             f"ATWA-NG — {__version__}\n\n"
-            "Native Python WiFi attack toolkit. No airodump-ng/aireplay-ng/"
-            "reaver/hashcat wrapping for attack logic — scan/deauth/PMKID/"
+            "Native Python WiFi attack toolkit. Scan/deauth/PMKID/"
             "handshake/WEP/WPS are this project's own implementations.\n\n"
             "Local-use tool. See STATUS.md for current feature status.",
         )

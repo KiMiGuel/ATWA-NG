@@ -1,6 +1,6 @@
-"""Tests for scanner.py — the ported AirodumpWorker/AirodumpScanner.
-Filesystem-path helpers are tested against real tmp_path directories
-(no hardware needed); subprocess interaction is mocked."""
+"""Tests for scanner.py — ScanEngineWorker. Filesystem-path helpers are
+tested against real tmp_path directories (no hardware needed);
+subprocess interaction is mocked."""
 
 import subprocess
 import time
@@ -8,13 +8,13 @@ import time
 import pytest
 
 from atwa import scanner as scanner_mod
-from atwa.scan_airodump import AirodumpNotBuilt
+from atwa.scan_engine import ScanEngineNotBuilt
 from atwa.scanner import (
-    AirodumpScanner,
-    clear_airodump_outputs,
-    latest_airodump_csv_path,
-    numbered_airodump_csv_paths,
-    numbered_airodump_output_paths,
+    ScanEngineWorker,
+    clear_scan_outputs,
+    latest_scan_csv_path,
+    numbered_scan_csv_paths,
+    numbered_scan_output_paths,
     scan_live,
 )
 
@@ -22,65 +22,65 @@ from atwa.scanner import (
 # --- path helpers (pure filesystem, hermetic) --------------------------------
 
 
-def test_numbered_airodump_csv_paths_finds_numbered_files(tmp_path):
+def test_numbered_scan_csv_paths_finds_numbered_files(tmp_path):
     prefix = tmp_path / "scan"
     (tmp_path / "scan-01.csv").write_text("")
     (tmp_path / "scan-02.csv").write_text("")
     (tmp_path / "scan-01.cap").write_text("")  # not csv, must be excluded
     (tmp_path / "other-01.csv").write_text("")  # different prefix, must be excluded
-    found = numbered_airodump_csv_paths(str(prefix))
+    found = numbered_scan_csv_paths(str(prefix))
     assert {p.name for p in found} == {"scan-01.csv", "scan-02.csv"}
 
 
-def test_numbered_airodump_csv_paths_empty_when_none_exist(tmp_path):
+def test_numbered_scan_csv_paths_empty_when_none_exist(tmp_path):
     prefix = tmp_path / "scan"
-    assert numbered_airodump_csv_paths(str(prefix)) == []
+    assert numbered_scan_csv_paths(str(prefix)) == []
 
 
-def test_latest_airodump_csv_path_picks_most_recent_mtime(tmp_path):
+def test_latest_scan_csv_path_picks_most_recent_mtime(tmp_path):
     prefix = tmp_path / "scan"
     older = tmp_path / "scan-01.csv"
     newer = tmp_path / "scan-02.csv"
     older.write_text("old")
     time.sleep(0.01)
     newer.write_text("new")
-    assert latest_airodump_csv_path(str(prefix)) == newer
+    assert latest_scan_csv_path(str(prefix)) == newer
 
 
-def test_latest_airodump_csv_path_none_when_no_files(tmp_path):
+def test_latest_scan_csv_path_none_when_no_files(tmp_path):
     prefix = tmp_path / "scan"
-    assert latest_airodump_csv_path(str(prefix)) is None
+    assert latest_scan_csv_path(str(prefix)) is None
 
 
-def test_numbered_airodump_output_paths_matches_any_extension(tmp_path):
+def test_numbered_scan_output_paths_matches_any_extension(tmp_path):
     prefix = tmp_path / "scan"
     (tmp_path / "scan-01.csv").write_text("")
     (tmp_path / "scan-01.cap").write_text("")
     (tmp_path / "scan-01.kismet.netxml").write_text("")
-    found = numbered_airodump_output_paths(str(prefix))
+    found = numbered_scan_output_paths(str(prefix))
     assert len(found) == 3
 
 
-def test_clear_airodump_outputs_deletes_prior_numbered_files(tmp_path):
+def test_clear_scan_outputs_deletes_prior_numbered_files(tmp_path):
     prefix = tmp_path / "scan"
     (tmp_path / "scan-01.csv").write_text("")
     (tmp_path / "scan-01.cap").write_text("")
     (tmp_path / "unrelated.txt").write_text("keep me")
-    clear_airodump_outputs(str(prefix))
+    clear_scan_outputs(str(prefix))
     remaining = {p.name for p in tmp_path.iterdir()}
     assert remaining == {"unrelated.txt"}
 
 
-def test_clear_airodump_outputs_noop_on_empty_dir(tmp_path):
+def test_clear_scan_outputs_noop_on_empty_dir(tmp_path):
     prefix = tmp_path / "scan"
-    clear_airodump_outputs(str(prefix))  # must not raise
+    clear_scan_outputs(str(prefix))  # must not raise
 
 
-# --- AirodumpScanner: command building (subprocess mocked) ------------------
+# --- ScanEngineWorker: command building (subprocess mocked) ------------------
 
 
 class FakeProc:
-    """Minimal stand-in for subprocess.Popen — enough for AirodumpScanner
+    """Minimal stand-in for subprocess.Popen — enough for ScanEngineWorker
     to drive without ever touching a real process or binary."""
 
     def __init__(self, cmd, **kwargs):
@@ -104,11 +104,11 @@ class FakeProc:
 
 @pytest.fixture
 def scanner_with_fake_binary(monkeypatch, tmp_path):
-    fake_bin = tmp_path / "airodump-ng"
+    fake_bin = tmp_path / "scan-engine"
     fake_bin.write_text("")
-    monkeypatch.setattr(scanner_mod, "AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr(scanner_mod, "HOPSCAN_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeProc)
-    s = AirodumpScanner()
+    s = ScanEngineWorker()
     yield s
     s.shutdown()
 
@@ -155,18 +155,18 @@ def test_start_lock_prefix_gets_lock_suffix(scanner_with_fake_binary, tmp_path):
 
 def test_popen_called_with_closed_stdin(scanner_with_fake_binary, tmp_path):
     """Regression test for the stdin-inheritance hang bug found during
-    code review — same fix required here as in scan_airodump.py's
+    code review — same fix required here as in scan_engine.py's
     scan()."""
     s = scanner_with_fake_binary
     s.start_scan("wlan0", "Both", str(tmp_path / "scan"))
     assert s._proc.kwargs.get("stdin") == subprocess.DEVNULL
 
 
-def test_raises_airodump_not_built_when_binary_missing(monkeypatch, tmp_path):
+def test_raises_scan_engine_not_built_when_binary_missing(monkeypatch, tmp_path):
     missing_bin = tmp_path / "does-not-exist"
-    monkeypatch.setattr(scanner_mod, "AIRODUMP_NG_BIN", missing_bin)
-    s = AirodumpScanner()
-    with pytest.raises(AirodumpNotBuilt):
+    monkeypatch.setattr(scanner_mod, "HOPSCAN_BIN", missing_bin)
+    s = ScanEngineWorker()
+    with pytest.raises(ScanEngineNotBuilt):
         s.start_scan("wlan0", "Both", str(tmp_path / "scan"))
     s.shutdown()
 
@@ -191,7 +191,7 @@ def test_resume_clears_paused_flag(scanner_with_fake_binary, tmp_path):
 
 
 def test_pause_is_noop_without_a_running_process():
-    s = AirodumpScanner()
+    s = ScanEngineWorker()
     s.pause()  # must not raise
     assert not s._paused.is_set()
     s.shutdown()
@@ -210,20 +210,20 @@ def test_get_latest_returns_a_copy_not_the_live_object(scanner_with_fake_binary)
 def test_scan_live_uses_a_fresh_tempdir_by_default(monkeypatch, tmp_path):
     """Regression test for the fixed-/tmp-path collision bug found during
     code review — default prefix must not be a shared fixed path."""
-    fake_bin = tmp_path / "airodump-ng"
+    fake_bin = tmp_path / "scan-engine"
     fake_bin.write_text("")
-    monkeypatch.setattr(scanner_mod, "AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr(scanner_mod, "HOPSCAN_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeProc)
     monkeypatch.setattr(scanner_mod.time, "sleep", lambda _s: None)
 
     seen_prefixes = []
-    orig_start_scan = AirodumpScanner.start_scan
+    orig_start_scan = ScanEngineWorker.start_scan
 
     def spy_start_scan(self, iface, band, prefix):
         seen_prefixes.append(prefix)
         return orig_start_scan(self, iface, band, prefix)
 
-    monkeypatch.setattr(AirodumpScanner, "start_scan", spy_start_scan)
+    monkeypatch.setattr(ScanEngineWorker, "start_scan", spy_start_scan)
 
     scan_live("wlan0", duration=0.01)
     scan_live("wlan0", duration=0.01)
@@ -232,9 +232,9 @@ def test_scan_live_uses_a_fresh_tempdir_by_default(monkeypatch, tmp_path):
 
 
 def test_scan_live_cleans_up_its_tempdir(monkeypatch, tmp_path):
-    fake_bin = tmp_path / "airodump-ng"
+    fake_bin = tmp_path / "scan-engine"
     fake_bin.write_text("")
-    monkeypatch.setattr(scanner_mod, "AIRODUMP_NG_BIN", fake_bin)
+    monkeypatch.setattr(scanner_mod, "HOPSCAN_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeProc)
     monkeypatch.setattr(scanner_mod.time, "sleep", lambda _s: None)
 

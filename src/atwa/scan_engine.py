@@ -1,21 +1,17 @@
-"""Scanning via a vendored, locally-compiled airodump-ng — not the distro
-package, not a thin wrapper around it either: this module owns the CSV
-parsing and process lifecycle itself (ported from n2-ng v1's
-parse_airodump_csv/run_airodump, adapted), and points at OUR OWN build
-in .simulation/vendor/aircrack-ng/airodump-ng, built from vendored
-source in this same tree (see .simulation/vendor/aircrack-ng).
+"""Scanning via a locally-compiled scan engine — this module owns the
+CSV parsing and process lifecycle itself, and points at OUR OWN build
+in vendor/aircrack-ng, compiled from source in this same tree (see
+vendor/aircrack-ng).
 
-Why airodump-ng at all, after v2's from-scratch scapy scanner: confirmed
-2026-08-25 (N2-NG_v2/CHECKPOINT.md, session s9-s10) that mt76x0u's
-monitor-mode RX is 2.4GHz-only at the kernel/driver level — proven with
-scapy AND the distro airodump-ng binary, both got 0 packets on 5GHz.
-Recompiling airodump-ng from source does not change that (same kernel
-driver underneath); this module doesn't claim to fix 5GHz on mt76x0u.
-What it does buy: airodump-ng's mature, decade-tested channel-hop and
-capture engine, which handles quirky chipsets more robustly than a
-from-scratch reimplementation in general, and gives direct access to
-patch/rebuild the actual capture engine's C source in-tree if a real,
-verified driver-specific fix is ever found.
+Why a compiled engine at all, alongside the from-scratch scapy scanner:
+its mature, decade-tested channel-hop and capture logic handles quirky
+chipsets more robustly than a from-scratch reimplementation in general,
+and gives direct access to patch/rebuild the actual capture engine's C
+source in-tree if a driver-specific fix is ever needed. (Note: an
+earlier mt76x0u 5GHz RX issue was root-caused to a stuck USB device
+state, not a real driver/hardware limit — cleared by a physical
+unplug/replug; both adapters are confirmed capable of 5GHz monitor-mode
+RX.)
 """
 
 from __future__ import annotations
@@ -32,11 +28,11 @@ from pathlib import Path
 
 # Our own vendored, locally-compiled binary — never the system package.
 _VENDOR_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "aircrack-ng"
-AIRODUMP_NG_BIN = _VENDOR_ROOT / "airodump-ng"
+HOPSCAN_BIN = _VENDOR_ROOT / "airodump-ng"
 
 
-class AirodumpNotBuilt(RuntimeError):
-    """Raised when the vendored airodump-ng binary hasn't been built yet."""
+class ScanEngineNotBuilt(RuntimeError):
+    """Raised when the vendored scan-engine binary hasn't been built yet."""
 
 
 @dataclass
@@ -87,10 +83,10 @@ def _csv_field(row: dict, *keys: str) -> str:
     return ""
 
 
-def parse_airodump_csv(text: str) -> ScanResult:
-    """Ported from n2-ng v1's main.py:parse_airodump_csv — same field
-    mapping and hidden-SSID handling, adapted to return typed dataclasses
-    instead of raw dicts."""
+def parse_scan_csv(text: str) -> ScanResult:
+    """Same field mapping and hidden-SSID handling as the original scan
+    engine's CSV output, adapted to return typed dataclasses instead of
+    raw dicts."""
     result = ScanResult()
     text = text.strip()
     if not text:
@@ -133,18 +129,18 @@ def parse_airodump_csv(text: str) -> ScanResult:
 
 def scan(iface: str, duration: float = 10.0, channel: int | None = None,
           band: str | None = None) -> ScanResult:
-    """Run our vendored airodump-ng for `duration` seconds and parse its
+    """Run the vendored scan engine for `duration` seconds and parse its
     CSV output. `channel` locks to one channel; `band` is 'a' (5GHz),
-    'bg' (2.4GHz), or None (both, airodump-ng's own hop list)."""
-    if not AIRODUMP_NG_BIN.exists():
-        raise AirodumpNotBuilt(
-            f"{AIRODUMP_NG_BIN} not found — build it first: "
+    'bg' (2.4GHz), or None (both, the engine's own hop list)."""
+    if not HOPSCAN_BIN.exists():
+        raise ScanEngineNotBuilt(
+            f"{HOPSCAN_BIN} not found — build it first: "
             f"cd {_VENDOR_ROOT} && autoreconf -i && ./configure && make"
         )
 
     with tempfile.TemporaryDirectory(prefix="atwa_scan_") as tmp:
         prefix = os.path.join(tmp, "scan")
-        cmd = [str(AIRODUMP_NG_BIN), "--output-format", "csv",
+        cmd = [str(HOPSCAN_BIN), "--output-format", "csv",
                "--write-interval", "1", "-w", prefix]
         if channel is not None:
             cmd += ["-c", str(channel)]
@@ -168,4 +164,4 @@ def scan(iface: str, duration: float = 10.0, channel: int | None = None,
         csv_path = Path(f"{prefix}-01.csv")
         if not csv_path.exists():
             return ScanResult()
-        return parse_airodump_csv(csv_path.read_text(errors="replace"))
+        return parse_scan_csv(csv_path.read_text(errors="replace"))

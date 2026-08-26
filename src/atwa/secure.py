@@ -1,8 +1,6 @@
-"""Security-profile parsing (RSN/WPA IEs, PMF) and attack recommendation.
-
-Native port of v1's security_profile/recommend_attack (main.py:387-443),
-sourced from beacon/probe-response IEs instead of airodump CSV rows.
-See research/PORT_FROM_V1.md sections 1-2.
+"""Security-profile parsing (RSN/WPA IEs, PMF) and attack recommendation,
+sourced directly from beacon/probe-response IEs rather than parsed scan
+output.
 """
 
 from __future__ import annotations

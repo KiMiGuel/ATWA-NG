@@ -1,7 +1,6 @@
 """Capture file utilities: convert to 22000 (John's wpapsk format), repair,
 and merge captures. hcxpcapngtool/pcapfix/mergecap are generic pcap-file
-tools (not attack-logic wrappers like airodump/aireplay/reaver), same
-category as John itself — fine to shell out to, per the project's
+tools, not attack-logic — fine to shell out to, per the project's
 native-attack-logic (not native-file-format-parsing) scope.
 """
 

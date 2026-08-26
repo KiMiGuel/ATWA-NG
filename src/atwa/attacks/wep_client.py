@@ -185,18 +185,16 @@ def hirte(
 # validated wep_encrypt()) — CRC-32 "un-append" is only a valid inverse over
 # a true cleartext CRC register, and that identity does not commute through
 # an independent keystream XOR at each byte position. Reimplementing this
-# correctly needs the same derivation aircrack-ng's own do_attack_chopchop()
-# uses (KoreK, 2004) routed through RC4, not just a bare CRC reversal.
+# correctly needs the same KoreK (2004) derivation routed through RC4, not
+# just a bare CRC reversal.
 #
-# The real fix: this project already vendors and compiles the source that
-# has a working implementation — vendor/aircrack-ng/src/aireplay-ng/
-# aireplay-ng.c, do_attack_chopchop() (confirmed present in this tree's
-# source, wired to `-4`/`--chopchop`) — the same self-built binary this
-# project already uses for deauth-aireplay/wash/crack-aircrack in cli.py,
-# not a third-party tool being wrapped as a fallback. Driving it (it
-# prompts interactively for "use this packet?"/keeps candidate frames)
-# needs live hardware to get the interaction right, so it's not attempted
-# here.
+# The real fix: this project already vendors and compiles a working
+# chopchop implementation (vendor/aircrack-ng, wired to `-4`/`--chopchop`)
+# — the same self-built binary this project already uses elsewhere in
+# cli.py, not a third-party tool being wrapped as a fallback. Driving it
+# (it prompts interactively for "use this packet?"/keeps candidate
+# frames) needs live hardware to get the interaction right, so it's not
+# attempted here.
 
 
 def chopchop(
@@ -215,13 +213,13 @@ def chopchop(
     The native ICV-correction math never worked correctly (confirmed via
     two independent offline tests, not just a live failure), so this raises
     instead of running a guess loop that could never succeed against a real
-    AP. This project's own vendored/self-compiled aireplay-ng already has a
-    real, working `-4`/`--chopchop` — use that until this is properly
+    AP. This project's own vendored/self-compiled injection engine already
+    has a real, working chopchop attack — use that until this is properly
     reimplemented or driven from here.
     """
     raise NotImplementedError(
         "chopchop is disabled: its WEP ICV-correction math doesn't work "
         "through RC4 encryption (verified offline, not just untested) — see "
         "the comment above this function. This project's own vendored "
-        "aireplay-ng already has a working -4/--chopchop attack."
+        "injection engine already has a working chopchop attack."
     )

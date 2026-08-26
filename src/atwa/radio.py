@@ -53,18 +53,17 @@ def get_driver(iface: str) -> str | None:
 # generic "any two adapters" feature. Confirmed live: wlan1=mt76x0u,
 # wlan0=rtw88_8814au.
 #
-# CORRECTION (2026-08-25): this used to justify mt76x0u as the scan
-# adapter for its "wider scan range." That's disproven — confirmed live
-# with a controlled A/B test (scapy AsyncSniffer, then independently
-# with airodump-ng itself) that mt76x0u receives ZERO 802.11 frames on
-# any 5GHz channel in monitor mode on this hardware (1339 packets/8s on
-# 2.4GHz ch6 vs 0 packets/8s on 5GHz ch36, identical code/interface).
-# rtw88_8814au was tested the same way and captures 5GHz beacons fine.
-# So as configured, PINCER's scan adapter (mt76x0u) is 2.4GHz-only for
-# monitor-mode RX; the attack adapter (rtw88_8814au) actually has the
-# wider real-world band coverage. Left the role assignment as-is here
-# since swapping it is a design decision, not a bugfix — flagged to the
-# user rather than changed unilaterally.
+# CORRECTION (2026-08-26): an earlier note here claimed mt76x0u
+# couldn't receive 5GHz frames in monitor mode at all, based on a
+# controlled A/B test that consistently got 0 packets on 5GHz vs.
+# thousands on 2.4GHz. That was wrong — the real cause was a stuck USB
+# device state left over from a power outage, not a driver/hardware
+# limit; a physical unplug/replug cleared it, and a fresh test
+# immediately succeeded on 5GHz. Both adapters are confirmed capable of
+# 5GHz monitor-mode RX. The role assignment below (mt76x0u=scan,
+# rtw88_8814au=attack) is unchanged — that's a design choice, not tied
+# to this correction — but don't cite the old "mt76x0u is 2.4GHz-only"
+# claim as a reason for it.
 ALFA_SCAN_DRIVERS = {"mt76x0u"}
 ALFA_ATTACK_DRIVERS = {"rtw88_8814au"}
 
@@ -244,8 +243,8 @@ def set_channel(iface: str, channel: int) -> None:
     """Set the radio channel on a monitor-mode interface.
 
     Sets it at the PHY level (`iw phy <phy> set channel`, NL80211_CMD_SET_WIPHY
-    — what real airodump-ng's linux_set_channel_nl80211 actually does), not
-    the interface level (`iw dev <iface> set channel`, NL80211_CMD_SET_CHANNEL)
+    — the correct netlink call for this), not the interface level
+    (`iw dev <iface> set channel`, NL80211_CMD_SET_CHANNEL)
     this used before. Confirmed live (2026-08-25): on wlan0 (rtw88_8814au),
     the interface-level command silently "succeeded" (iw reported the new
     channel, no error) while the radio never actually retuned — a clean,

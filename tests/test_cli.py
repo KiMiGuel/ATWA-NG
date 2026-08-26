@@ -19,10 +19,10 @@ from atwa.cli import _run_bounded, build_parser
 
 @pytest.mark.parametrize("argv,expected_func", [
     (["scan", "wlan0"], atwa_cli._cmd_scan),
-    (["deauth-aireplay", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth_aireplay),
+    (["deauth-inject", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth_inject),
     (["injection-test", "wlan0"], atwa_cli._cmd_injection_test),
-    (["wash", "wlan0"], atwa_cli._cmd_wash),
-    (["crack-aircrack", "cap.cap", "words.txt"], atwa_cli._cmd_crack_aircrack),
+    (["wps-recon", "wlan0"], atwa_cli._cmd_wps_recon),
+    (["crack-cap", "cap.cap", "words.txt"], atwa_cli._cmd_crack_cap),
     (["deauth", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth),
     (["pmkid", "wlan0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"], atwa_cli._cmd_pmkid),
     (["handshake", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_handshake),
@@ -57,13 +57,13 @@ def test_scan_rejects_invalid_band():
         build_parser().parse_args(["scan", "wlan0", "--band", "60GHz"])
 
 
-def test_deauth_aireplay_default_timeout_is_bounded():
-    args = build_parser().parse_args(["deauth-aireplay", "wlan0", "AA:BB:CC:DD:EE:FF"])
+def test_deauth_inject_default_timeout_is_bounded():
+    args = build_parser().parse_args(["deauth-inject", "wlan0", "AA:BB:CC:DD:EE:FF"])
     assert args.timeout == 30.0
 
 
 def test_crack_aircrack_optional_bssid_defaults_none():
-    args = build_parser().parse_args(["crack-aircrack", "cap.cap", "words.txt"])
+    args = build_parser().parse_args(["crack-cap", "cap.cap", "words.txt"])
     assert args.bssid is None
 
 
@@ -115,39 +115,39 @@ def test_run_bounded_nonzero_exit_is_reported(monkeypatch):
     assert err == "boom"
 
 
-# --- _cmd_deauth_aireplay / _cmd_crack_aircrack: missing-binary guard -------
+# --- _cmd_deauth_inject / _cmd_crack_cap: missing-binary guard -------
 
 
-def test_deauth_aireplay_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
+def test_deauth_inject_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aireplay-ng"
-    monkeypatch.setattr(atwa_cli, "AIREPLAY_NG_BIN", missing)
-    args = build_parser().parse_args(["deauth-aireplay", "wlan0", "AA:BB:CC:DD:EE:FF"])
-    rc = atwa_cli._cmd_deauth_aireplay(args)
+    monkeypatch.setattr(atwa_cli, "INJECTOR_BIN", missing)
+    args = build_parser().parse_args(["deauth-inject", "wlan0", "AA:BB:CC:DD:EE:FF"])
+    rc = atwa_cli._cmd_deauth_inject(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_crack_aircrack_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aircrack-ng"
-    monkeypatch.setattr(atwa_cli, "AIRCRACK_NG_BIN", missing)
-    args = build_parser().parse_args(["crack-aircrack", "cap.cap", "words.txt"])
-    rc = atwa_cli._cmd_crack_aircrack(args)
+    monkeypatch.setattr(atwa_cli, "CAPCRACK_BIN", missing)
+    args = build_parser().parse_args(["crack-cap", "cap.cap", "words.txt"])
+    rc = atwa_cli._cmd_crack_cap(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_wash_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "wash"
-    monkeypatch.setattr(atwa_cli, "WASH_BIN", missing)
-    args = build_parser().parse_args(["wash", "wlan0"])
-    rc = atwa_cli._cmd_wash(args)
+    monkeypatch.setattr(atwa_cli, "WPSRECON_BIN", missing)
+    args = build_parser().parse_args(["wps-recon", "wlan0"])
+    rc = atwa_cli._cmd_wps_recon(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_injection_test_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aireplay-ng"
-    monkeypatch.setattr(atwa_cli, "AIREPLAY_NG_BIN", missing)
+    monkeypatch.setattr(atwa_cli, "INJECTOR_BIN", missing)
     args = build_parser().parse_args(["injection-test", "wlan0"])
     rc = atwa_cli._cmd_injection_test(args)
     assert rc == 1
@@ -176,19 +176,19 @@ class FakeLongRunningProc:
 def test_wash_sends_sigint_and_collects_output(monkeypatch, tmp_path):
     fake_bin = tmp_path / "wash"
     fake_bin.write_text("")
-    monkeypatch.setattr(atwa_cli, "WASH_BIN", fake_bin)
+    monkeypatch.setattr(atwa_cli, "WPSRECON_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
     monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
 
-    args = build_parser().parse_args(["wash", "wlan0", "--duration", "1"])
-    rc = atwa_cli._cmd_wash(args)
+    args = build_parser().parse_args(["wps-recon", "wlan0", "--duration", "1"])
+    rc = atwa_cli._cmd_wps_recon(args)
     assert rc == 0
 
 
 def test_injection_test_sends_sigint_and_collects_output(monkeypatch, tmp_path):
     fake_bin = tmp_path / "aireplay-ng"
     fake_bin.write_text("")
-    monkeypatch.setattr(atwa_cli, "AIREPLAY_NG_BIN", fake_bin)
+    monkeypatch.setattr(atwa_cli, "INJECTOR_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
     monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
 
@@ -199,11 +199,11 @@ def test_injection_test_sends_sigint_and_collects_output(monkeypatch, tmp_path):
 
 def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
     """Regression test: the same stdin-inheritance hang class of bug,
-    already found and fixed once for deauth-aireplay — must not recur
+    already found and fixed once for deauth-inject — must not recur
     in wash/injection-test."""
     fake_bin = tmp_path / "wash"
     fake_bin.write_text("")
-    monkeypatch.setattr(atwa_cli, "WASH_BIN", fake_bin)
+    monkeypatch.setattr(atwa_cli, "WPSRECON_BIN", fake_bin)
     captured = {}
 
     def fake_popen(cmd, **kwargs):
@@ -213,6 +213,6 @@ def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
 
-    args = build_parser().parse_args(["wash", "wlan0", "--duration", "1"])
-    atwa_cli._cmd_wash(args)
+    args = build_parser().parse_args(["wps-recon", "wlan0", "--duration", "1"])
+    atwa_cli._cmd_wps_recon(args)
     assert captured.get("stdin") == subprocess.DEVNULL

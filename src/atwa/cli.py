@@ -1,22 +1,17 @@
-"""ATWA-NG unified CLI — fully self-contained, no runtime dependency on
-n2ng2 (2026-08-25: the whole attack/crypto engine was physically copied
-in — attacks/, wep/, wps/, crack/, radio.py, scan.py, frames.py,
-storage.py, omni.py, secure.py, deps.py, housekeeping.py — see
-STATUS.md's "made independent" entry for why and how).
+"""ATWA-NG unified CLI — fully self-contained, no external runtime
+dependencies on any other project's code.
 
-  - scan: v1's real airodump-ng-driven scanning engine, ported (scanner.py),
-    running our own vendored/locally-compiled airodump-ng, not the distro one.
-  - deauth-aireplay: v1's aireplay-ng-driven deauth, ported the same way,
-    running our vendored aireplay-ng.
+  - scan: channel-hopping AP/client discovery, backed by a
+    locally-compiled scanning engine (scanner.py).
+  - deauth-inject, injection-test, wps-recon, crack-cap: packet-injection
+    and cracking paths backed by locally-compiled engines in vendor/.
   - deauth, pmkid, handshake, omni, smart, wep, wps-pixie, wps-oneshot,
-    crack: N2-NG_v2's native-Python attacks — same code, same bodies,
-    physically present in this package now (see attacks/, wep/, wps/,
-    crack/) and imported here with plain relative imports, exactly like
-    n2ng2's own cli.py did against its own copy of these modules. Every
-    import in this file and everything it calls is relative (`.`/`..`)
-    — nothing is hardcoded to the package name "atwa" or "n2ng2", so
-    this whole folder can be renamed or moved without breaking.
-  - eviltwin, gui: new/adapted CLI wiring around the same copied engine.
+    crack: native-Python attack implementations (attacks/, wep/, wps/,
+    crack/), imported here with plain relative imports (`.`/`..`) —
+    nothing is hardcoded to the package name, so this whole folder can
+    be renamed or moved without breaking.
+  - eviltwin, gui: rogue-AP/captive-portal and desktop GUI wiring around
+    the same engine.
 """
 
 from __future__ import annotations
@@ -28,21 +23,21 @@ import sys
 import time
 from pathlib import Path
 
-from .scan_airodump import AIRODUMP_NG_BIN, AirodumpNotBuilt
+from .scan_engine import HOPSCAN_BIN, ScanEngineNotBuilt
 from .scanner import scan_live
 
 _VENDOR_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "aircrack-ng"
 _REAVER_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "reaver" / "src"
-AIREPLAY_NG_BIN = _VENDOR_ROOT / "aireplay-ng"
-AIRCRACK_NG_BIN = _VENDOR_ROOT / "aircrack-ng"
-WASH_BIN = _REAVER_ROOT / "wash"
+INJECTOR_BIN = _VENDOR_ROOT / "aireplay-ng"
+CAPCRACK_BIN = _VENDOR_ROOT / "aircrack-ng"
+WPSRECON_BIN = _REAVER_ROOT / "wash"
 
 
 def _cmd_scan(args) -> int:
-    """v1-ported scan: our vendored airodump-ng, not the scapy hopper."""
+    """Locally-compiled scan engine, not the scapy hopper."""
     try:
         result = scan_live(args.iface, duration=args.duration, band=args.band)
-    except AirodumpNotBuilt as e:
+    except ScanEngineNotBuilt as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     for n in sorted(result.networks, key=lambda n: n.bssid):
@@ -250,16 +245,16 @@ def _cmd_crack(args) -> int:
 
 
 def _cmd_injection_test(args) -> int:
-    """v1-engine injection test: aireplay-ng's own -9 test mode, our
-    vendored binary. Confirms the adapter can actually inject frames
-    (not just receive) against nearby APs. Runs indefinitely testing
-    each AP it finds (confirmed live — cut off mid-test by an external
-    timeout still showed real progress, e.g. 25/30 pings, 83% success),
-    so same SIGINT-and-collect pattern as wash, not subprocess.run(timeout=)."""
-    if not AIREPLAY_NG_BIN.exists():
-        print(f"error: {AIREPLAY_NG_BIN} not built", file=sys.stderr)
+    """Injection self-test mode: confirms the adapter can actually
+    inject frames (not just receive) against nearby APs. Runs
+    indefinitely testing each AP it finds (confirmed live — cut off
+    mid-test by an external timeout still showed real progress, e.g.
+    25/30 pings, 83% success), so uses a SIGINT-and-collect pattern
+    rather than subprocess.run(timeout=)."""
+    if not INJECTOR_BIN.exists():
+        print(f"error: {INJECTOR_BIN} not built", file=sys.stderr)
         return 1
-    cmd = [str(AIREPLAY_NG_BIN), "-9"]
+    cmd = [str(INJECTOR_BIN), "-9"]
     if args.bssid:
         cmd += ["-a", args.bssid]
     cmd.append(args.iface)
@@ -278,16 +273,15 @@ def _cmd_injection_test(args) -> int:
     return 0
 
 
-def _cmd_wash(args) -> int:
-    """WPS AP recon via our vendored wash (reaver-wps-fork-t6x, built
-    from source alongside reaver — same binary, argv[0]-dispatched).
-    wash runs continuously like airodump-ng, no natural exit — launch,
-    let it run for `duration`, then SIGINT and collect what it printed
+def _cmd_wps_recon(args) -> int:
+    """WPS-enabled AP reconnaissance via a locally-compiled recon
+    engine. Runs continuously, no natural exit — launch, let it run for
+    `duration`, then SIGINT and collect what it printed
     (subprocess.run(timeout=) raises instead of doing this cleanly)."""
-    if not WASH_BIN.exists():
-        print(f"error: {WASH_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
+    if not WPSRECON_BIN.exists():
+        print(f"error: {WPSRECON_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
         return 1
-    cmd = [str(WASH_BIN), "-i", args.iface]
+    cmd = [str(WPSRECON_BIN), "-i", args.iface]
     if args.channel:
         cmd += ["-c", str(args.channel)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -306,11 +300,11 @@ def _cmd_wash(args) -> int:
 
 
 def _run_bounded(cmd: list[str], timeout: float) -> tuple[int, str, str]:
-    """subprocess.run with no timeout is a real hang risk here: aireplay-ng
-    prints "Waiting for beacon frame" and blocks indefinitely if the
-    target BSSID never shows up on the current channel (wrong channel,
-    AP gone, typo'd MAC). Bounded so that case fails cleanly instead of
-    hanging the whole command forever."""
+    """subprocess.run with no timeout is a real hang risk here: the
+    injection engine prints "Waiting for beacon frame" and blocks
+    indefinitely if the target BSSID never shows up on the current
+    channel (wrong channel, AP gone, typo'd MAC). Bounded so that case
+    fails cleanly instead of hanging the whole command forever."""
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
@@ -325,14 +319,14 @@ def _run_bounded(cmd: list[str], timeout: float) -> tuple[int, str, str]:
         )
 
 
-def _cmd_crack_aircrack(args) -> int:
-    """WPA/WEP cracking via our vendored aircrack-ng binary — an
-    additional backend alongside John (v2's existing `crack` command),
+def _cmd_crack_cap(args) -> int:
+    """WPA/WEP cracking via a locally-compiled cracking engine — an
+    additional backend alongside John (the existing `crack` command),
     explicitly not hashcat per the user's direction."""
-    if not AIRCRACK_NG_BIN.exists():
-        print(f"error: {AIRCRACK_NG_BIN} not built", file=sys.stderr)
+    if not CAPCRACK_BIN.exists():
+        print(f"error: {CAPCRACK_BIN} not built", file=sys.stderr)
         return 1
-    cmd = [str(AIRCRACK_NG_BIN), "-w", args.wordlist]
+    cmd = [str(CAPCRACK_BIN), "-w", args.wordlist]
     if args.bssid:
         cmd += ["-b", args.bssid]
     cmd.append(args.capfile)
@@ -343,12 +337,12 @@ def _cmd_crack_aircrack(args) -> int:
     return rc
 
 
-def _cmd_deauth_aireplay(args) -> int:
-    """v1-ported deauth: our vendored aireplay-ng, not scapy injection."""
-    if not AIREPLAY_NG_BIN.exists():
-        print(f"error: {AIREPLAY_NG_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
+def _cmd_deauth_inject(args) -> int:
+    """Locally-compiled injection engine, not scapy injection."""
+    if not INJECTOR_BIN.exists():
+        print(f"error: {INJECTOR_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
         return 1
-    cmd = [str(AIREPLAY_NG_BIN), "-0", str(args.count), "-a", args.bssid]
+    cmd = [str(INJECTOR_BIN), "-0", str(args.count), "-a", args.bssid]
     if args.client:
         cmd += ["-c", args.client]
     cmd.append(args.iface)
@@ -363,45 +357,45 @@ def build_parser() -> argparse.ArgumentParser:
     from . import __version__
 
     parser = argparse.ArgumentParser(
-        prog="atwa", description="ATWA-NG — v1 scanning + v2 native attacks, unified"
+        prog="atwa", description="ATWA-NG — unified WiFi security auditing"
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("scan", help="v1-engine scan (vendored airodump-ng)")
+    p = sub.add_parser("scan", help="channel-hopping AP/client scan")
     p.add_argument("iface")
     p.add_argument("--duration", type=float, default=10.0)
     p.add_argument("--band", choices=("2.4GHz", "5GHz", "Both"), default="Both")
     p.add_argument("--clients", action="store_true", help="also print associated clients")
     p.set_defaults(func=_cmd_scan)
 
-    p = sub.add_parser("deauth-aireplay", help="v1-engine deauth (vendored aireplay-ng)")
+    p = sub.add_parser("deauth-inject", help="deauth flood via the injection engine")
     p.add_argument("iface")
     p.add_argument("bssid")
     p.add_argument("--client")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--timeout", type=float, default=30.0, help="give up if no beacon seen")
-    p.set_defaults(func=_cmd_deauth_aireplay)
+    p.set_defaults(func=_cmd_deauth_inject)
 
-    p = sub.add_parser("injection-test", help="test packet injection (vendored aireplay-ng -9)")
+    p = sub.add_parser("injection-test", help="test packet injection capability")
     p.add_argument("iface")
     p.add_argument("--bssid", help="test against a specific AP instead of any nearby one")
     p.add_argument("--duration", type=int, default=15)
     p.set_defaults(func=_cmd_injection_test)
 
-    p = sub.add_parser("wash", help="WPS AP recon (vendored wash, from reaver source)")
+    p = sub.add_parser("wps-recon", help="WPS-enabled AP reconnaissance")
     p.add_argument("iface")
     p.add_argument("--channel", type=int)
     p.add_argument("--duration", type=int, default=15)
-    p.set_defaults(func=_cmd_wash)
+    p.set_defaults(func=_cmd_wps_recon)
 
-    p = sub.add_parser("crack-aircrack", help="crack via vendored aircrack-ng (not hashcat)")
+    p = sub.add_parser("crack-cap", help="crack a WPA/WEP capture directly (not hashcat)")
     p.add_argument("capfile")
     p.add_argument("wordlist")
     p.add_argument("--bssid")
     p.add_argument("--timeout", type=float, default=3600.0,
                     help="give up after this long (default 1h; wordlist attacks can run long)")
-    p.set_defaults(func=_cmd_crack_aircrack)
+    p.set_defaults(func=_cmd_crack_cap)
 
     # Everything else: same argument shapes as n2ng2's original CLI,
     # pointing at this package's own copied handler functions above

@@ -89,9 +89,9 @@ def _inject_radiotap() -> RadioTap:
     tells the kernel to leave the sequence-control field alone, which is
     only a win if *we* then manage SC ourselves — we don't, so every
     frame was going out as SC=0 every time, a textbook duplicate-frame
-    signature real receivers are required to silently drop. Confirmed via
-    aircrack-ng's own aireplay-ng.c (do_attack_fake_auth), which does
-    manage SC explicitly per send. Sourced from Mathy Vanhoef's
+    signature real receivers are required to silently drop. Confirmed
+    against a known-working reference fake-auth implementation, which
+    does manage SC explicitly per send. Sourced from Mathy Vanhoef's
     wifi-injection research (WiSec 2023), github.com/vanhoefm/wifi-injection.
     """
     return RadioTap(present="TXFlags", TXFlags="ORDER")

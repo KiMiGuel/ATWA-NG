@@ -182,8 +182,8 @@ def _associate(
     (AttemptOutcome, detail) to bail out with — detail distinguishes "AP
     never replied at all" from "AP explicitly rejected it (status code)".
 
-    Frame construction matches what aircrack-ng's own do_attack_fake_auth()
-    does (read directly from aireplay-ng.c): capability info includes
+    Frame construction matches a known-working reference fake-auth
+    implementation: capability info includes
     "privacy" (every WPA2 AP's own beacon has that bit set — a bare
     ESS-only value doesn't match what a real station presents) and a
     fuller rates set via _inject_radiotap()'s craft_assoc_req.

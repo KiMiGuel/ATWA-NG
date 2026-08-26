@@ -1,11 +1,8 @@
-"""Dependency check — trimmed to only what v2 actually shells out to.
-
-v1's DependencyChecker (main.py:577-599) listed airmon-ng/airodump-ng/
-aireplay-ng/wash/reaver/hashcat as required-or-optional because it wrapped
-all of those as attack tools. v2 doesn't wrap any attack tool (scan/deauth/
-PMKID/handshake/WEP/WPS are native), so none of those apply anymore — the
-only real external-tool dependencies left are the generic file/radio
-utilities each feature actually calls.
+"""Dependency check — trimmed to only what this project actually shells
+out to. Attack logic (scan/deauth/PMKID/handshake/WEP/WPS) is native, so
+the only real external-tool dependencies are the generic file/radio
+utilities each Captures-tab feature calls, plus optional cracking
+backends.
 """
 
 from __future__ import annotations
