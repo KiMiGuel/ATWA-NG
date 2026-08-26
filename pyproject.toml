@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atwa"
-version = "0.1.0"
+version = "2.0.0"
 description = "ATWA-NG: v1 scanning engine (vendored aircrack-ng/reaver source) + full native attack/crypto engine, self-contained"
 requires-python = ">=3.10"
 # Self-contained as of 2026-08-25 — no runtime dependency on n2ng2.
