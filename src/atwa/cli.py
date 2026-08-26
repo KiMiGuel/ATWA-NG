@@ -31,8 +31,8 @@ from pathlib import Path
 from .scan_airodump import AIRODUMP_NG_BIN, AirodumpNotBuilt
 from .scanner import scan_live
 
-_VENDOR_ROOT = Path(__file__).resolve().parents[3] / "vendor" / "aircrack-ng"
-_REAVER_ROOT = Path(__file__).resolve().parents[3] / "vendor" / "reaver" / "src"
+_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "aircrack-ng"
+_REAVER_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "reaver" / "src"
 AIREPLAY_NG_BIN = _VENDOR_ROOT / "aireplay-ng"
 AIRCRACK_NG_BIN = _VENDOR_ROOT / "aircrack-ng"
 WASH_BIN = _REAVER_ROOT / "wash"

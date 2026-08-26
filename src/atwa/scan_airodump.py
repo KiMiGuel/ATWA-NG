@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Our own vendored, locally-compiled binary — never the system package.
-_VENDOR_ROOT = Path(__file__).resolve().parents[3] / "vendor" / "aircrack-ng"
+_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "aircrack-ng"
 AIRODUMP_NG_BIN = _VENDOR_ROOT / "airodump-ng"
 
 
