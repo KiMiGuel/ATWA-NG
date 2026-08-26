@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
+from scapy.data import DLT_IEEE802_11_RADIO
 from scapy.sendrecv import AsyncSniffer
 from scapy.utils import PcapWriter
 
@@ -97,7 +98,16 @@ def capture_handshake(
     if channel is not None:
         set_channel(iface, channel)
     cap = HandshakeCapture()
-    writer = PcapWriter(outfile, append=True, sync=True) if outfile else None
+    # linktype forced explicitly: without it, PcapWriter guesses from the
+    # first packet's own .linktype attribute and warns + silently falls
+    # back to Ethernet ("unknown LL type for NoneType. Using type 1
+    # (Ethernet)") whenever that's absent — not just a noisy warning, the
+    # capture file's header would then claim Ethernet framing while
+    # actually containing raw 802.11/RadioTap frames, which is wrong data
+    # for any downstream tool (aircrack-ng, hcxpcapngtool, Wireshark) to
+    # parse. Monitor-mode sniffs always come back RadioTap-wrapped, so the
+    # correct type is DLT_IEEE802_11_RADIO, always, not a guess.
+    writer = PcapWriter(outfile, linktype=DLT_IEEE802_11_RADIO, append=True, sync=True) if outfile else None
 
     def handler(pkt) -> None:
         if not pkt.addr3 or pkt.addr3.lower() != bssid.lower():
