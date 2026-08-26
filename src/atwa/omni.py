@@ -1,24 +1,19 @@
 """OMNI adaptive attack chain orchestrator.
 
-Native port of v1's OmniAttackOrchestrator (omni.py:100-439, see
-research/PORT_FROM_V1.md §1): given a locked target AccessPoint, try
-stages in order and stop at the first one that yields crackable
-material, then crack it.
+Given a locked target AccessPoint, tries stages in order and stops at
+the first one that yields crackable material, then cracks it.
 
 Chain: PROFILE -> PMKID -> WPS -> HANDSHAKE -> EVILTWIN -> ONLINE ->
-CRACK -> DONE. WPS/EVILTWIN/ONLINE have no native v2 implementation yet
-(no reaver/wash port, no rogue-AP module, no online PIN/password
-guessing) so they're skip-stubs here, kept in the chain only to
-preserve the stage shape for when those land.
+CRACK -> DONE. WPS and EVILTWIN are real, implemented stages. ONLINE
+(budgeted PIN/password guessing) is still a skip-stub, kept in the
+chain only to preserve the stage shape for when it lands.
 
 Single-adapter by design. A dual-Alfa split listen/attack mode is an
 open idea (STATUS.md "Ideas / undecided"), not assumed here.
 
 Every stage body that touches the network is dependency-injected
 (pmkid_fn/handshake_fn/deauth_fn/cracker) so orchestration logic can be
-unit-tested without hardware, mirroring v1's "all app dependencies
-injected" design and this project's hermetic-test rule
-(research/PORT_FROM_V1.md §6.8).
+unit-tested without hardware.
 """
 
 from __future__ import annotations
@@ -69,7 +64,7 @@ class OmniReport:
     cracked: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> str:
-        """Render a per-stage report, matching v1's summary() output shape."""
+        """Render a per-stage report."""
         lines = [f"OMNI report for {self.target}"]
         for s in self.stages:
             detail = f": {s.detail}" if s.detail else ""
@@ -148,11 +143,11 @@ class OmniOrchestrator:
         return report
 
     def run_smart(self, ap: AccessPoint, wordlist: str | None = None) -> OmniReport:
-        """Port of v1's SmartAttackOrchestrator (main.py:1671): PMKID first,
-        deauth only if PMF allows it, no WPS/EVILTWIN/ONLINE.
+        """Quick attack: PMKID first, deauth only if PMF allows it, no
+        WPS/EVILTWIN/ONLINE.
 
         A faster single-target subset of run() -- kept as its own entry
-        point (not folded into run()) to preserve v1's two-mode design:
+        point (not folded into run()) to preserve two distinct modes:
         full adaptive OMNI chain vs. a quick PMF-aware PMKID-then-deauth
         pass. Reuses run()'s own stage methods, so there's no duplicated
         attack logic between the two.
@@ -220,8 +215,7 @@ class OmniOrchestrator:
 
         AP Setup Locked (from M1) skips outright; a run of consecutive
         timeouts is treated as suspected rate-limiting/lockout and aborts
-        early — the native equivalent of v1's lockout-regex+max_lockouts=3
-        discipline.
+        early rather than exhausting the full attempt budget.
         """
         from .attacks.wps import AttemptOutcome
 
@@ -264,8 +258,8 @@ class OmniOrchestrator:
     def _stage_handshake(self, ap: AccessPoint, report: OmniReport) -> HandshakeStatus:
         """Deauth rounds (count=1 discipline, 15s pacing) with a capture gate.
 
-        Skipped outright when PMF is required (802.11w drops the deauths —
-        v1's HANDSHAKE-skip rule, PORT_FROM_V1.md §1).
+        Skipped outright when PMF is required (802.11w drops the deauths,
+        so there's no point attempting the stage at all).
         """
         if ap.pmf == "required":
             report.stages.append(
@@ -362,9 +356,9 @@ class OmniOrchestrator:
             )
 
     def _stage_online(self, ap: AccessPoint, report: OmniReport, material_captured: bool) -> None:
-        """Stub: budgeted online PIN/password guessing not yet ported to v2.
+        """Stub: budgeted online PIN/password guessing not yet implemented.
 
-        v1 also skips this stage once capture material already exists
+        Also skips this stage once capture material already exists
         (_radio_material_captured) — preserved here even though the body
         is a stub, so the skip *reason* stays accurate once it's built.
         """
@@ -374,7 +368,7 @@ class OmniOrchestrator:
             )
         else:
             report.stages.append(
-                StageReport("online", StageResult.SKIPPED, "online guessing not implemented in v2 yet")
+                StageReport("online", StageResult.SKIPPED, "online guessing not implemented yet")
             )
 
     def _stage_crack(self, report: OmniReport, wordlist: str | None) -> None:

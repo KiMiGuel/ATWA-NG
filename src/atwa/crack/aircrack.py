@@ -48,8 +48,9 @@ class AirCracker(Cracker):
     `-b bssid` is required, not optional: without it, aircrack-ng prompts
     interactively for which network (by index) to attack when a capture
     holds more than one, and a subprocess with no TTY would just hang
-    forever on that prompt. Since v2 already knows the target's BSSID by
-    the time a crack is triggered, this is never a real limitation here.
+    forever on that prompt. Since this project already knows the
+    target's BSSID by the time a crack is triggered, this is never a
+    real limitation here.
     """
 
     def __init__(self, bssid: str, binary: str = "aircrack-ng"):

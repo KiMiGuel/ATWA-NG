@@ -7,12 +7,11 @@ runs exactly one full association+M1..M7 cycle per the paper's flowchart:
 a wrong guess means a fresh 802.11 deauth+reassoc for the next attempt,
 matching real WPS tool behavior (and why these attacks are slow/noisy).
 
-Lockout detection: v1 grepped reaver's log text for a lockout regex
-(PORT_FROM_V1.md §1); this native implementation has no such log, so it
-uses two native signals instead — the AP's own "AP Setup Locked" flag in
-M1 (checked before bruteforcing starts at all), and a run of consecutive
-per-attempt timeouts (no M1 received) as a stand-in for v1's
-max_lockouts=3 abort discipline.
+Lockout detection uses two native signals: the AP's own "AP Setup
+Locked" flag in M1 (checked before bruteforcing starts at all), and a
+run of consecutive per-attempt timeouts (no M1 received) treated as
+suspected rate-limiting/lockout, aborting early rather than exhausting
+the full attempt budget.
 """
 
 from __future__ import annotations

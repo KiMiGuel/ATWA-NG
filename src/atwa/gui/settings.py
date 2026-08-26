@@ -1,10 +1,8 @@
 """Persistent GUI settings — JSON at ~/.config/atwa/settings.json.
 
-Ported concept from v1's Settings (main.py:1060-1139: JSON, defaults+
-merge, chown back to the real user under sudo so config isn't
-root-owned) — reimplemented against v2's own storage.user_home(), not a
-line-for-line port, since v1's version was entangled with its own
-settings-dialog UI.
+JSON with defaults+merge, chowned back to the real user under sudo so
+the config file isn't left root-owned, built against this project's
+own storage.user_home().
 """
 
 from __future__ import annotations
@@ -54,7 +52,7 @@ class Settings:
     def _chown_to_real_user(self) -> None:
         """If running under sudo, hand ownership back to the real user —
         otherwise the config dir/file ends up root-owned and unwritable
-        next time the GUI runs unprivileged (v1 hit this same issue)."""
+        next time the GUI runs unprivileged."""
         sudo_user = os.environ.get("SUDO_USER")
         if os.geteuid() != 0 or not sudo_user:
             return

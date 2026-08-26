@@ -11,9 +11,8 @@ from .theme import THEME
 class SignalGraph:
     """Rolling line graph of a locked target's RSSI over time.
 
-    Ported near-verbatim from v1 (main.py:1363-1403) — pure Canvas drawing
-    logic, not a tool wrapper, so it's carried over directly. Y axis is
-    clamped/scaled -90..-30 dBm (weak..strong); each new sample is one
+    Pure Canvas drawing logic. Y axis is clamped/scaled -90..-30 dBm
+    (weak..strong); each new sample is one
     scan pass's reading for whatever target is currently locked, so a
     rising line means the signal is getting stronger, falling means
     weaker — not an attack-progress indicator.

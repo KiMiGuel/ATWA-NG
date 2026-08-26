@@ -1,8 +1,8 @@
-"""Sudo self-relaunch — ported from v1's ensure_root() (main.py 4615-4642):
-detect non-root, prompt for a password in a Tk dialog, re-exec under sudo.
+"""Sudo self-relaunch: detect non-root, prompt for a password in a Tk
+dialog, re-exec under sudo.
 
-One real improvement over v1's version: this explicitly passes XAUTHORITY
-through to the re-exec'd root process, not just DISPLAY. Without it, root
+Explicitly passes XAUTHORITY through to the re-exec'd root process, not
+just DISPLAY. Without it, root
 can't open a window on the invoking user's X session at all (confirmed
 live, 2026-08-19 — needed a manual `xhost +SI:localuser:root` workaround
 to get a sudo-launched instance on screen). Passing the real XAUTHORITY
@@ -19,9 +19,9 @@ from pathlib import Path
 
 def ensure_root(demo: bool) -> None:
     """No-op if already root or in --demo mode (demo never touches
-    hardware, matching v1's `if not args.demo: ensure_root()`). Otherwise
-    prompts for a sudo password and re-execs `python -m atwa.cli gui` as
-    root, replacing this process's exit code with the re-exec'd one."""
+    hardware). Otherwise prompts for a sudo password and re-execs
+    `python -m atwa.cli gui` as root, replacing this process's exit code
+    with the re-exec'd one."""
     if demo or os.geteuid() == 0:
         return
 

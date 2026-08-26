@@ -1,13 +1,10 @@
-"""Crack dialog — what v1's HashcatDialog was supposed to be.
+"""Crack dialog.
 
-v1's version asked for a handshake file and a wordlist, had a Start
-button, and (per the user) never actually worked end to end. This one is
-wired to run for real: point it at a handshake *folder* (not a single
-file) and a wordlist, hit Run, and it converts/merges whatever it finds
-and cracks it — combining convert+merge+crack in one action, with a Stop
-button that actually terminates the running process (John/aircrack-ng
-expose their live subprocess via `run_streaming`'s proc_holder, unlike
-v1 where Stop had nothing real to grab).
+Point it at a handshake *folder* (not a single file) and a wordlist,
+hit Run, and it converts/merges whatever it finds and cracks it —
+combining convert+merge+crack in one action, with a Stop button that
+actually terminates the running process (John/aircrack-ng expose their
+live subprocess via `run_streaming`'s proc_holder).
 """
 
 from __future__ import annotations

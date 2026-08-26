@@ -43,7 +43,7 @@ The provided launcher at `~/.local/bin/atwa` wraps it with `sudo`
 
 ```bash
 #!/bin/bash
-exec sudo /home/KaliMa/ATWA-NG/.venv/bin/atwa "$@"
+exec sudo ~/ATWA-NG/.venv/bin/atwa "$@"
 ```
 
 ## 3. Launch

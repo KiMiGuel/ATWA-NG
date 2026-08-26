@@ -84,8 +84,8 @@ def hc22000_to_john(hashfile: str, outfile: str) -> str:
 def fix_capture(capfile: str) -> str:
     """Repair a malformed .cap/.pcap via pcapfix; return the fixed file's path.
 
-    Output goes under capture_root()/fixed/YYYY-MM-DD/, matching v1's
-    fixed_capture_output_path convention.
+    Output goes under capture_root()/fixed/YYYY-MM-DD/, following the
+    same organized-output-path convention as the rest of this module.
     """
     if shutil.which("pcapfix") is None:
         raise RepairUnavailableError("pcapfix not found; install pcapfix to repair captures")
@@ -103,8 +103,8 @@ def fix_capture(capfile: str) -> str:
 def merge_captures(capfiles: list[str]) -> str:
     """Merge 2+ captures into one via mergecap; return the merged file's path.
 
-    Output goes under capture_root()/merged/YYYY-MM-DD/, matching v1's
-    merged_capture_output_path convention.
+    Output goes under capture_root()/merged/YYYY-MM-DD/, following the
+    same organized-output-path convention as the rest of this module.
     """
     if len(capfiles) < 2:
         raise ValueError("need at least two captures to merge")

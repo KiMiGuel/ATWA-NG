@@ -1,10 +1,9 @@
 """Capture WPA 4-way handshake EAPOL frames until a crackable pair is seen.
 
-Gating mirrors v1's MESSAGEPAIR-byte-&-0x07 classification (main.py
-classify_22000_text): a pair with only M1+M2 is CHALLENGE — unverified,
-since the AP never confirmed the client's MIC — while M2+M3 is AUTHORIZED,
-since the AP itself validated the proof before replying with M3. The
-v1.6.0 fix this preserves: CHALLENGE-only must NOT stop auto-deauth loops.
+Classification: a pair with only M1+M2 is CHALLENGE — unverified, since
+the AP never confirmed the client's MIC — while M2+M3 is AUTHORIZED,
+since the AP itself validated the proof before replying with M3.
+CHALLENGE-only must NOT stop auto-deauth loops, only AUTHORIZED should.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ class HandshakeCapture:
         self.messages.setdefault((ap, client), set()).add(msg_no)
 
     def status(self, ap: str, client: str) -> HandshakeStatus:
-        """Classify a pair's capture quality (v1 MESSAGEPAIR & 0x07 equivalent)."""
+        """Classify a pair's capture quality."""
         seen = self.messages.get((ap, client), set())
         if {2, 3} <= seen:
             return HandshakeStatus.AUTHORIZED
@@ -56,8 +55,8 @@ class HandshakeCapture:
         """True only once the AP itself confirmed proof (M3 seen).
 
         This is the sole signal that should stop an attack loop's deauth
-        rounds. CHALLENGE (M1+M2 only) is unverified and must keep the loop
-        running — regressing this was the v1.6.0 bug.
+        rounds. CHALLENGE (M1+M2 only) is unverified and must keep the
+        loop running.
         """
         return self.status(ap, client) is HandshakeStatus.AUTHORIZED
 

@@ -1,7 +1,7 @@
 """Visual theme: ATWA-NG's electric-blue-to-black identity.
 
-2026-08-26: rebranded off v1's neon-green-on-black palette to match the
-new ATWA-NG brand (electric blue fading to black). This swaps the color
+2026-08-26: rebranded from an earlier neon-green-on-black palette to the
+ATWA-NG brand (electric blue fading to black). This swaps the color
 *values* only — every widget class still keys off the same semantic
 tokens (bg/panel/panel_alt/border/accent/etc.), so the rebrand is
 entirely contained here.

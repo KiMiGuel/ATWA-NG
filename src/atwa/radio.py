@@ -101,10 +101,9 @@ def get_permanent_mac(iface: str) -> str:
 
 
 def random_locally_administered_mac() -> str:
-    """A random unicast, locally-administered MAC (v1's AirmonManager
-    approach, PORT_FROM_V1.md §5: locally-administered bit set, not a
-    real vendor OUI, so it reads as intentionally randomized rather than
-    spoofing a specific real device)."""
+    """A random unicast, locally-administered MAC: locally-administered
+    bit set, not a real vendor OUI, so it reads as intentionally
+    randomized rather than spoofing a specific real device."""
     first = (random.randint(0, 255) & 0xFC) | 0x02  # clear multicast bit, set local-admin bit
     rest = [random.randint(0, 255) for _ in range(5)]
     return ":".join(f"{b:02x}" for b in [first, *rest])

@@ -44,7 +44,7 @@ def security_profile(pkt: Packet) -> dict:
 
     security: open | WEP | WPA | WPA2 | WPA3 | transition
     pmf: none | capable | required | unknown (unknown = WPA2 without caps,
-    deauth still worth attempting — matches v1 semantics).
+    deauth still worth attempting).
     """
     cap_layer = pkt.getlayer(Dot11Beacon) or pkt.getlayer(Dot11ProbeResp)
     privacy = bool(cap_layer and "privacy" in (cap_layer.cap or []))
@@ -120,8 +120,8 @@ def wps_profile(pkt: Packet) -> str | None:
 def recommend_attack(ap) -> dict:
     """Pick the primary attack for an AP profile → {"attack", "reason"}.
 
-    Routing per v1 (PORT_FROM_V1.md §2): PMKID when PMF blocks deauth,
-    downgrade twin for transition mode, deauth+handshake otherwise.
+    Routing: PMKID when PMF blocks deauth, downgrade twin for
+    transition mode, deauth+handshake otherwise.
     """
     security = getattr(ap, "security", None)
     pmf = getattr(ap, "pmf", None)

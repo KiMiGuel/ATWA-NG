@@ -37,8 +37,8 @@ class JohnCracker(Cracker):
     """Crack WPA hashes via john --format=wpapsk.
 
     hashfile passed to crack()/run_streaming() is a hashcat-format 22000
-    file (what the rest of v2 produces) — converted to John's own format
-    internally via hcxhashtool before john ever sees it.
+    file (what the rest of this project produces) — converted to John's
+    own format internally via hcxhashtool before john ever sees it.
     """
 
     def __init__(self, binary: str = "john", fmt: str = "wpapsk"):
@@ -72,7 +72,7 @@ class JohnCracker(Cracker):
         """Like crack(), but streams stdout line-by-line to on_line(str) as it
         happens (Popen, not subprocess.run) and stashes the live process on
         proc_holder["proc"] so a caller can proc.terminate() it from another
-        thread — the real Stop button, unlike v1's HashcatDialog."""
+        thread — a real Stop button that actually terminates the process."""
         john_file = self._prepare(hashfile)
         proc = subprocess.Popen(
             [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}", john_file],

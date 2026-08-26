@@ -1,15 +1,15 @@
-"""ATWA-NG GUI — Tkinter, mimics v1's layout/aesthetic (updated), wired to
-v2's own native attack functions throughout (never subprocess-wraps an
-attack tool; John/hcxpcapngtool/pcapfix/mergecap are generic file-format
-utilities, same category as v1's DependencyChecker tools, not attack logic).
+"""ATWA-NG GUI — Tkinter, wired to this project's own native attack
+functions throughout (never subprocess-wraps an attack tool; John/
+hcxpcapngtool/pcapfix/mergecap are generic file-format utilities, not
+attack logic).
 
-The concrete bug this was built to fix: v1's toolbar is one long
-`pack(side=LEFT)` row of ~10 buttons with no wrap and no menu fallback, so
-buttons past the window edge become inaccessible when narrowed (main.py
-_build_toolbar, 2783-2824). Every action here is reachable from a real
-`tk.Menu` menu bar (native window chrome — cannot be clipped by resizing,
-unlike a packed Frame), with the toolbar reduced to a few essential,
-low-count controls so it's unlikely to overflow even on its own.
+Design constraint driving the layout: a toolbar of many buttons in a
+single `pack(side=LEFT)` row with no wrap and no menu fallback means
+buttons past the window edge become inaccessible when narrowed. Every
+action here is reachable from a real `tk.Menu` menu bar (native window
+chrome — cannot be clipped by resizing, unlike a packed Frame), with
+the toolbar reduced to a few essential, low-count controls so it's
+unlikely to overflow even on its own.
 """
 
 from __future__ import annotations
@@ -44,11 +44,10 @@ CAPTURE_COLUMNS = (
     ("path", "Path", 420),
 )
 
-# v1's channel-lock discipline (main.py _select_target/_lock_channel/
-# _check_channel_lock, 3421-3527): selecting a target auto-locks the
-# adapter to that target's channel so a background scan loop doesn't keep
-# hopping away from it mid-attack; auto-unlock after this many seconds of
-# the locked target going unseen, so a stale lock doesn't strand the radio
+# Channel-lock discipline: selecting a target auto-locks the adapter to
+# that target's channel so a background scan loop doesn't keep hopping
+# away from it mid-attack; auto-unlock after this many seconds of the
+# locked target going unseen, so a stale lock doesn't strand the radio
 # on a dead channel forever.
 CHANNEL_LOCK_TIMEOUT = 30.0
 
@@ -203,9 +202,9 @@ class App:
     # even on its own), authoritative access stays in the menu bar above.
     # ------------------------------------------------------------------
     def _build_toolbar(self):
-        # Two short rows instead of v1's one long row: each row alone is
-        # far below the width where wrapping/clipping would ever kick in,
-        # and the menu bar above duplicates every action here regardless.
+        # Two short rows rather than one long one: each row alone is far
+        # below the width where wrapping/clipping would ever kick in, and
+        # the menu bar above duplicates every action here regardless.
         container = ttk.Frame(self.root, style="Toolbar.TFrame", padding=6)
         container.pack(side=tk.TOP, fill=tk.X)
 
@@ -240,8 +239,7 @@ class App:
     # Body: PanedWindow(target tree | notebook[Target, Captures]) + log
     # ------------------------------------------------------------------
     def _make_scrollable(self, parent) -> ttk.Frame:
-        """Canvas+Scrollbar wrapper (v1's _build_scrollable_right_panel
-        pattern, main.py:2755-2776) — the Target tab's content (signal
+        """Canvas+Scrollbar wrapper — the Target tab's content (signal
         graph + 10 attack buttons + auto-deauth row) is taller than fits
         on a shorter window with no scroll path otherwise; real bug user
         hit ("WPS Null-PIN barely visible", buttons below it unreachable).
@@ -350,8 +348,7 @@ class App:
         self.hidden_columns: set[str] = set(self.settings.get("hidden_columns", []))
         self._apply_column_visibility()
 
-        # Row color by security (v1 main.py:4546-4550: OPN/WEP/WPA/WPA2/
-        # WPA3 tag_configure) — v2 lacked this entirely until now.
+        # Row color by security (OPN/WEP/WPA/WPA2/WPA3).
         self.tree.tag_configure("open", foreground=self.THEME["accent"])
         self.tree.tag_configure("wep", foreground=self.THEME["error"])
         self.tree.tag_configure("wpa", foreground=self.THEME["warn"])
@@ -880,7 +877,7 @@ class App:
             self.tree.selection_set(selected)
 
     def _on_target_heading_click(self, col: str):
-        """Click a column heading to sort by it; click again to reverse (v1 _on_header_click)."""
+        """Click a column heading to sort by it; click again to reverse."""
         numeric_cols = {"channel", "signal"}
         if self._sort_col == col:
             self._sort_reverse = not self._sort_reverse
@@ -915,10 +912,10 @@ class App:
         self.tree["displaycolumns"] = visible
 
     def _show_column_menu(self, event):
-        """Right-click a column header to show/hide it (v1's column-
-        visibility menu, main.py 3281-3325, deferred earlier since it
-        wanted settings persistence first — now wired to it). BSSID stays
-        pinned, it's the row identity, same as it's excluded from sorting."""
+        """Right-click a column header to show/hide it (deferred earlier
+        since it wanted settings persistence first — now wired to it).
+        BSSID stays pinned, it's the row identity, same as it's excluded
+        from sorting."""
         menu = tk.Menu(self.root, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
         for key, heading, _width in TARGET_COLUMNS:
             if key == "bssid":
@@ -978,9 +975,8 @@ class App:
 
     def _start_selected_capture_watch(self, ap: AccessPoint):
         """Live KB readout of any existing capture data for the selected
-        target — v1 parity (main.py's capture-size monitor was tied to
-        selection there too). Reads whatever's already on disk; a running
-        attack's own _watch_capture_size call takes priority and this backs
+        target. Reads whatever's already on disk; a running attack's own
+        _watch_capture_size call takes priority and this backs
         off (checked via self._busy) so the two don't fight over the same
         capture_size_var."""
         if self._select_capture_watch_stop is not None:
@@ -1021,11 +1017,10 @@ class App:
         return sel[0] if sel else None
 
     def _lock_channel(self, ap: AccessPoint):
-        """Stop hopping and park the adapter on ap's channel (v1 _lock_channel).
-        Also launches a real vendored scan-engine capture restricted to this
-        bssid/channel (v1's Worker.start_lock, main.py:1267-1285) so the
-        capture-size KB readout actually grows from real on-disk data, not
-        just a static existing-file check."""
+        """Stop hopping and park the adapter on ap's channel. Also
+        launches a real vendored scan-engine capture restricted to this
+        bssid/channel so the capture-size KB readout actually grows from
+        real on-disk data, not just a static existing-file check."""
         if self.channel_locked and self.locked_bssid == ap.bssid and self._lock_capture_proc is not None:
             return  # already locked to this exact target with a live capture running
         self.channel_locked = True
@@ -1052,8 +1047,8 @@ class App:
 
     def _start_lock_capture(self, ap: AccessPoint):
         """Real vendored scan engine, restricted to ap's channel+bssid,
-        writing continuously to disk — same mechanism v1 used
-        (Worker.start_lock). Stopped by _unlock_channel/_stop_lock_capture."""
+        writing continuously to disk. Stopped by
+        _unlock_channel/_stop_lock_capture."""
         self._stop_lock_capture()
         import subprocess
 
@@ -1094,7 +1089,7 @@ class App:
                 pass
 
     def _unlock_channel(self):
-        """Resume hopping the full channel range (v1 _unlock_channel)."""
+        """Resume hopping the full channel range."""
         if not self.channel_locked:
             return
         self.channel_locked = False
@@ -1130,14 +1125,14 @@ class App:
         return self.aps[self.selected_bssid]
 
     # ------------------------------------------------------------------
-    # Attacks — every call below hits v2's own native implementation.
+    # Attacks — every call below hits this project's own native implementation.
     # ------------------------------------------------------------------
     def _confirm_attack(self, title: str, detail: str) -> bool:
-        """Modal countdown confirm before firing an attack (v1 CountdownDialog
-        port, main.py:1406-1430) — v1 showed the exact shell command; v2 has
-        no shell command (native calls), so shows a plain-English summary
-        instead. Auto-confirms at 0 unless Cancelled; Execute Now skips the
-        wait. Blocks (wait_window) until a choice is made."""
+        """Modal countdown confirm before firing an attack. Attacks are
+        native calls, not shell commands, so this shows a plain-English
+        summary instead of a literal command line. Auto-confirms at 0
+        unless Cancelled; Execute Now skips the wait. Blocks
+        (wait_window) until a choice is made."""
         result = {"go": False}
         dlg = tk.Toplevel(self.root)
         dlg.title("Confirm Attack")
@@ -1454,15 +1449,15 @@ class App:
                    "next check; a single blocking call in progress will still finish on its own timeout)")
 
     def _toggle_auto_deauth(self):
-        """v1's 'Auto-deauth until handshake' (main.py 2924-2930, 3365-3392):
-        deauth the locked target on a timer, independent of OMNI/Smart,
-        stopping itself once an AUTHORIZED handshake is actually captured
-        — not just after N rounds. v2 has no continuous background EAPOL
-        listener the way v1's CaptureManager was, so this starts its own:
-        one thread blocks in capture_handshake() with a timeout sized to
-        the round budget, a second thread sends the periodic deauth
-        bursts; whichever condition hits first (AUTHORIZED capture, toggle
-        turned off, or the round budget exhausted) ends the loop."""
+        """'Auto-deauth until handshake': deauth the locked target on a
+        timer, independent of OMNI/Smart, stopping itself once an
+        AUTHORIZED handshake is actually captured — not just after N
+        rounds. There's no continuous background EAPOL listener, so this
+        starts its own: one thread blocks in capture_handshake() with a
+        timeout sized to the round budget, a second thread sends the
+        periodic deauth bursts; whichever condition hits first
+        (AUTHORIZED capture, toggle turned off, or the round budget
+        exhausted) ends the loop."""
         if not self.auto_deauth_var.get():
             if hasattr(self, "_auto_deauth_stop"):
                 self._auto_deauth_stop.set()
@@ -1491,9 +1486,9 @@ class App:
         return f"Capture: {size / 1024 ** 2:.1f} MB"
 
     def _watch_capture_size(self, path, stop_event: threading.Event):
-        """v1 parity: a live-growing capture-size readout (0 B -> ... KB)
-        next to the signal graph, confirming data is actually landing on
-        disk during a capture — not just that an attack is 'running'."""
+        """A live-growing capture-size readout (0 B -> ... KB) next to
+        the signal graph, confirming data is actually landing on disk
+        during a capture — not just that an attack is 'running'."""
         import time as _time
         from pathlib import Path
 
@@ -1990,7 +1985,7 @@ class App:
             # Quiet by default — only interrupt if something REQUIRED is
             # missing (app is largely nonfunctional without it). Optional
             # tools just get a one-line log summary instead of a modal
-            # every single launch, unlike v1's always-shown checker window.
+            # on every single launch.
             opt_missing = [s.name for s in statuses if not s.required and not s.found]
             if opt_missing:
                 self._log(f"optional tools not found (some Captures actions disabled): {', '.join(opt_missing)}")
@@ -2021,10 +2016,14 @@ class App:
     def _show_about(self):
         messagebox.showinfo(
             "About ATWA-NG",
-            f"ATWA-NG — {__version__}\n\n"
+            f"ATWA-NG — Airwave Teardown Wireless Auditing\n"
+            f"\"System's Down\"\n\n"
+            f"Version {__version__}\n\n"
             "Native Python WiFi attack toolkit. Scan/deauth/PMKID/"
             "handshake/WEP/WPS are this project's own implementations.\n\n"
-            "Local-use tool. See STATUS.md for current feature status.",
+            "by KiMiGuel — INDEPENTEST LLC\n"
+            "github.com/KiMiGuel\n"
+            "indepentest.pro",
         )
 
     def _load_demo_data(self):

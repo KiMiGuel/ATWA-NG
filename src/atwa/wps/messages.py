@@ -5,7 +5,7 @@ Field layout for M2 mirrors what wpa_supplicant's registrar sends
 (device-info "Description" bundle + nonces + pubkey + Authenticator);
 exact cosmetic values (manufacturer string etc.) don't affect protocol
 correctness. M4/M6 need only the crypto-relevant attributes per the
-message table in research/PORT_FROM_V1.md-referenced Viehböck paper.
+message table in Viehböck's original WPS PIN vulnerability paper.
 """
 
 from __future__ import annotations
