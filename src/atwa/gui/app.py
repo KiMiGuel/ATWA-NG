@@ -17,6 +17,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .. import __version__
@@ -56,8 +57,15 @@ class App:
     def __init__(self, root: tk.Tk, demo: bool = False):
         self.root = root
         self.root.title(f"ATWA-NG — {__version__}")
-        self.root.geometry("1320x780")
-        self.root.minsize(760, 480)
+        # Default to 1320x780, but never larger than the actual screen and
+        # centered on it -- a hardcoded size bigger than the display (small
+        # laptops, netbooks, anyone without a full-HD-or-larger monitor)
+        # opened off-screen/clipped on first launch.
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        win_w, win_h = min(1320, int(screen_w * 0.92)), min(780, int(screen_h * 0.88))
+        self.root.geometry(f"{win_w}x{win_h}+{(screen_w - win_w) // 2}+{(screen_h - win_h) // 2}")
+        self.root.minsize(min(760, win_w), min(480, win_h))
+        self._set_window_icon()
 
         self.fonts = theme_mod.apply(root)
         self.THEME = theme_mod.THEME
@@ -133,6 +141,17 @@ class App:
 
         if demo:
             self._load_demo_data()
+
+    def _set_window_icon(self):
+        """Window/taskbar icon from the approved logo mark. Best-effort --
+        a missing/unreadable asset shouldn't block the GUI from launching."""
+        assets = Path(__file__).parent / "assets"
+        try:
+            images = [tk.PhotoImage(file=str(assets / f"icon_{size}.png")) for size in (16, 32, 64, 128, 256)]
+        except tk.TclError:
+            return
+        self._icon_images = images  # keep references -- Tk drops unreferenced PhotoImages
+        self.root.iconphoto(True, *images)
 
     # ------------------------------------------------------------------
     # Menu bar — the resize-clip fix. Native window chrome, always reachable.
@@ -382,18 +401,26 @@ class App:
         title_row.pack(fill=tk.X)
         self.target_title_var = tk.StringVar(value="No target selected")
         ttk.Label(title_row, textvariable=self.target_title_var, style="Heading.TLabel").pack(side=tk.LEFT)
-        # Stop Attack lives here, next to Unlock, instead of at the bottom of
+
+        # Own row, separate from the title above: the title's length is
+        # unbounded (real SSIDs run up to 32 bytes) and previously shared a
+        # row with these controls, so a long SSID -- or the lock pill's own
+        # text swinging between "SCANNING ALL CHANNELS" (long) and "LOCKED
+        # CH N" (short) -- could squeeze Unlock/Stop Attack into each other.
+        # Stop Attack sits here, next to Unlock, instead of at the bottom of
         # the attack-button stack below — a live-attack safety/speed issue
         # (2026-08-26 live-test note): it took too long to reach when an
         # attack needed to be killed quickly.
-        ttk.Button(title_row, text="Stop Attack", command=self._stop_attack, style="Danger.TButton").pack(
+        controls_row = ttk.Frame(parent)
+        controls_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(controls_row, text="Stop Attack", command=self._stop_attack, style="Danger.TButton").pack(
             side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(title_row, text="Unlock", command=self._unlock_channel).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(controls_row, text="Unlock", command=self._unlock_channel).pack(side=tk.RIGHT, padx=(0, 6))
         self.lock_pill = tk.Label(
-            title_row, textvariable=self.channel_lock_var, bg=self.THEME["error"], fg="#1a0000",
+            controls_row, textvariable=self.channel_lock_var, bg=self.THEME["error"], fg="#1a0000",
             font=self.fonts["ui_bold"], padx=8, pady=2,
         )
-        self.lock_pill.pack(side=tk.RIGHT)
+        self.lock_pill.pack(side=tk.LEFT)
 
         detail = ttk.Frame(parent)
         detail.pack(fill=tk.X, pady=(4, 6))
@@ -844,7 +871,13 @@ class App:
                 # double-click lock — selected_bssid equals locked_bssid
                 # once you do lock, since selection fires with the click).
                 if self.selected_bssid and self.selected_bssid in result.aps:
-                    self._queue.put(("signal_sample", result.aps[self.selected_bssid].signal))
+                    # last_signal, not signal -- signal is a running best-ever
+                    # max (by design, for the target list/sort column), which
+                    # ratchets up once and then plateaus forever. Feeding that
+                    # into a rolling time graph made it look permanently stuck
+                    # after the first strong reading instead of tracking the
+                    # actual live RSSI.
+                    self._queue.put(("signal_sample", result.aps[self.selected_bssid].last_signal))
                 self._queue.put(("scan_update", None))
 
         self._scan_thread = threading.Thread(target=loop, daemon=True)
@@ -992,8 +1025,8 @@ class App:
         # note). Seed with the last-known signal so the graph isn't empty
         # while waiting for the next scan hop to land on this AP's channel.
         self.signal_graph.reset()
-        if ap.signal is not None:
-            self.signal_graph.add_sample(ap.signal)
+        if ap.last_signal is not None:
+            self.signal_graph.add_sample(ap.last_signal)
         self._start_selected_capture_watch(ap)
         if ap.channel:
             self._lock_channel(ap)

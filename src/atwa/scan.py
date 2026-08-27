@@ -26,6 +26,7 @@ class AccessPoint:
     pmf: str | None = None  # none | capable | required | unknown
     wps: str | None = None  # enabled | locked | None (no WPS IE seen)
     signal: int | None = None  # best (strongest) dBm seen from RadioTap
+    last_signal: int | None = None  # most recent dBm reading (NOT a running max -- for live time-series display)
     clients: set[str] = field(default_factory=set)
     client_signal: dict[str, int] = field(default_factory=dict)  # best dBm seen per client MAC
 
@@ -69,8 +70,10 @@ def process_packet(pkt, result: ScanResult) -> None:
             ap.wps = wps  # AP self-reports current lock state each beacon; always take the latest
         rtap = pkt.getlayer(RadioTap)
         dbm = getattr(rtap, "dBm_AntSignal", None) if rtap else None
-        if dbm is not None and (ap.signal is None or dbm > ap.signal):
-            ap.signal = dbm
+        if dbm is not None:
+            ap.last_signal = dbm  # always the latest reading, unlike signal's running max
+            if ap.signal is None or dbm > ap.signal:
+                ap.signal = dbm
         return
     dot11 = pkt.getlayer(Dot11)
     if dot11 is None:
