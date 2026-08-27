@@ -255,3 +255,56 @@ not yet given. The 4 hardcoded strings needing the sweep: `"n2-ng"`
 (storage.py capture root), `"n2ng2"` (gui/settings.py config path),
 `"n2ng_hostapd_"/"n2ng_dnsmasq_"` (eviltwin.py temp prefixes),
 `"n2ng2_wps_"` (oneshot.py temp prefix).
+
+---
+
+## 2026-08-26 — Stop Attack fix + attack log verbosity overhaul
+
+User report: "Stop attack does not work, Log needs way more verbosity.
+I believe none of the attacks work." Full account in
+`~/CCM2/ATWA-NG/logs/2026-08-26-stop-attack-and-log-verbosity-fixes.md`;
+summary here.
+
+**Real bug found and fixed:** `attacks/pmkid.py`'s `capture_pmkid()` had
+no `stop_event` support at all (blocking `sniff()`, no way to abort) —
+Stop Attack genuinely did nothing during a PMKID capture (the fastest,
+most commonly tried attack, and OMNI/Smart's first stage). Switched to
+`AsyncSniffer` + poll loop, same pattern as `capture_handshake()`.
+Live-verified on real hardware (wlan1/mt76x0u): a 10s-timeout capture
+with stop_event set at t=2s now returns at 2.0s.
+
+**Root cause of "none of the attacks work":** `progress_fn` (the live
+per-attack log callback) was only ever wired up for WEP and Caffe
+Latte. PMKID, handshake capture, WPS null-pin/pixie/bruteforce, and the
+entire OMNI/Smart chain gave zero attack-specific feedback — just a
+generic "still running (Ns)" heartbeat every 10s. OMNI especially could
+run for minutes with nothing in the log until the final summary at the
+very end. Fixed by adding `progress_fn` throughout:
+- `capture_pmkid()`, `capture_handshake()`: log channel/send/sniff
+  phases and each new EAPOL message seen.
+- `wps_pin_bruteforce()`: logs every attempt's outcome (throttled to
+  every 10th for uninteresting results, always logs milestones/
+  lockout/success) — previously silent across up to 11,000 attempts.
+- `attempt_pin()`, `pixie_attempt()`, `null_pin_attack()`: per-phase
+  logging for single-shot WPS attacks.
+- `OmniOrchestrator`: logs every stage transition live in both `run()`
+  and `run_smart()`, threaded through to every sub-stage's own calls.
+- `gui/app.py`: wired the above into every attack call site that was
+  missing it; also added a monitor-mode sanity check at the start of
+  every `_run_bg` attack (logs a WARNING if `mon_iface` isn't actually
+  in monitor mode — previously a silent failure mode indistinguishable
+  from "ran fine, found nothing").
+
+**Bonus fix:** `self._progress_fn` was only ever set inside `_run_bg`,
+so auto-deauth (which bypasses `_run_bg` by design) would raise
+`AttributeError` if run as the very first action of a session. Now
+defaulted to a no-op at `__init__`.
+
+67/67 tests still pass. Live-verified PMKID stop-responsiveness on real
+hardware; verified WPS-bruteforce stop/logging and full OMNI
+stage-by-stage logging with stubbed functions (no radio needed).
+
+**Not done this session:** re-running the actual PINCER live test
+(needs both Alfa adapters connected); auditing `deauth()`'s frame-count
+return value (currently just echoes the `count` argument, not a real
+confirmation of transmission).

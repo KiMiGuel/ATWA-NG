@@ -83,6 +83,7 @@ def capture_handshake(
     timeout: float = 60.0,
     outfile: str | None = None,
     stop_event=None,
+    progress_fn=None,
 ) -> HandshakeCapture:
     """Sniff EAPOL frames for bssid until a complete pair, timeout, or
     stop_event fires.
@@ -94,8 +95,11 @@ def capture_handshake(
     rest of `timeout` in the background even after the caller has moved
     on, holding the raw socket open the whole time.
     """
+    log = progress_fn or (lambda msg: None)
     if channel is not None:
         set_channel(iface, channel)
+        log(f"channel set to {channel}")
+    log(f"listening for EAPOL on {bssid} (up to {timeout:.0f}s)...")
     cap = HandshakeCapture()
     # linktype forced explicitly: without it, PcapWriter guesses from the
     # first packet's own .linktype attribute and warns + silently falls
@@ -115,7 +119,10 @@ def capture_handshake(
         if msg_no is None:
             return
         ap, client = pkt.addr3, pkt.addr1 if msg_no % 2 == 1 else pkt.addr2
+        is_new = msg_no not in cap.messages.get((ap, client), set())
         cap.add(ap, client, msg_no)
+        if is_new:
+            log(f"EAPOL M{msg_no} seen (client {client}) -> {cap.status(ap, client).value}")
         if writer:
             writer.write(pkt)
 
@@ -139,4 +146,6 @@ def capture_handshake(
         pass
     if writer:
         writer.close()
+    if not cap.messages:
+        log("no EAPOL frames seen for this BSSID")
     return cap

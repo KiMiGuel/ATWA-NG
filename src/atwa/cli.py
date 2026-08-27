@@ -69,6 +69,7 @@ def _cmd_eviltwin(args) -> int:
         iface_ap=args.iface_ap, iface_mon=args.iface_mon,
         bssid=args.bssid, ssid=args.ssid, channel=args.channel,
         timeout=args.timeout,
+        progress_fn=lambda msg: print(msg, flush=True),
     )
     if result.success:
         print(f"SUCCESS: password captured -> {result.password!r}")
@@ -90,6 +91,7 @@ def _cmd_deauth(args) -> int:
         client=args.client or BROADCAST,
         count=args.count,
         channel=args.channel,
+        progress_fn=lambda msg: print(msg, flush=True),
     )
     print(f"sent {sent} deauth frames to {args.client or 'broadcast'}")
     return 0
@@ -99,7 +101,8 @@ def _cmd_pmkid(args) -> int:
     from .attacks.pmkid import capture_pmkid
 
     line = capture_pmkid(
-        args.iface, bssid=args.bssid, client=args.client, channel=args.channel
+        args.iface, bssid=args.bssid, client=args.client, channel=args.channel,
+        progress_fn=lambda msg: print(msg, flush=True),
     )
     if line is None:
         print("no PMKID captured", file=sys.stderr)
@@ -114,6 +117,7 @@ def _cmd_handshake(args) -> int:
     cap = capture_handshake(
         args.iface, bssid=args.bssid, channel=args.channel,
         timeout=args.timeout, outfile=args.outfile,
+        progress_fn=lambda msg: print(msg, flush=True),
     )
     for (ap, client), msgs in cap.messages.items():
         status = cap.status(ap, client).value
@@ -142,7 +146,10 @@ def _cmd_omni(args) -> int:
     from .storage import capture_root
 
     capture_dir = args.capture_dir or str(capture_root())
-    orch = OmniOrchestrator(args.iface, cracker=cracker, capture_dir=capture_dir)
+    orch = OmniOrchestrator(
+        args.iface, cracker=cracker, capture_dir=capture_dir,
+        progress_fn=lambda msg: print(msg, flush=True),
+    )
     report = orch.run(ap, wordlist=args.wordlist)
     print(report.summary())
     return 0 if report.cracked or not args.wordlist else 1
@@ -169,7 +176,10 @@ def _cmd_smart(args) -> int:
     from .storage import capture_root
 
     capture_dir = args.capture_dir or str(capture_root())
-    orch = OmniOrchestrator(args.iface, cracker=cracker, capture_dir=capture_dir)
+    orch = OmniOrchestrator(
+        args.iface, cracker=cracker, capture_dir=capture_dir,
+        progress_fn=lambda msg: print(msg, flush=True),
+    )
     report = orch.run_smart(ap, wordlist=args.wordlist)
     print(report.summary())
     return 0 if report.cracked or not args.wordlist else 1

