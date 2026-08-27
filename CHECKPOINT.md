@@ -308,3 +308,51 @@ stage-by-stage logging with stubbed functions (no radio needed).
 (needs both Alfa adapters connected); auditing `deauth()`'s frame-count
 return value (currently just echoes the `count` argument, not a real
 confirmation of transmission).
+
+---
+
+## 2026-08-27 — Desktop-snippet review, opt-in low-rate injection, vault catch-up commit
+
+User pasted 6 standalone Python snippets from `~/Desktop/` (driver
+detection, dual-band channel hopping, Alfa-tuned deauth injection, a
+main-wiring example, a WEP interactive ARP replayer, and a
+reaver-wrapping WPS pixie-dust script) and asked for a comparison
+against this project's actual source, adding anything genuinely
+missing.
+
+**Finding:** all six were already covered here, mostly more robustly —
+`radio.py`'s driver detection/monitor-mode/`ChannelHopper` supersedes
+the first four outright (real driver strings, MAC randomization, ACHM
+txpower patch, antenna-mask fix, DFS-inclusive channel list, PHY-level
+channel set), and the native `wps/pixie.py`/`wps/oneshot.py` supersede
+the reaver-wrapping script (native crypto, stronger lockout detection
+via two independent signals vs. a bare string match) — the
+reaver-shelling approach is the opposite of this project's native-only
+mandate, not an upgrade.
+
+**One real gap found and fixed:** none of the injection code anywhere
+forced a slow/reliable TX rate — every crafted frame left RadioTap
+Rate unset. The pasted deauth/WEP scripts both do this deliberately
+(forcing 6 Mbps / 2 Mbps OFDM) for more reliable injection on
+Realtek/Alfa hardware. Added `frames.with_forced_rate()` and wired an
+opt-in `low_rate` flag through `attacks/deauth.deauth()`,
+`attacks/wep.replay_arp()`/`crack_wep()`, and
+`attacks/wep_client.caffe_latte()`/`hirte()`. Default stays off (costs
+airtime) — not wired into CLI/GUI yet. 113/113 tests pass (2 new test
+files: `test_deauth.py` additions, `test_wep_replay.py`).
+
+**Vault catch-up:** working tree had a large body of *prior*-session
+work sitting uncommitted — the 2026-08-26 Stop-Attack/logging overhaul
+above, plus a native WPA 4-way-handshake online dictionary-attack stage
+(`wpa/crypto.py` + `attacks/online.py`, wired into `OmniOrchestrator`'s
+new ONLINE stage) that had never been committed *or* logged to the
+vault. Verified full suite green before committing, confirmed no
+remote configured (no push risk), then committed everything together
+as `d58dfd9`. Vault (`decisions.md`/`pending-investigations.md`,
+graphify graph) was correspondingly behind — see
+`~/CCM2/ATWA-NG/logs/2026-08-27-catchup-online-stage-and-low-rate-injection.md`
+for the full sync.
+
+**Not done this session:** CLI/GUI exposure of `low_rate`; live testing
+of the ONLINE stage against a real AP (status unknown — inherited
+untested from whatever prior session wrote it).
