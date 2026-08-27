@@ -26,7 +26,7 @@ def test_build_m2_mic_is_verifiable():
         bssid="aa:bb:cc:dd:ee:ff", client="11:22:33:44:55:66",
         replay_counter=7, descriptor_version=2, snonce=snonce, kck=kck, rsn_ie_bytes=rsn_ie,
     )
-    pkt = EAPOL(frame)
+    pkt = EAPOL(bytes(frame))
     key = pkt.getlayer(EAPOL_KEY)
     assert bytes(key.key_nonce) == snonce
     assert key.key_replay_counter == 7
@@ -50,8 +50,8 @@ def test_build_m2_wrong_kck_gives_different_mic():
     )
     frame_a = _build_m2(kck=b"\x01" * 16, **common)
     frame_b = _build_m2(kck=b"\x02" * 16, **common)
-    mic_a = bytes(EAPOL(frame_a).getlayer(EAPOL_KEY).key_mic)
-    mic_b = bytes(EAPOL(frame_b).getlayer(EAPOL_KEY).key_mic)
+    mic_a = bytes(EAPOL(bytes(frame_a)).getlayer(EAPOL_KEY).key_mic)
+    mic_b = bytes(EAPOL(bytes(frame_b)).getlayer(EAPOL_KEY).key_mic)
     assert mic_a != mic_b
 
 

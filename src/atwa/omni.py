@@ -26,12 +26,13 @@ from enum import Enum
 from pathlib import Path
 
 from .attacks.deauth import deauth as _default_deauth
-from .attacks.handshake import HandshakeCapture, HandshakeStatus, capture_handshake as _default_capture_handshake
-from .attacks.pmkid import capture_pmkid as _default_capture_pmkid
-from .attacks.wps import wps_pin_bruteforce as _default_wps_bruteforce
-from .attacks.wps import pixie_attempt as _default_pixie_attempt
 from .attacks.eviltwin import run_eviltwin as _default_eviltwin
+from .attacks.handshake import HandshakeCapture, HandshakeStatus
+from .attacks.handshake import capture_handshake as _default_capture_handshake
 from .attacks.online import online_guess as _default_online_guess
+from .attacks.pmkid import capture_pmkid as _default_capture_pmkid
+from .attacks.wps import pixie_attempt as _default_pixie_attempt
+from .attacks.wps import wps_pin_bruteforce as _default_wps_bruteforce
 from .crack.base import Cracker
 from .crack.convert import cap_to_22000
 from .frames import BROADCAST
@@ -219,7 +220,7 @@ class OmniOrchestrator:
         """Clientless PMKID attempt; True and records a hash line on success."""
         try:
             attacker_mac = get_mac(self.iface)
-        except Exception as exc:  # radio lookup failure shouldn't crash the chain
+        except Exception as exc:  # noqa: BLE001 - radio lookup failure shouldn't crash the chain
             report.stages.append(StageReport("pmkid", StageResult.FAILED, str(exc)))
             return False
 
@@ -433,7 +434,7 @@ class OmniOrchestrator:
 
         try:
             client = get_mac(self.iface)
-        except Exception as exc:  # radio lookup failure shouldn't crash the chain
+        except Exception as exc:  # noqa: BLE001 - radio lookup failure shouldn't crash the chain
             report.stages.append(StageReport("online", StageResult.FAILED, str(exc)))
             return
 
@@ -461,14 +462,14 @@ class OmniOrchestrator:
                 out22000 = item + ".22000"
                 try:
                     cap_to_22000(item, out22000)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - converter can raise several error types; stage must not crash
                     report.stages.append(StageReport("crack", StageResult.FAILED, str(exc)))
                     return
                 lines.extend(Path(out22000).read_text().splitlines())
             else:
                 lines.append(item)
 
-        deduped = sorted(set(l for l in lines if l.strip()))
+        deduped = sorted({l for l in lines if l.strip()})
         if not deduped:
             self._log("crack: no hash material collected from any stage")
             report.stages.append(StageReport("crack", StageResult.SKIPPED, "no hash material"))
@@ -487,7 +488,7 @@ class OmniOrchestrator:
         self._log(f"crack: running John against {wordlist}")
         try:
             results = self.cracker.crack(str(batch_path), wordlist)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - cracker backend errors must not crash the chain
             report.stages.append(StageReport("crack", StageResult.FAILED, str(exc)))
             return
         report.cracked.update(results)

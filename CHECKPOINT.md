@@ -1,9 +1,65 @@
-# CHECKPOINT — .simulation/N2-NGv2
+# CHECKPOINT — ATWA-NG (formerly .simulation/N2-NGv2)
 
-Last updated: 2026-08-26, end of audit + live-hardware test session.
-This file is for **`.simulation/N2-NGv2` (`n2ngv2`) only** — do not confuse
-with `~/N2-NG_v2/STATUS.md`/`STATUS2.md`/`CHECKPOINT.md` at the repo root,
-which belong to the sibling `n2ng2` project.
+Last updated: 2026-08-27, mcp-debugpy test-suite repair pass.
+Project renamed/relocated 2026-08-25 per AGENTS.md; this file now tracks
+`~/ATWA-NG` (`atwa` package), not the sibling `n2ng2` project.
+
+## State right now
+
+- Full test suite green again: `pytest` **125/125 passed** (run through
+  the mcp-debugpy MCP server's `run_tests_json`).
+- Fixed `tests/test_online.py` — broken by the earlier mypy pass, which
+  changed `_build_m2()` to return a `Packet` without updating the tests;
+  three `EAPOL(frame)` calls became `EAPOL(bytes(frame))` (lines 29, 53-54).
+  The collection-time crash had been masking 56 other tests (only 69 of
+  125 ran).
+- WPA online-stage M2 MIC path (`attacks/online.py` `_build_m2` +
+  `wpa/crypto.py` `compute_mic`) is verified offline again: embedded MIC
+  matches a recompute over the zeroed-MIC frame; wrong KCK gives a
+  different MIC. Production code untouched — returning a `Packet` for
+  `sendp()` is correct.
+- Tooling: mcp-debugpy MCP server (user-global `~/.kimi-code/mcp.json`,
+  `/home/KaliMa/mcp-debugpy/.venv/bin/mcp-debug-server`) is live and was
+  used end-to-end this session — `dap_launch`/`dap_locals`/`dap_continue`
+  against the `atwa` CLI plus full-suite `run_tests_json` runs.
+
+## Next (unchanged, still open)
+
+- Live test the WPA ONLINE stage's real M2→M3 exchange against a real AP
+  (never live-tested; offline MIC verification restored today).
+- Live test the patched WPS brute-forcer against a real WPS-enabled AP.
+
+## Update — 2026-08-27, WPS M2→M3 fix + `wash` parity pass
+
+- WPS exchange bug diagnosed against Reaver source and fixed in
+  `src/atwa/attacks/wps.py`:
+  - `_wait_for()` / `_wait_for_dot11()` now validate destination MAC.
+  - `_send_until_m3()` now proactively resends M2 on a timer.
+- `wash` parity added: `src/atwa/secure.py` `wps_profile()` returns
+  manufacturer/model/device-name from beacon WPS IEs;
+  `src/atwa/scan.py` `AccessPoint` stores them.
+- New tests: `tests/test_wps_exchange.py` (6), `tests/test_secure.py` (5).
+- Full test suite: `pytest -q` 125 passed.
+- `ruff check src/atwa --select F401,F541` clean.
+
+## Update — 2026-08-27, mypy type-clean pass
+
+- `mypy src/atwa --ignore-missing-imports --show-error-codes` is clean
+  (54 source files, 0 errors).
+- `ruff check src/atwa` is clean.
+- Type fixes applied to:
+  - `src/atwa/crack/john.py` — stdout non-None guard.
+  - `src/atwa/gui/crack_dialog.py` — `pad` dict annotation widened.
+  - `src/atwa/attacks/online.py` — `_build_m2()` returns `Packet`.
+  - `src/atwa/gui/attack_runner.py` — `_iface`/`_mac` helpers + wordlist guard.
+  - `src/atwa/gui/app.py` — channel/iface guards + `after_id` annotation.
+- Full test suite not run this pass (user direction) — this let the
+  `_build_m2` return-type change silently break `tests/test_online.py`;
+  repaired in the mcp-debugpy pass recorded at the top of this file.
+
+---
+
+## Historical notes below (pre-rename, 2026-08-26 and earlier)
 
 ## State right now
 
@@ -356,3 +412,257 @@ for the full sync.
 **Not done this session:** CLI/GUI exposure of `low_rate`; live testing
 of the ONLINE stage against a real AP (status unknown — inherited
 untested from whatever prior session wrote it).
+
+---
+
+## 2026-08-27 — Second-opinion cleanup, John Jumbo fallback, source-code rebrand sweep
+
+User asked for a "second-opinion doctor" scan of `src/` plus tests, then
+directed cleanup of drift and wrapper-like branding.
+
+**Findings from the scan:**
+- Full test suite green: `115/115`.
+- `py_compile` clean.
+- `pyflakes` flagged 19 unused imports + 1 pointless f-string; no syntax
+  errors, no `os.system`/`eval`/`exec`, no bare `except:`.
+- Subprocess/privilege/storage logic is solid for WiFi tooling (timeouts,
+  `stdin=DEVNULL`, SUDO_USER-aware capture paths, PHY-level channel set).
+
+**Changes made:**
+- `crack/john.py`: added fallback resolution to `~/john/run/john` and
+  `~/John/run/john`; hardened `run_streaming()` cleanup; fixed pointless
+  f-string.
+- `pyproject.toml`: added `[project.optional-dependencies] dev` with
+  `ruff`, `mypy`, `pyflakes`; reworded description to drop "reaver source".
+- Unused-import sweep across `src/atwa/` (auto-fixed via `ruff`).
+- Rephrased Reaver-specific comments in `wps/messages.py`, `wps/eap.py`,
+  `attacks/wps.py`; renamed `cli.py:_REAVER_ROOT` → `_WPSRECON_ROOT`.
+
+**Held back (user asked to avoid dangerous changes):**
+- `HOPSCAN_BIN` constant rename and the `vendor/aircrack-ng/airodump-ng`
+  compiled binary filename.
+- `vendor/reaver` directory rename.
+- Aggressive `except Exception:` narrowing or broad import-sorting churn.
+
+**Verification:**
+- `pytest -q` → `115 passed`.
+- `_resolve_john_binary('john-not-in-path')` correctly returns
+  `/home/KaliMa/john/run/john` (freshly built by user during this session).
+
+**Vault / graphify status:**
+- `~/CCM2/graphify/ATWA-NG/` and the Obsidian vault are now behind the
+  source tree. User is checking Kimi Code's vault access configuration;
+  once configured, regenerate with
+  `/graphify src --obsidian --obsidian-dir ~/CCM2/graphify/ATWA-NG` and
+  update `~/CCM2/ATWA-NG/architecture/decisions.md` as needed.
+- Local docs (`STATUS.md`, `CHECKPOINT.md`) updated as the canonical
+  session record.
+
+---
+
+## 2026-08-27 — Phase 1 of approved refactor: `ensure_channel()` helper
+
+Implemented the first phase of the approved 6-phase architectural refactor
+plan (`forager-cable-wolfsbane.md`).
+
+**Changes:**
+- Added `ensure_channel(iface, channel)` and `clear_channel_cache()` to
+  `src/atwa/radio.py`. `ensure_channel()` wraps `set_channel()` with a
+  per-interface cache so repeated calls to the same channel are no-ops and
+  only real changes invoke `iw`.
+- Replaced direct `set_channel()` calls with `ensure_channel()` in every
+  attack entry point: `attacks/pmkid.py`, `attacks/deauth.py`,
+  `attacks/handshake.py`, `attacks/online.py`, `attacks/wps.py`,
+  `attacks/wep.py`, `attacks/wep_client.py`, and both GUI sites in
+  `gui/app.py` (channel lock + PINCER dual-radio setup).
+- Left `radio.ChannelHopper` and `radio.set_channel()` itself unchanged;
+  `set_channel()` remains the low-level primitive.
+- Added `tests/test_radio.py` covering cache hits, misses,
+  per-interface independence, and exception-safety.
+- Updated `tests/test_deauth.py` to monkeypatch `radio.set_channel`
+  because `deauth.py` now routes through `radio.ensure_channel`.
+
+**Verification:**
+- `pytest -q` → `122 passed`.
+- `ruff check src/atwa --select F401,F541` → clean.
+
+**Next:** Phase 2 — split `src/atwa/cli.py` into
+`src/atwa/cli_commands/{scan,attacks,crack,misc}.py`.
+
+---
+
+## 2026-08-27 — Phases 2-5 of approved refactor + Phase 6a vendor inventory
+
+Completed the remaining internal-coupling phases of the approved refactor
+plan and produced the vendor-audit deliverable that kicks off Phase 6.
+
+**Phase 2 — CLI split:**
+- New `src/atwa/cli_commands/` package:
+  - `__init__.py` — shared binary paths (`INJECTOR_BIN`, `CAPCRACK_BIN`,
+    `WPSRECON_BIN`) and `_run_bounded()` helper.
+  - `scan.py` — `_cmd_scan`, `_cmd_injection_test`, `_cmd_wps_recon`.
+  - `attacks.py` — native attack subcommands (`deauth`, `pmkid`, `handshake`,
+    `omni`, `smart`, `wep`, `wps-pixie`, `wps-oneshot`, `eviltwin`).
+  - `crack.py` — `_cmd_crack` (John) and `_cmd_crack_cap` (vendored
+    aircrack-ng).
+  - `misc.py` — `_cmd_gui`, `_cmd_deauth_inject`.
+- `src/atwa/cli.py` now only builds the parser and dispatches via
+  `args.func()`; no command logic lives there.
+- Updated `tests/test_cli.py` imports to reference the new modules.
+
+**Phase 3 — WEP split:**
+- `src/atwa/attacks/wep.py` keeps frame-parsing / fake-auth primitives.
+- New `src/atwa/attacks/wep_replay.py` holds `replay_arp()`.
+- New `src/atwa/attacks/wep_crack.py` holds `crack_wep()`.
+- Updated `cli_commands/attacks.py` and `tests/test_wep_replay.py` imports.
+
+**Phase 4 — scan worker refactor:**
+- Renamed `HOPSCAN_BIN` → `SCAN_ENGINE_BIN` in `scan_engine.py`,
+  `gui/app.py`, and tests.
+- Extracted `ScanEngineWorker` into new `src/atwa/scan_worker.py`.
+- `scanner.py` is now a thin wrapper/helpers module.
+- Added injectable `popen_factory` to `ScanEngineWorker` for tests.
+- Updated `tests/test_scanner.py` and `tests/test_scan_engine.py`.
+
+**Phase 5 — App decoupling:**
+- New `src/atwa/gui/attack_runner.py` with `AttackRunner` class holding
+  runtime state and one method per GUI attack.
+- `gui/app.py` `_attack_*` methods are now thin confirmation/UI wrappers
+  that call `self._runner().<method>(...)` inside `_run_bg()`.
+- PINCER dual-radio logic moved entirely into `AttackRunner.pincer()`.
+- App keeps Tkinter state, confirmation dialogs, `_run_bg()` machinery,
+  logging, and stop handling.
+
+**Phase 6a — vendor inventory:**
+- Added `docs/vendor_inventory.md` mapping every spawned vendor/system
+  binary, its role, parsed output, native-replacement difficulty, and
+  priority.
+- Confirmed aircrack-ng remains an optional cracking backend alongside John
+  (GUI radio + CLI `crack-cap`).
+
+**Verification:**
+- `pytest -q` → `122 passed`.
+- `ruff check src/atwa --select F401,F541` → clean.
+- `atwa gui --demo` launches without import errors.
+
+**Next:** Phase 6b — native scapy-based scanner, or pause here and refresh
+the vault/graphify first.
+
+---
+
+## 2026-08-27 — Phase 6b: scanning fully native, `airodump-ng` removed
+
+User directed a full cutover, not a `--legacy-scan` transition: no fallback
+flag, no partial cutoff. `airodump-ng` is now unreachable from any code
+path in ATWA-NG.
+
+**Discovery before writing code:** a native scapy scanner (`src/atwa/scan.py`)
+already existed and already powered OMNI/Smart profiling. It was `scan.py`
+(native) vs. `scan_engine.py`/`scan_worker.py`/`scanner.py`
+(airodump-ng-backed) as two parallel scanning stacks. The GUI's main live
+scan loop (`App._start_scan`) was *already* calling `scan.process_packet()`
+directly — airodump-ng only remained for the CLI `scan` command and the
+GUI's channel-lock capture feature.
+
+**Changes:**
+- `scan.py`: added `AccessPoint.beacon_count`/`first_seen`/`last_seen` and
+  a `channels_for_band()` helper (native replacement for airodump-ng's
+  `--band bg/a/abg` flag). `iv_count` deliberately not ported — it's
+  WEP-specific and already tracked by `wep.py`'s `PTWVoteTable`.
+- `cli_commands/scan.py`: `_cmd_scan` now calls `scan.scan()` directly;
+  output fields changed to match `AccessPoint`.
+- New `src/atwa/lock_capture.py`: `LockCapture` class — native
+  `AsyncSniffer` filtered to one BSSID, writing matches to `.pcap` via
+  `PcapWriter`. Replaces `gui/app.py`'s `_start_lock_capture`/
+  `_stop_lock_capture` airodump-ng `Popen` calls. `_lock_capture_proc` now
+  holds a `LockCapture` instance instead of a `subprocess.Popen`.
+- Deleted `src/atwa/scan_engine.py`, `scan_worker.py`, `scanner.py`, and
+  `tests/test_scan_engine.py`, `tests/test_scanner.py` — confirmed via
+  full-repo grep that nothing else referenced them first.
+- Added `tests/test_lock_capture.py` and extended `tests/test_scan.py`
+  for the new fields/helper.
+- Updated `docs/vendor_inventory.md`: scanning marked done, `airodump-ng`
+  row removed from the binary table, roadmap items reworded to drop
+  "legacy fallback" language throughout (matches the user's explicit
+  no-fallback direction for future phases too).
+
+**Verification:**
+- `pytest -q` → `102 passed` (down from 122 — `test_scan_engine.py`/
+  `test_scanner.py` deletion removed ~35 tests; new files added ~15).
+- `ruff check src/atwa --select F401,F541` → clean.
+- `atwa gui --demo` launches; `atwa scan --help`/argument parsing verified.
+- Full-repo grep confirms zero remaining references to `SCAN_ENGINE_BIN`
+  or `airodump-ng` outside explanatory comments.
+
+**Out of scope this session (left for later Phase 6 sub-parts):**
+- `deauth-inject`/`injection-test` CLI commands still shell out to
+  `aireplay-ng` (Phase 6c).
+- `wps-recon` CLI command still shells out to `wash` (Phase 6e).
+- `aircrack-ng` (cracking) stays as the permanent, deliberate optional
+  backend alongside John — not in scope for removal, ever.
+
+**Next:** Phase 6c — native injection, same full-cutover approach (no
+legacy flag).
+
+---
+
+## 2026-08-27 — Phase 6c: injection fully native, `aireplay-ng` removed
+
+Confirmed project-wide policy from the user: the only acceptable wrappers
+in ATWA-NG are cracking backends (John, `aircrack-ng`) and cap/pcap-format
+tools. Scanning and injection are now both fully native; WPS is the
+remaining sub-part.
+
+**Changes:**
+- Removed the `deauth-inject` CLI subcommand entirely (`cli.py`,
+  `cli_commands/misc.py`) — it duplicated the already-native `deauth`
+  command, just via the vendored binary. No native port needed, just
+  deletion.
+- Rewrote `injection-test` natively. Read `aireplay-ng`'s actual `--test`
+  algorithm (`do_attack_test()` in `vendor/aircrack-ng/src/aireplay-ng/
+  aireplay-ng.c`) directly rather than inventing a design — it's a
+  two-phase test: broadcast probe-request AP discovery (3 attempts), then
+  a directed ping phase against the found/given AP (default 30 attempts,
+  matching aireplay-ng's `REQUESTS` constant): each attempt sends a probe
+  request + RTS + null-data + auth-request and counts any of {probe
+  response, CTS, ACK, auth response} addressed back to that attempt's
+  random source MAC as a hit.
+- New `src/atwa/injection_test.py` (`injection_test()`,
+  `InjectionTestResult`, `_discover_ap()`, `_is_reply_to()`).
+- New frame primitives in `frames.py`: `craft_probe_req()` (had to learn
+  scapy's `FCfield` flag name is `to_DS` with an underscore, not a
+  hyphen — first attempt raised `ValueError` on `FlagValue._fixvalue`),
+  `craft_rts()`, `craft_null_data()`.
+- Removed `INJECTOR_BIN` from `cli_commands/__init__.py`.
+- Rewrote `tests/test_cli.py` (removed `deauth-inject` cases, added
+  `injection-test` argument tests) and added `tests/test_injection_test.py`
+  (15 tests: frame shapes, `_is_reply_to()` matching logic, discovery/
+  ping orchestration with `sendp_fn`/`sniff_fn` injected).
+- Updated `docs/vendor_inventory.md`: added the project-wide wrapper
+  policy statement at the top, marked injection done, moved `wash`'s
+  table row to "next up (Phase 6e)".
+
+**Verification:**
+- `pytest -q` → `114 passed`.
+- `ruff check src/atwa --select F401,F541` → clean.
+- `atwa --help` / `atwa injection-test --help` show the updated command
+  list (no `deauth-inject`); `atwa gui --demo` launches clean.
+- Grep confirms zero remaining references to `INJECTOR_BIN` or a spawned
+  `aireplay-ng` process outside explanatory prose comments.
+
+**User idea considered and narrowed:** dispatch an agent to read
+reaver/bully/wash/oneshot and "combine into our own." Pushed back with a
+concrete assessment instead of agreeing reflexively: `bully` isn't
+vendored (would need an internet fetch), `oneshot` is already ported
+(`wps/oneshot.py`), and reaver/bully's *attack* logic is already
+redundant with `attacks/wps.py`'s native PIN/pixie-dust implementation.
+The one genuinely useful comparison is reaver's actual M1-M7 state
+machine against `wps_pin_bruteforce()`'s known bug (GUI's own confirm
+dialog says it has never completed a real M2→M3 exchange live) — user
+agreed to do that directly, no agent, in the next session slice.
+
+**Next:** diagnose the `wps_pin_bruteforce()` M2→M3 bug by reading
+`vendor/reaver/src/exchange.c`/`wps_common.c`/`session.c` against
+`attacks/wps.py`'s `attempt_pin()`; separately, extend `secure.py`'s
+`wps_profile()` with manufacturer/model/device-name to close the `wash`
+gap (small, independent task).

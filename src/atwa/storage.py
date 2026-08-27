@@ -23,7 +23,7 @@ def user_home() -> Path:
             import pwd
 
             return Path(pwd.getpwnam(sudo_user).pw_dir)
-        except Exception:
+        except (KeyError, OSError):
             pass
     return Path.home()
 

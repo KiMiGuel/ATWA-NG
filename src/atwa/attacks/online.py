@@ -33,13 +33,20 @@ import os
 import time
 from dataclasses import dataclass
 
-from scapy.layers.dot11 import Dot11, Dot11Auth, Dot11AssoResp, Dot11Deauth, Dot11Disas, RadioTap
+from scapy.layers.dot11 import (
+    Dot11,
+    Dot11AssoResp,
+    Dot11Auth,
+    Dot11Deauth,
+    Dot11Disas,
+    RadioTap,
+)
 from scapy.layers.eap import EAPOL, EAPOL_KEY
 from scapy.packet import Packet
 from scapy.sendrecv import AsyncSniffer, sendp
 
 from ..frames import assoc_resp_status, craft_assoc_req, craft_auth, craft_rsn_ie
-from ..radio import set_channel
+from ..radio import ensure_channel
 from ..wpa.crypto import compute_mic, derive_pmk, derive_ptk, mac_to_bytes, split_ptk
 
 CCMP_KEY_DESCRIPTOR_VERSION = 2
@@ -166,7 +173,7 @@ def _wait_for_m3_or_reject(iface: str, bssid: str, timeout: float, send_fn):
     return found[0]
 
 
-def _build_m2(bssid: str, client: str, replay_counter: int, descriptor_version: int, snonce: bytes, kck: bytes, rsn_ie_bytes: bytes) -> bytes:
+def _build_m2(bssid: str, client: str, replay_counter: int, descriptor_version: int, snonce: bytes, kck: bytes, rsn_ie_bytes: bytes) -> Packet:
     """Build a real EAPOL-Key Message 2 (SNonce + station's RSNE + MIC)."""
     key = EAPOL_KEY(
         key_descriptor_type=RSN_DESCRIPTOR_TYPE,
@@ -186,7 +193,7 @@ def _build_m2(bssid: str, client: str, replay_counter: int, descriptor_version: 
     unsigned = bytes(eapol)
     mic = compute_mic(kck, unsigned)
     key.key_mic = mic
-    return bytes(EAPOL(version=1, type=3) / key)
+    return EAPOL(version=1, type=3) / key
 
 
 def _try_password(
@@ -220,7 +227,7 @@ def _try_password(
     kck, _kek, _tk = split_ptk(ptk)
 
     rsn_ie_bytes = bytes(craft_rsn_ie(akms=[2]))
-    outcome, pkt = _wait_for_m3_or_reject(
+    outcome, _pkt = _wait_for_m3_or_reject(
         iface, bssid, msg_timeout,
         send_fn=lambda: sendp(
             _build_m2(bssid, client, replay_counter, descriptor_version, snonce, kck, rsn_ie_bytes),
@@ -264,12 +271,12 @@ def online_guess(
     tested without touching hardware, matching this project's existing
     pattern (see e.g. omni.py's own docstring, wps_pin_bruteforce's
     attempt_fn)."""
-    if channel is not None:
-        set_channel(iface, channel)
-
     def log(msg: str) -> None:
         if progress_fn is not None:
             progress_fn(msg)
+
+    if ensure_channel(iface, channel):
+        log(f"channel set to {channel}")
 
     result = OnlineGuessResult(success=False)
     consecutive_assoc_failures = 0

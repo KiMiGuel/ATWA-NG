@@ -9,10 +9,25 @@ from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeResp, RadioTap
 from scapy.sendrecv import AsyncSniffer
 
 from .frames import bssid_of, channel_of, ssid_of
-from .radio import ALL_CHANNELS, ChannelHopper
+from .radio import ALL_CHANNELS, CHANNELS_5GHZ, CHANNELS_24GHZ, ChannelHopper
 from .secure import security_profile, wps_profile
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
+
+# Band-name -> channel-subset mapping. Native replacement for the vendored
+# airodump-ng engine's --band bg/a/abg flag, kept as the same three
+# GUI-facing labels ("2.4GHz" / "5GHz" / "Both") so callers don't change.
+BAND_CHANNELS = {
+    "2.4GHz": CHANNELS_24GHZ,
+    "5GHz": CHANNELS_5GHZ,
+    "Both": ALL_CHANNELS,
+}
+
+
+def channels_for_band(band: str) -> list[int]:
+    """Return the channel list for a band label, defaulting to ALL_CHANNELS
+    for 'Both' or any unrecognized value (matches the old --band abg default)."""
+    return list(BAND_CHANNELS.get(band, ALL_CHANNELS))
 
 
 @dataclass
@@ -25,8 +40,15 @@ class AccessPoint:
     security: str | None = None  # open | WEP | WPA | WPA2 | WPA3 | transition
     pmf: str | None = None  # none | capable | required | unknown
     wps: str | None = None  # enabled | locked | None (no WPS IE seen)
+    wps_manufacturer: str | None = None
+    wps_model_name: str | None = None
+    wps_model_number: str | None = None
+    wps_device_name: str | None = None
     signal: int | None = None  # best (strongest) dBm seen from RadioTap
     last_signal: int | None = None  # most recent dBm reading (NOT a running max -- for live time-series display)
+    beacon_count: int = 0  # number of Dot11Beacon frames seen (not probe responses)
+    first_seen: float | None = None  # time.time() of first frame seen for this bssid
+    last_seen: float | None = None  # time.time() of most recent frame seen for this bssid
     clients: set[str] = field(default_factory=set)
     client_signal: dict[str, int] = field(default_factory=dict)  # best dBm seen per client MAC
 
@@ -48,7 +70,14 @@ def process_packet(pkt, result: ScanResult) -> None:
         bssid = bssid_of(pkt)
         if not bssid:
             return
+        now = time.time()
+        is_new = bssid not in result.aps
         ap = result.aps.setdefault(bssid, AccessPoint(bssid=bssid))
+        if is_new:
+            ap.first_seen = now
+        ap.last_seen = now
+        if pkt.haslayer(Dot11Beacon):
+            ap.beacon_count += 1
         ssid = ssid_of(pkt)
         if ssid:
             ap.ssid = ssid
@@ -67,7 +96,10 @@ def process_packet(pkt, result: ScanResult) -> None:
             ap.pmf = profile["pmf"]
         wps = wps_profile(pkt)
         if wps is not None:
-            ap.wps = wps  # AP self-reports current lock state each beacon; always take the latest
+            ap.wps = wps["state"]  # AP self-reports current lock state each beacon; always take the latest
+            for key in ("manufacturer", "model_name", "model_number", "device_name"):
+                if wps.get(key):
+                    setattr(ap, f"wps_{key}", wps[key])
         rtap = pkt.getlayer(RadioTap)
         dbm = getattr(rtap, "dBm_AntSignal", None) if rtap else None
         if dbm is not None:

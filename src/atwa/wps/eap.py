@@ -11,7 +11,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-from scapy.layers.dot11 import Dot11, Dot11QoS, RadioTap
+from scapy.layers.dot11 import Dot11, RadioTap
 from scapy.layers.eap import EAPOL
 from scapy.layers.l2 import LLC, SNAP
 from scapy.packet import Packet, Raw
@@ -104,11 +104,10 @@ EAP_CODE_FAILURE = 4
 def craft_eap_failure(bssid: str, client: str, identifier: int, version: int = 1) -> Packet:
     """EAP-Failure: explicitly closes out a WPS session.
 
-    Reference tool reaver sends this at the end of every session
-    (its -E/--eap-terminate behavior) to cleanly signal termination
-    rather than just going silent — abandoning a session without this
-    is a plausible reason an AP's WPS state machine gets stuck waiting
-    on us instead of resetting for the next attempt.
+    Send this at the end of every session to cleanly signal termination
+    rather than going silent — abandoning a session without an explicit
+    EAP-Failure is a plausible reason an AP's WPS state machine gets
+    stuck waiting on us instead of resetting for the next attempt.
     """
     eap = _eap_packet(EAP_CODE_FAILURE, identifier, None, b"")
     return _wrap_eapol(bssid, client, _eapol_wrap_eap(eap, version))
@@ -189,10 +188,14 @@ def is_frag_ack(parsed: ParsedEap) -> bool:
 
 def parse_eap(pkt: Packet) -> ParsedEap | None:
     """Parse an 802.11 data frame's EAPOL/EAP payload; None if not EAP."""
-    if pkt.haslayer(EAPOL):
-        raw = bytes(pkt.getlayer(EAPOL))
+    eapol_layer = pkt.getlayer(EAPOL)
+    if eapol_layer is not None:
+        raw = bytes(eapol_layer)
     elif pkt.haslayer(Raw):
-        raw = bytes(pkt.getlayer(Raw))
+        raw_layer = pkt.getlayer(Raw)
+        if raw_layer is None:
+            return None
+        raw = bytes(raw_layer)
     else:
         return None
     if len(raw) < 4:

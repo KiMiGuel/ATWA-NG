@@ -1,10 +1,12 @@
 """ATWA-NG Airwave Teardown Wireless Auditing-Next Gen
 	System's Down.
 
-  - scan: channel-hopping AP/client discovery, backed by a
-    locally-compiled scanning engine (scanner.py).
-  - deauth-inject, injection-test, wps-recon, crack-cap: packet-injection
-    and cracking paths backed by locally-compiled engines in vendor/.
+  - scan, injection-test: native scapy scanning and injection self-test
+    (scan.py, injection_test.py) — no vendored binary involved.
+  - wps-recon, crack-cap: the two remaining wrapper paths. crack-cap is a
+    permitted exception (cap/pcap-format cracking backend, alongside
+    John); wps-recon still shells out to the vendored `wash` pending its
+    own native port (see docs/vendor_inventory.md).
   - deauth, pmkid, handshake, omni, smart, wep, wps-pixie, wps-oneshot,
     crack: native-Python attack implementations (attacks/, wep/, wps/,
     crack/), imported here with plain relative imports (`.`/`..`) —
@@ -17,346 +19,21 @@
 from __future__ import annotations
 
 import argparse
-import signal
-import subprocess
-import sys
-import time
-from pathlib import Path
 
-from .scan_engine import HOPSCAN_BIN, ScanEngineNotBuilt
-from .scanner import scan_live
-
-_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "aircrack-ng"
-_REAVER_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "reaver" / "src"
-INJECTOR_BIN = _VENDOR_ROOT / "aireplay-ng"
-CAPCRACK_BIN = _VENDOR_ROOT / "aircrack-ng"
-WPSRECON_BIN = _REAVER_ROOT / "wash"
-
-
-def _cmd_scan(args) -> int:
-    """Locally-compiled scan engine, not the scapy hopper."""
-    try:
-        result = scan_live(args.iface, duration=args.duration, band=args.band)
-    except ScanEngineNotBuilt as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    for n in sorted(result.networks, key=lambda n: n.bssid):
-        print(f"{n.bssid}  ch={n.channel}  {n.privacy}/{n.cipher}  "
-              f"pwr={n.power}  beacons={n.beacons}  essid={n.essid!r}")
-    if args.clients:
-        for c in result.clients:
-            print(f"  client {c.station} -> {c.bssid}  pwr={c.power}  probed={c.probed!r}")
-    return 0
-
-
-def _cmd_gui(args) -> int:
-    """ATWA-NG's own desktop GUI (src/atwa/gui/). All its imports are
-    relative (`from ..radio import ...` etc.) pointing at this
-    package's own modules — see gui/app.py."""
-    from .gui.app import main as gui_main
-    from .gui.elevate import ensure_root
-
-    ensure_root(demo=args.demo)  # no-op if already root or --demo; else re-execs under sudo and exits
-    return gui_main(demo=args.demo)
-
-
-def _cmd_eviltwin(args) -> int:
-    """Wires run_eviltwin() (attacks/eviltwin.py) into the CLI, giving
-    the rogue-AP/captive-portal attack a scriptable entry point outside
-    the GUI."""
-    from .attacks.eviltwin import run_eviltwin
-    result = run_eviltwin(
-        iface_ap=args.iface_ap, iface_mon=args.iface_mon,
-        bssid=args.bssid, ssid=args.ssid, channel=args.channel,
-        timeout=args.timeout,
-        progress_fn=lambda msg: print(msg, flush=True),
-    )
-    if result.success:
-        print(f"SUCCESS: password captured -> {result.password!r}")
-        return 0
-    print(f"failed: {result.detail}", file=sys.stderr)
-    return 1
-
-
-# --- Native attacks: thin CLI wiring around this package's own
-# attacks/ implementations. --------------------------------------
-
-def _cmd_deauth(args) -> int:
-    from .attacks.deauth import deauth
-    from .frames import BROADCAST
-
-    sent = deauth(
-        args.iface,
-        bssid=args.bssid,
-        client=args.client or BROADCAST,
-        count=args.count,
-        channel=args.channel,
-        progress_fn=lambda msg: print(msg, flush=True),
-    )
-    print(f"sent {sent} deauth frames to {args.client or 'broadcast'}")
-    return 0
-
-
-def _cmd_pmkid(args) -> int:
-    from .attacks.pmkid import capture_pmkid
-
-    line = capture_pmkid(
-        args.iface, bssid=args.bssid, client=args.client, channel=args.channel,
-        progress_fn=lambda msg: print(msg, flush=True),
-    )
-    if line is None:
-        print("no PMKID captured", file=sys.stderr)
-        return 1
-    print(line)
-    return 0
-
-
-def _cmd_handshake(args) -> int:
-    from .attacks.handshake import capture_handshake
-
-    cap = capture_handshake(
-        args.iface, bssid=args.bssid, channel=args.channel,
-        timeout=args.timeout, outfile=args.outfile,
-        progress_fn=lambda msg: print(msg, flush=True),
-    )
-    for (ap, client), msgs in cap.messages.items():
-        status = cap.status(ap, client).value
-        print(f"{ap} {client}: messages={sorted(msgs)} [{status}]")
-    return 0
-
-
-def _cmd_omni(args) -> int:
-    from .crack.john import JohnCracker, JohnUnavailableError
-    from .omni import OmniOrchestrator
-    from .scan import scan
-
-    result = scan(args.iface, duration=args.profile_duration, channels=[args.channel] if args.channel else None)
-    ap = result.aps.get(args.bssid.lower())
-    if ap is None:
-        print(f"{args.bssid} not seen during {args.profile_duration}s profile scan", file=sys.stderr)
-        return 1
-
-    cracker = None
-    if args.wordlist:
-        try:
-            cracker = JohnCracker()
-        except JohnUnavailableError as exc:
-            print(f"warning: {exc} — will batch hashes but not crack", file=sys.stderr)
-
-    from .storage import capture_root
-
-    capture_dir = args.capture_dir or str(capture_root())
-    orch = OmniOrchestrator(
-        args.iface, cracker=cracker, capture_dir=capture_dir,
-        progress_fn=lambda msg: print(msg, flush=True),
-    )
-    report = orch.run(ap, wordlist=args.wordlist)
-    print(report.summary())
-    return 0 if report.cracked or not args.wordlist else 1
-
-
-def _cmd_smart(args) -> int:
-    from .crack.john import JohnCracker, JohnUnavailableError
-    from .omni import OmniOrchestrator
-    from .scan import scan
-
-    result = scan(args.iface, duration=args.profile_duration, channels=[args.channel] if args.channel else None)
-    ap = result.aps.get(args.bssid.lower())
-    if ap is None:
-        print(f"{args.bssid} not seen during {args.profile_duration}s profile scan", file=sys.stderr)
-        return 1
-
-    cracker = None
-    if args.wordlist:
-        try:
-            cracker = JohnCracker()
-        except JohnUnavailableError as exc:
-            print(f"warning: {exc} — will batch hashes but not crack", file=sys.stderr)
-
-    from .storage import capture_root
-
-    capture_dir = args.capture_dir or str(capture_root())
-    orch = OmniOrchestrator(
-        args.iface, cracker=cracker, capture_dir=capture_dir,
-        progress_fn=lambda msg: print(msg, flush=True),
-    )
-    report = orch.run_smart(ap, wordlist=args.wordlist)
-    print(report.summary())
-    return 0 if report.cracked or not args.wordlist else 1
-
-
-def _cmd_wep(args) -> int:
-    from .attacks.wep import crack_wep
-    from .radio import get_mac
-
-    client = get_mac(args.iface)
-    key = crack_wep(
-        args.iface, args.bssid, client, args.ssid, key_len=args.key_len,
-        channel=args.channel, target_sessions=args.target_sessions, timeout=args.timeout,
-    )
-    if key is None:
-        print("no key recovered (timed out or no ARP traffic seen)", file=sys.stderr)
-        return 1
-    print(key.hex())
-    return 0
-
-
-def _cmd_wps_pixie(args) -> int:
-    from .attacks.wps import AttemptOutcome, pixie_attempt
-
-    eapol_versions = tuple(int(v) for v in args.eapol_versions.split(","))
-    result = pixie_attempt(
-        args.iface, args.bssid, args.ssid, channel=args.channel, msg_timeout=args.timeout,
-        eapol_versions=eapol_versions, passive=args.passive,
-    )
-    if result.outcome is AttemptOutcome.SUCCESS:
-        print(f"SUCCESS ssid={result.ssid!r} key={result.network_key!r}")
-        return 0
-    suffix = f" ({result.detail})" if result.detail else ""
-    print(f"failed: {result.outcome.name}{suffix}", file=sys.stderr)
-    return 1
-
-
-def _cmd_wps_oneshot(args) -> int:
-    from .wps.oneshot import OneShot, Outcome
-
-    with OneShot(args.iface, bssid=args.bssid, verbose=args.verbose) as shot:
-        if args.pbc:
-            result = shot.single_connection(args.bssid, pbc_mode=True)
-        elif args.pin:
-            result = shot.single_connection(args.bssid, pin=args.pin)
-        else:
-            result = shot.pixie_dust_attack(args.bssid)
-
-    if result.outcome is Outcome.SUCCESS:
-        print(f"SUCCESS bssid={result.bssid} ssid={result.ssid!r} pin={result.pin!r} key={result.psk!r}")
-        return 0
-    suffix = f" ({result.detail})" if result.detail else ""
-    print(f"failed: {result.outcome.value}{suffix}", file=sys.stderr)
-    return 1
-
-
-def _cmd_crack(args) -> int:
-    from .crack.convert import cap_to_22000
-    from .crack.john import JohnCracker
-
-    hashfile = args.hashfile
-    if hashfile.endswith((".cap", ".pcap", ".pcapng")):
-        hashfile = cap_to_22000(hashfile, hashfile + ".22000")
-        print(f"converted to {hashfile}")
-    results = JohnCracker().crack(hashfile, args.wordlist)
-    for hash_id, password in results.items():
-        print(f"{hash_id}: {password}")
-    return 0 if results else 1
-
-
-def _cmd_injection_test(args) -> int:
-    """Injection self-test mode: confirms the adapter can actually
-    inject frames (not just receive) against nearby APs. Runs
-    indefinitely testing each AP it finds (confirmed live — cut off
-    mid-test by an external timeout still showed real progress, e.g.
-    25/30 pings, 83% success), so uses a SIGINT-and-collect pattern
-    rather than subprocess.run(timeout=)."""
-    if not INJECTOR_BIN.exists():
-        print(f"error: {INJECTOR_BIN} not built", file=sys.stderr)
-        return 1
-    cmd = [str(INJECTOR_BIN), "-9"]
-    if args.bssid:
-        cmd += ["-a", args.bssid]
-    cmd.append(args.iface)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, text=True)
-    try:
-        time.sleep(args.duration)
-    finally:
-        proc.send_signal(signal.SIGINT)
-        try:
-            out, _ = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, _ = proc.communicate()
-    print(out)
-    return 0
-
-
-def _cmd_wps_recon(args) -> int:
-    """WPS-enabled AP reconnaissance via a locally-compiled recon
-    engine. Runs continuously, no natural exit — launch, let it run for
-    `duration`, then SIGINT and collect what it printed
-    (subprocess.run(timeout=) raises instead of doing this cleanly)."""
-    if not WPSRECON_BIN.exists():
-        print(f"error: {WPSRECON_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
-        return 1
-    cmd = [str(WPSRECON_BIN), "-i", args.iface]
-    if args.channel:
-        cmd += ["-c", str(args.channel)]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, text=True)
-    try:
-        time.sleep(args.duration)
-    finally:
-        proc.send_signal(signal.SIGINT)
-        try:
-            out, _ = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, _ = proc.communicate()
-    print(out)
-    return 0
-
-
-def _run_bounded(cmd: list[str], timeout: float) -> tuple[int, str, str]:
-    """subprocess.run with no timeout is a real hang risk here: the
-    injection engine prints "Waiting for beacon frame" and blocks
-    indefinitely if the target BSSID never shows up on the current
-    channel (wrong channel, AP gone, typo'd MAC). Bounded so that case
-    fails cleanly instead of hanging the whole command forever."""
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            stdin=subprocess.DEVNULL, timeout=timeout,
-        )
-        return proc.returncode, proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired as e:
-        partial_out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        return 1, partial_out, (
-            f"timed out after {timeout}s — likely no beacon seen for the "
-            f"target (wrong channel, AP not present, or bad BSSID)"
-        )
-
-
-def _cmd_crack_cap(args) -> int:
-    """WPA/WEP cracking via a locally-compiled cracking engine — an
-    additional backend alongside John (the existing `crack` command),
-    explicitly not hashcat per the user's direction."""
-    if not CAPCRACK_BIN.exists():
-        print(f"error: {CAPCRACK_BIN} not built", file=sys.stderr)
-        return 1
-    cmd = [str(CAPCRACK_BIN), "-w", args.wordlist]
-    if args.bssid:
-        cmd += ["-b", args.bssid]
-    cmd.append(args.capfile)
-    rc, out, err = _run_bounded(cmd, timeout=args.timeout)
-    print(out)
-    if rc != 0 and err:
-        print(err, file=sys.stderr)
-    return rc
-
-
-def _cmd_deauth_inject(args) -> int:
-    """Locally-compiled injection engine, not scapy injection."""
-    if not INJECTOR_BIN.exists():
-        print(f"error: {INJECTOR_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
-        return 1
-    cmd = [str(INJECTOR_BIN), "-0", str(args.count), "-a", args.bssid]
-    if args.client:
-        cmd += ["-c", args.client]
-    cmd.append(args.iface)
-    rc, out, err = _run_bounded(cmd, timeout=args.timeout)
-    print(out)
-    if rc != 0 and err:
-        print(err, file=sys.stderr)
-    return rc
+from .cli_commands.attacks import (
+    _cmd_deauth,
+    _cmd_eviltwin,
+    _cmd_handshake,
+    _cmd_omni,
+    _cmd_pmkid,
+    _cmd_smart,
+    _cmd_wep,
+    _cmd_wps_oneshot,
+    _cmd_wps_pixie,
+)
+from .cli_commands.crack import _cmd_crack, _cmd_crack_cap
+from .cli_commands.misc import _cmd_gui
+from .cli_commands.scan import _cmd_injection_test, _cmd_scan, _cmd_wps_recon
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -375,18 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clients", action="store_true", help="also print associated clients")
     p.set_defaults(func=_cmd_scan)
 
-    p = sub.add_parser("deauth-inject", help="deauth flood via the injection engine")
+    p = sub.add_parser("injection-test", help="native injection self-test (ported from aireplay-ng --test)")
     p.add_argument("iface")
-    p.add_argument("bssid")
-    p.add_argument("--client")
-    p.add_argument("--count", type=int, default=10)
-    p.add_argument("--timeout", type=float, default=30.0, help="give up if no beacon seen")
-    p.set_defaults(func=_cmd_deauth_inject)
-
-    p = sub.add_parser("injection-test", help="test packet injection capability")
-    p.add_argument("iface")
-    p.add_argument("--bssid", help="test against a specific AP instead of any nearby one")
-    p.add_argument("--duration", type=int, default=15)
+    p.add_argument("--bssid", help="test against a specific AP instead of discovering one")
+    p.add_argument("--count", type=int, default=30, help="directed ping attempts against the target AP")
     p.set_defaults(func=_cmd_injection_test)
 
     p = sub.add_parser("wps-recon", help="WPS-enabled AP reconnaissance")
@@ -403,8 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="give up after this long (default 1h; wordlist attacks can run long)")
     p.set_defaults(func=_cmd_crack_cap)
 
-    # Everything else: pointing at this package's own handler functions
-    # defined above.
     p = sub.add_parser("deauth", help="deauth flood (native scapy)")
     p.add_argument("iface")
     p.add_argument("bssid")

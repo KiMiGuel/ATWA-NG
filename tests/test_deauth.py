@@ -63,10 +63,13 @@ def test_deauth_logs_warning_when_not_monitor_mode(monkeypatch):
 
 
 def test_deauth_sets_channel_when_given(monkeypatch):
+    import atwa.radio as radio_module
+
     monkeypatch.setattr(deauth_module, "get_mode", lambda iface: "monitor")
     monkeypatch.setattr(deauth_module, "sendp", lambda *a, **kw: None)
+    radio_module.clear_channel_cache()
     calls = []
-    monkeypatch.setattr(deauth_module, "set_channel", lambda iface, ch: calls.append((iface, ch)))
+    monkeypatch.setattr(radio_module, "set_channel", lambda iface, ch: calls.append((iface, ch)))
 
     deauth_module.deauth("wlan0mon", "aa:bb:cc:dd:ee:ff", channel=6)
 

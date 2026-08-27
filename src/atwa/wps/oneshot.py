@@ -17,19 +17,20 @@ from __future__ import annotations
 
 import codecs
 import os
-import re
 import select
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator
+from typing import Self
 
-from ..radio import get_mode, get_permanent_mac, set_managed_mode, RadioError
-from .pin_gen import WPSpin, pin_checksum
+from ..radio import RadioError, get_mode, get_permanent_mac, set_managed_mode
+from .pin_gen import WPSpin
 from .pixie import pixie_dust
 
 
@@ -146,6 +147,7 @@ class OneShot:
             ["wpa_cli", "-i", interface, "terminate"],
             capture_output=True,
             errors="replace",
+            check=False,
         )
         time.sleep(0.2)
 
@@ -169,7 +171,7 @@ class OneShot:
         self.pixie_creds = PixieCreds()
         self.connection_status = ConnectionStatus()
         self.generator = WPSpin()
-        self.last_pwr = 0
+        self.last_pwr = ""
 
     def _init_wpa_supplicant(self) -> None:
         cmd = [
@@ -215,7 +217,7 @@ class OneShot:
     def _handle_line(self, line: str, pixiemode: bool = False, pbc_mode: bool = False) -> bool:
         line = line.rstrip("\n")
         if self.verbose:
-            print(line, file=os.sys.stderr)
+            print(line, file=sys.stderr)
 
         if line.startswith("WPS: "):
             if "Building Message M" in line:
@@ -282,9 +284,7 @@ class OneShot:
             self.connection_status.bssid = line.split()[-1].upper()
         elif "EAPOL: txStart" in line:
             self.connection_status.status = "eapol_start"
-        elif "EAP entering state IDENTITY" in line:
-            pass
-        elif "using real identity" in line:
+        elif "EAP entering state IDENTITY" in line or "using real identity" in line:
             pass
         elif pbc_mode and "selected BSS " in line:
             self.connection_status.bssid = line.split("selected BSS ")[-1].split()[0].upper()
@@ -292,26 +292,33 @@ class OneShot:
             self.last_pwr = line.split("level=")[1].split()[0]
         return True
 
+    def _stdout(self):
+        """Return wpa_supplicant's stdout (always PIPE, so never None)."""
+        assert self.wpas.stdout is not None
+        return self.wpas.stdout
+
     def _drain_trailing_lines(self, timeout: float = 0.5) -> Iterator[str]:
         """Read any lines wpa_supplicant emits shortly after a terminal
         event (e.g. the Configuration Error line that follows "Received
         WSC_NACK") before the caller tears the subprocess down. Without
         this, terminate() can SIGTERM wpa_supplicant while that follow-up
         text is still sitting in its stdio buffer, unflushed and lost."""
-        fileno = self.wpas.stdout.fileno()
+        stdout = self._stdout()
+        fileno = stdout.fileno()
         while True:
             ready, _, _ = select.select([fileno], [], [], timeout)
             if not ready:
                 return
-            line = self.wpas.stdout.readline()
+            line = stdout.readline()
             if not line:
                 return
             yield line
 
     def _read_events(self, pixiemode: bool = False, pbc_mode: bool = False) -> Iterator[str]:
         """Yield raw wpa_supplicant lines until the session ends."""
+        stdout = self._stdout()
         while True:
-            line = self.wpas.stdout.readline()
+            line = stdout.readline()
             if not line:
                 self.wpas.wait()
                 break
@@ -328,7 +335,7 @@ class OneShot:
         self.pixie_creds.clear()
         self.connection_status.clear()
         # Drain some buffered output
-        self.wpas.stdout.read(300)
+        self._stdout().read(300)
 
         if pbc_mode:
             cmd = f"WPS_PBC {bssid}" if bssid else "WPS_PBC"
@@ -426,15 +433,15 @@ class OneShot:
     def cleanup(self) -> None:
         try:
             self.retsock.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - cleanup must be best-effort
             pass
         try:
             self.wpas.terminate()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - cleanup must be best-effort
             pass
         try:
             os.remove(self.res_socket_file)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - cleanup must be best-effort
             pass
         shutil.rmtree(self.tempdir, ignore_errors=True)
         # Restore monitor mode if that is where we started.
@@ -449,7 +456,7 @@ class OneShot:
             except RadioError:
                 pass
 
-    def __enter__(self) -> "OneShot":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -468,7 +475,7 @@ def _unescape_ssid(line: str) -> str:
             .encode("latin1")
             .decode("utf-8", errors="replace")
         )
-    except Exception:
+    except (UnicodeDecodeError, UnicodeError):
         return raw
 
 

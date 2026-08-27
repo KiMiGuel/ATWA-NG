@@ -62,7 +62,7 @@ class Settings:
             pw = pwd.getpwnam(sudo_user)
             os.chown(self.path, pw.pw_uid, pw.pw_gid)
             os.chown(self.path.parent, pw.pw_uid, pw.pw_gid)
-        except Exception:
+        except (KeyError, OSError):
             pass
 
     def get(self, key: str, default=None):

@@ -13,20 +13,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import tlv
-from .crypto import DerivedKeys, authenticator, key_wrap_decrypt, key_wrap_encrypt, proof_hash
+from .crypto import authenticator, key_wrap_decrypt, key_wrap_encrypt, proof_hash
 
 
 def _device_info_tlvs() -> list[tuple[int, bytes]]:
     return [
-        # Advertise all auth/encr flags like reaver/bully — some AP firmware
-        # rejects a registrar that doesn't claim compatibility with the AP's
-        # own beacon capabilities. Mirrors reaver's M2 capture exactly.
+        # Advertise broad auth/encr compatibility — some AP firmware rejects a
+        # registrar that doesn't claim compatibility with the AP's own beacon
+        # capabilities. These flag values match observed real-tool M2 captures.
         (tlv.ATTR_AUTH_TYPE_FLAGS, b"\x00\x3f"),  # Open | WPAPSK | Shared | WPA | WPA2 | WPA2PSK
         (tlv.ATTR_ENCR_TYPE_FLAGS, b"\x00\x0f"),  # None | WEP | TKIP | AES
         (tlv.ATTR_CONN_TYPE_FLAGS, b"\x01"),  # ESS
-        # 0x008c matches reaver's M2 (PBC + PHY/DISP pushbutton methods);
-        # for a PIN attack the Keypad bit alone (0x0100) is semantically
-        # correct, but real tools broadcast broader method support.
+        # 0x008c broadcasts PBC + PHY/DISP pushbutton methods (PIN attacks
+        # semantically only need the Keypad bit 0x0100, but real tools
+        # advertise broader method support).
         (tlv.ATTR_CONFIG_METHODS, b"\x00\x8c"),
         # Generic/inert values — this is broadcast to the target AP in the
         # clear on every attempt, so it must never identify this project.

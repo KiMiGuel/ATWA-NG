@@ -5,7 +5,7 @@ from __future__ import annotations
 from scapy.sendrecv import sendp
 
 from ..frames import BROADCAST, craft_deauth
-from ..radio import get_mode, set_channel
+from ..radio import ensure_channel, get_mode
 
 
 def deauth(
@@ -39,8 +39,7 @@ def deauth(
     respond".
     """
     log = progress_fn or (lambda msg: None)
-    if channel is not None:
-        set_channel(iface, channel)
+    if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
 
     mode = get_mode(iface)

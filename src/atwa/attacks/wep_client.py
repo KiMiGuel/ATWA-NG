@@ -28,21 +28,24 @@ need tuning per environment.  If the oracle fires on wrong guesses
 
 from __future__ import annotations
 
-import struct
 import threading
 import time
-import zlib
-from typing import Optional
 
 from scapy.layers.dot11 import Dot11, Dot11WEP
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
 from ..frames import with_forced_rate
-from ..radio import set_channel
-from ..wep.crypto import icv as _icv, recover_keystream
+from ..radio import ensure_channel
+from ..wep.crypto import recover_keystream
 from ..wep.ptw import PTWVoteTable, compute_key
-from .wep import ARP_KNOWN_PREFIX, ARP_LEN_WIRELESS, ARP_LEN_WIRED, is_wep_arp_candidate, wep_iv_and_ciphertext
+from .wep import (
+    ARP_KNOWN_PREFIX,
+    ARP_LEN_WIRED,
+    ARP_LEN_WIRELESS,
+    is_wep_arp_candidate,
+    wep_iv_and_ciphertext,
+)
 
 # Minimum sessions needed before PTW is attempted for client attacks
 _MIN_SESSIONS_CAFFE = 5_000
@@ -79,8 +82,7 @@ def caffe_latte(
     4. When target_sessions reached, run compute_key and return.
     """
     stop = stop_event or threading.Event()
-    if channel is not None:
-        set_channel(iface, channel)
+    ensure_channel(iface, channel)
 
     table = PTWVoteTable(num_positions=key_len)
     seed_frame: Packet | None = None

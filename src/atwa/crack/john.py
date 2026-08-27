@@ -11,11 +11,30 @@ do that conversion internally so callers never need to know about it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from .base import Cracker
 from .convert import hc22000_to_john
+
+# Common local clone locations to try when `john` isn't on PATH.
+_JOHN_FALLBACK_PATHS = [
+    Path.home() / "john" / "run" / "john",
+    Path.home() / "John" / "run" / "john",
+]
+
+
+def _resolve_john_binary(binary: str) -> str:
+    """Return the first usable John binary: explicit arg, PATH lookup, or
+    a known local clone location (e.g. ~/john/run/john)."""
+    if shutil.which(binary):
+        return binary
+    for path in _JOHN_FALLBACK_PATHS:
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return binary
 
 
 class JohnUnavailableError(RuntimeError):
@@ -42,11 +61,12 @@ class JohnCracker(Cracker):
     """
 
     def __init__(self, binary: str = "john", fmt: str = "wpapsk"):
-        self.binary = binary
+        self.binary = _resolve_john_binary(binary)
         self.fmt = fmt
-        if shutil.which(binary) is None:
+        if shutil.which(self.binary) is None:
             raise JohnUnavailableError(
-                f"john not found in PATH; install John the Ripper jumbo"
+                "john not found in PATH and no local clone built; "
+                "install John the Ripper jumbo or build ~/john/run/john"
             )
 
     def _prepare(self, hashfile: str) -> str:
@@ -60,6 +80,7 @@ class JohnCracker(Cracker):
             [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}", john_file],
             capture_output=True,
             text=True,
+            check=False,
         )
         if _NO_HASHES_MARKER in proc.stdout:
             raise JohnParseError(
@@ -77,14 +98,24 @@ class JohnCracker(Cracker):
         proc = subprocess.Popen(
             [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}", john_file],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            stdin=subprocess.DEVNULL,
         )
         proc_holder["proc"] = proc
+        assert proc.stdout is not None
         rejected = False
-        for line in proc.stdout:
-            if _NO_HASHES_MARKER in line:
-                rejected = True
-            on_line(line)
-        proc.wait()
+        try:
+            for line in proc.stdout:
+                if _NO_HASHES_MARKER in line:
+                    rejected = True
+                on_line(line)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
         if rejected:
             raise JohnParseError(
                 f"john rejected {john_file} outright (0 hashes loaded) even after "
@@ -98,6 +129,7 @@ class JohnCracker(Cracker):
             [self.binary, f"--format={self.fmt}", "--show", hashfile],
             capture_output=True,
             text=True,
+            check=False,
         )
         results: dict[str, str] = {}
         for line in proc.stdout.splitlines():

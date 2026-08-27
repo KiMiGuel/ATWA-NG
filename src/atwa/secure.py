@@ -9,7 +9,15 @@ from scapy.layers.dot11 import Dot11Beacon, Dot11ProbeResp
 from scapy.packet import Packet
 
 from .frames import _walk_elts
-from .wps.tlv import ATTR_AP_SETUP_LOCKED, WPS_VENDOR_OUI_TYPE, decode_tlvs
+from .wps.tlv import (
+    ATTR_AP_SETUP_LOCKED,
+    ATTR_DEVICE_NAME,
+    ATTR_MANUFACTURER,
+    ATTR_MODEL_NAME,
+    ATTR_MODEL_NUMBER,
+    WPS_VENDOR_OUI_TYPE,
+    decode_tlvs,
+)
 
 WPA_VENDOR_OUI = b"\x00\x50\xf2\x01"  # Microsoft OUI + WPA type 1
 WPS_VENDOR_OUI = WPS_VENDOR_OUI_TYPE
@@ -90,10 +98,23 @@ def security_profile(pkt: Packet) -> dict:
     return {"security": security, "pmf": pmf}
 
 
-def wps_profile(pkt: Packet) -> str | None:
-    """"enabled"/"locked" if the beacon/probe-response carries a WPS vendor
-    IE (OUI 00:50:F2, type 04), else None (no WPS IE seen in this frame —
-    caller decides whether that means "no WPS" or just "didn't catch it").
+def wps_profile(pkt: Packet) -> dict | None:
+    """Extract WPS IE data from a beacon/probe-response.
+
+    Returns None if the frame carries no WPS vendor IE (OUI 00:50:F2,
+    type 04). Otherwise returns a dict:
+
+        {
+            "state": "enabled" | "locked",
+            "manufacturer": str | None,
+            "model_name": str | None,
+            "model_number": str | None,
+            "device_name": str | None,
+        }
+
+    This closes the reconnaissance gap vs. `wash`: in addition to the AP
+    Setup Locked flag, we now surface manufacturer/model/device-name TLVs
+    when the AP advertises them.
 
     Same raw-byte-search approach as the WPA1 vendor IE check above:
     scapy can swallow vendor-specific IEs into a Raw payload instead of
@@ -112,9 +133,25 @@ def wps_profile(pkt: Packet) -> str | None:
             if tlv_end <= len(raw):
                 attrs = decode_tlvs(raw[idx + 4 : tlv_end])
                 locked = attrs.get(ATTR_AP_SETUP_LOCKED, b"\x00") != b"\x00"
-                return "locked" if locked else "enabled"
+                return {
+                    "state": "locked" if locked else "enabled",
+                    "manufacturer": _decode_str(attrs.get(ATTR_MANUFACTURER)),
+                    "model_name": _decode_str(attrs.get(ATTR_MODEL_NAME)),
+                    "model_number": _decode_str(attrs.get(ATTR_MODEL_NUMBER)),
+                    "device_name": _decode_str(attrs.get(ATTR_DEVICE_NAME)),
+                }
         idx = raw.find(WPS_VENDOR_OUI, idx + 1)
     return None
+
+
+def _decode_str(value: bytes | None) -> str | None:
+    """Decode a WSC UTF-8 attribute value, returning None if missing/empty."""
+    if not value:
+        return None
+    try:
+        return value.decode("utf-8").strip() or None
+    except UnicodeDecodeError:
+        return None
 
 
 def recommend_attack(ap) -> dict:

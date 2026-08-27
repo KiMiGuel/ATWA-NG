@@ -9,6 +9,9 @@ native/scapy state machine.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import ClassVar, Self
+
 
 class NetworkAddress:
     """Simple MAC address helper: string <-> integer conversion."""
@@ -21,7 +24,7 @@ class NetworkAddress:
             self._str = mac.replace("-", ":").replace(".", ":").upper()
             self._int = int(self._str.replace(":", ""), 16)
         else:
-            raise ValueError("MAC address must be string or integer")
+            raise TypeError("MAC address must be string or integer")
 
     @property
     def string(self) -> str:
@@ -37,15 +40,15 @@ class NetworkAddress:
     def __str__(self) -> str:
         return self._str
 
-    def __iadd__(self, other: int) -> "NetworkAddress":
+    def __iadd__(self, other: int) -> Self:
         self._int = (self._int + other) & 0xFFFFFFFFFFFF
         self._str = self._int2mac(self._int)
         return self
 
     @staticmethod
     def _int2mac(mac: int) -> str:
-        mac = hex(mac)[2:].upper().zfill(12)
-        return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
+        hex_mac = hex(mac)[2:].upper().zfill(12)
+        return ":".join(hex_mac[i : i + 2] for i in range(0, 12, 2))
 
 
 def pin_checksum(first7: int) -> int:
@@ -126,7 +129,7 @@ class WPSpin:
     ALGO_EMPTY = 1
     ALGO_STATIC = 2
 
-    STATIC_PINS: dict[str, int] = {
+    STATIC_PINS: ClassVar[dict[str, int]] = {
         "pinCisco": 1234567,
         "pinBrcm1": 2017252,
         "pinBrcm2": 4626484,
@@ -151,7 +154,7 @@ class WPSpin:
         "pinONO": 9575521,
     }
 
-    MAC_ALGOS: dict[str, tuple[str, callable]] = {
+    MAC_ALGOS: ClassVar[dict[str, tuple[str, Callable[[NetworkAddress], int]]]] = {
         "pin24": ("24-bit PIN", _pin24),
         "pin28": ("28-bit PIN", _pin28),
         "pin32": ("32-bit PIN", _pin32),
@@ -162,7 +165,7 @@ class WPSpin:
     }
 
     # MAC OUI masks that select a given algorithm. Ported from OneShot.
-    SUGGESTIONS: dict[str, tuple[str, ...]] = {
+    SUGGESTIONS: ClassVar[dict[str, tuple[str, ...]]] = {
         "pin24": (
             "04BF6D", "0E5D4E", "107BEF", "14A9E3", "28285D", "2A285D",
             "32B2DC", "381766", "404A03", "4E5D4E", "5067F0", "5CF4AB",

@@ -64,7 +64,7 @@ class AirCracker(Cracker):
 
     def crack(self, hashfile: str, wordlist: str) -> dict[str, str]:
         """hashfile is a .cap/.pcap/.pcapng path here, not a 22000 hash file."""
-        proc = subprocess.run(self._cmd(hashfile, wordlist), capture_output=True, text=True)
+        proc = subprocess.run(self._cmd(hashfile, wordlist), capture_output=True, text=True, check=False)
         cleaned = _clean(proc.stdout)
         if _NO_TARGETS_RE.search(cleaned):
             raise AircrackNoHandshakeError(
@@ -81,6 +81,8 @@ class AirCracker(Cracker):
             self._cmd(capfile, wordlist), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         proc_holder["proc"] = proc
+        if proc.stdout is None:
+            return {}
         found: dict[str, str] = {}
         no_targets = False
         for raw_line in proc.stdout:

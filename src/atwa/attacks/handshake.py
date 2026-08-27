@@ -17,7 +17,7 @@ from scapy.sendrecv import AsyncSniffer
 from scapy.utils import PcapWriter
 
 from ..frames import eapol_key_info
-from ..radio import set_channel
+from ..radio import ensure_channel
 
 
 class HandshakeStatus(Enum):
@@ -96,8 +96,7 @@ def capture_handshake(
     on, holding the raw socket open the whole time.
     """
     log = progress_fn or (lambda msg: None)
-    if channel is not None:
-        set_channel(iface, channel)
+    if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
     log(f"listening for EAPOL on {bssid} (up to {timeout:.0f}s)...")
     cap = HandshakeCapture()
@@ -142,7 +141,7 @@ def capture_handshake(
         time.sleep(0.2)
     try:
         sniffer.stop()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
         pass
     if writer:
         writer.close()

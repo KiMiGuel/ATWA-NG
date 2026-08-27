@@ -44,7 +44,7 @@ def cap_to_22000(capfile: str, outfile: str) -> str:
             "captures to 22000 format"
         )
     proc = subprocess.run(
-        ["hcxpcapngtool", "-o", outfile, capfile], capture_output=True, text=True
+        ["hcxpcapngtool", "-o", outfile, capfile], capture_output=True, text=True, check=False
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hcxpcapngtool failed: {proc.stderr.strip()}")
@@ -70,7 +70,7 @@ def hc22000_to_john(hashfile: str, outfile: str) -> str:
             "hcxhashtool not found; install hcxtools to convert 22000 hashes for John"
         )
     proc = subprocess.run(
-        ["hcxhashtool", "-i", hashfile, f"--john={outfile}"], capture_output=True, text=True
+        ["hcxhashtool", "-i", hashfile, f"--john={outfile}"], capture_output=True, text=True, check=False
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hcxhashtool failed: {proc.stderr.strip()}")
@@ -93,7 +93,7 @@ def fix_capture(capfile: str) -> str:
     suffix = cap.suffix if cap.suffix.lower() in {".cap", ".pcap", ".pcapng"} else ".cap"
     out = organized_output_path("fixed", f"{cap.stem}.fixed{suffix}")
     proc = subprocess.run(
-        ["pcapfix", "-k", "-o", str(out), str(cap)], capture_output=True, text=True, timeout=120
+        ["pcapfix", "-k", "-o", str(out), str(cap)], capture_output=True, text=True, timeout=120, check=False
     )
     if proc.returncode != 0 or not out.exists() or out.stat().st_size == 0:
         raise RuntimeError(f"pcapfix failed: {proc.stderr.strip() or 'no output written'}")
@@ -114,7 +114,7 @@ def merge_captures(capfiles: list[str]) -> str:
     suffix = first.suffix if first.suffix.lower() in {".cap", ".pcap", ".pcapng"} else ".pcapng"
     out = organized_output_path("merged", f"{first.stem}.merged{suffix}")
     proc = subprocess.run(
-        ["mergecap", "-w", str(out), *capfiles], capture_output=True, text=True, timeout=120
+        ["mergecap", "-w", str(out), *capfiles], capture_output=True, text=True, timeout=120, check=False
     )
     if proc.returncode != 0 or not out.exists():
         raise RuntimeError(f"mergecap failed: {proc.stderr.strip()}")

@@ -7,7 +7,7 @@ import time
 from scapy.sendrecv import AsyncSniffer, sendp
 
 from ..frames import craft_auth, is_eapol
-from ..radio import set_channel
+from ..radio import ensure_channel
 
 RSN_PMKID_SUITE = 16  # element ID inside the RSN KDE carrying the PMKID
 
@@ -56,8 +56,7 @@ def capture_pmkid(
     responsiveness at all.
     """
     log = progress_fn or (lambda msg: None)
-    if channel is not None:
-        set_channel(iface, channel)
+    if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
     log(f"sending auth frame to {bssid} (from {client})")
     sendp(craft_auth(bssid=bssid, client=client), iface=iface, verbose=False)
@@ -89,7 +88,7 @@ def capture_pmkid(
         time.sleep(0.2)
     try:
         sniffer.stop()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
         pass
     if found:
         log("PMKID found in EAPOL M1")

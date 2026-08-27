@@ -16,6 +16,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
 from ..crack.aircrack import AirCracker, AircrackUnavailableError
 from ..crack.convert import cap_to_22000, merge_22000_files, merge_captures
@@ -43,7 +44,7 @@ class CrackDialog(tk.Toplevel):
         self.backend_var = tk.StringVar(value="john")
         self.bssid_var = tk.StringVar(value=self._guess_bssid(default_dir))
 
-        pad = {"padx": 10, "pady": 4}
+        pad: dict[str, Any] = {"padx": 10, "pady": 4}
 
         row = ttk.Frame(self)
         row.pack(fill=tk.X, **pad)
@@ -171,7 +172,7 @@ class CrackDialog(tk.Toplevel):
                     cap_to_22000(str(cap), str(out))
                     converted.append(out)
                     self._queue.put(("line", f"  converted {cap.name} -> {out.name}\n"))
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - report any per-file conversion error
                     self._queue.put(("line", f"  could not convert {cap.name}: {exc}\n"))
             all_hashes = sorted(set(hashes) | set(converted))
             if not all_hashes:
@@ -196,7 +197,7 @@ class CrackDialog(tk.Toplevel):
                 self._queue.put(("done", f"\nCRACKED:\n{summary}"))
             else:
                 self._queue.put(("done", "\nNo passwords recovered."))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - thread boundary catch so GUI never crashes
             self._queue.put(("done", f"Error: {exc}"))
 
     def _run_aircrack(self, directory: Path, wordlist: str, bssid: str):
@@ -222,7 +223,7 @@ class CrackDialog(tk.Toplevel):
                 self._queue.put(("done", f"\nCRACKED:\n{summary}"))
             else:
                 self._queue.put(("done", "\nNo password recovered (or wrong BSSID/no full handshake in capture)."))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - thread boundary catch so GUI never crashes
             self._queue.put(("done", f"Error: {exc}"))
 
     def _stop(self):

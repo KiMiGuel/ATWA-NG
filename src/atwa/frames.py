@@ -127,6 +127,42 @@ def craft_auth(bssid: str, client: str, seq: int = 1) -> Packet:
     return _inject_radiotap() / dot11 / Dot11Auth(algo=0, seqnum=seq, status=0)
 
 
+def craft_probe_req(bssid: str, client: str, ssid: str = "") -> Packet:
+    """Craft a probe request frame. Empty ssid is the wildcard/broadcast
+    query every AP should answer; a real ssid directs it at one AP.
+
+    Ported from aircrack-ng's aireplay-ng --test attack (PROBE_REQ in
+    aireplay-ng.c) rather than wrapping the binary -- same frame shape,
+    reimplemented natively.
+    """
+    dot11 = Dot11(type=0, subtype=4, addr1=bssid, addr2=client, addr3=bssid)
+    essid = Dot11Elt(ID="SSID", info=ssid.encode())
+    rates = Dot11Elt(ID="Rates", info=b"\x02\x04\x0b\x16\x32\x08\x0c\x12\x18\x24\x30\x48\x60\x6c")
+    return _inject_radiotap() / dot11 / essid / rates
+
+
+def craft_rts(bssid: str, client: str) -> Packet:
+    """Craft a Request-To-Send control frame addressed at bssid.
+
+    Control frames carry only addr1 (receiver); no addr2/addr3 field in
+    the real 802.11 RTS layout, but scapy's Dot11 always emits addr2 --
+    harmless surplus bytes real receivers ignore for this subtype.
+    Ported from aireplay-ng --test's RTS constant.
+    """
+    dot11 = Dot11(type=1, subtype=11, addr1=bssid, addr2=client)
+    return _inject_radiotap() / dot11
+
+
+def craft_null_data(bssid: str, client: str) -> Packet:
+    """Craft a null-function data frame (to-DS) from client to bssid --
+    a keepalive/no-payload frame real stations send routinely, used here
+    as one more "will the AP answer this" probe in the injection test.
+    Ported from aireplay-ng --test's NULL_DATA constant.
+    """
+    dot11 = Dot11(type=2, subtype=4, FCfield="to_DS", addr1=bssid, addr2=client, addr3=bssid)
+    return _inject_radiotap() / dot11
+
+
 def craft_assoc_req(bssid: str, client: str, ssid: str, extra_ies: list[Dot11Elt] | None = None) -> Packet:
     """Craft an association request from client to bssid (needed for WPS).
 
@@ -201,7 +237,7 @@ def bssid_of(pkt: Packet) -> str | None:
 
 def is_eapol(pkt: Packet) -> bool:
     """True if the frame carries an EAPOL (802.1X) payload."""
-    return pkt.haslayer(EAPOL)
+    return bool(pkt.haslayer(EAPOL))
 
 
 def eapol_key_info(pkt: Packet) -> tuple[bool, bool] | None:
@@ -213,6 +249,8 @@ def eapol_key_info(pkt: Packet) -> tuple[bool, bool] | None:
     if not is_eapol(pkt):
         return None
     eapol = pkt.getlayer(EAPOL)
+    if eapol is None:
+        return None
     raw = bytes(eapol.payload)
     if len(raw) < 6:
         return None

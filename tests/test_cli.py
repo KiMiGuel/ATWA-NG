@@ -1,14 +1,19 @@
-"""Tests for cli.py — argument parsing for all 17 subcommands, and the
-subprocess-handling logic (_run_bounded, the SIGINT-and-collect helpers
-in wps-recon/injection-test) with subprocess mocked out. No hardware,
-no vendored binaries required to run this file."""
+"""Tests for cli.py / cli_commands/ — argument parsing for all subcommands,
+and the subprocess-handling logic (_run_bounded, the SIGINT-and-collect
+helper in wps-recon) with subprocess mocked out. No hardware, no vendored
+binaries required to run this file. `injection-test` is native (see
+test_injection_test.py) and no longer touches a vendored binary."""
 
 import subprocess
 
 import pytest
 
-from atwa import cli as atwa_cli
-from atwa.cli import _run_bounded, build_parser
+from atwa.cli import build_parser
+from atwa.cli_commands import CAPCRACK_BIN, WPSRECON_BIN, _run_bounded
+from atwa.cli_commands import attacks as attacks_cmds
+from atwa.cli_commands import crack as crack_cmds
+from atwa.cli_commands import misc as misc_cmds
+from atwa.cli_commands import scan as scan_cmds
 
 
 # --- argument parsing: every subcommand parses its documented shape --------
@@ -16,22 +21,21 @@ from atwa.cli import _run_bounded, build_parser
 
 
 @pytest.mark.parametrize("argv,expected_func", [
-    (["scan", "wlan0"], atwa_cli._cmd_scan),
-    (["deauth-inject", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth_inject),
-    (["injection-test", "wlan0"], atwa_cli._cmd_injection_test),
-    (["wps-recon", "wlan0"], atwa_cli._cmd_wps_recon),
-    (["crack-cap", "cap.cap", "words.txt"], atwa_cli._cmd_crack_cap),
-    (["deauth", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_deauth),
-    (["pmkid", "wlan0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"], atwa_cli._cmd_pmkid),
-    (["handshake", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_handshake),
-    (["omni", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_omni),
-    (["smart", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_smart),
-    (["wep", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], atwa_cli._cmd_wep),
-    (["wps-pixie", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], atwa_cli._cmd_wps_pixie),
-    (["wps-oneshot", "wlan0", "AA:BB:CC:DD:EE:FF"], atwa_cli._cmd_wps_oneshot),
-    (["gui"], atwa_cli._cmd_gui),
-    (["crack", "hash.22000", "words.txt"], atwa_cli._cmd_crack),
-    (["eviltwin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6"], atwa_cli._cmd_eviltwin),
+    (["scan", "wlan0"], scan_cmds._cmd_scan),
+    (["injection-test", "wlan0"], scan_cmds._cmd_injection_test),
+    (["wps-recon", "wlan0"], scan_cmds._cmd_wps_recon),
+    (["crack-cap", "cap.cap", "words.txt"], crack_cmds._cmd_crack_cap),
+    (["deauth", "wlan0", "AA:BB:CC:DD:EE:FF"], attacks_cmds._cmd_deauth),
+    (["pmkid", "wlan0", "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"], attacks_cmds._cmd_pmkid),
+    (["handshake", "wlan0", "AA:BB:CC:DD:EE:FF"], attacks_cmds._cmd_handshake),
+    (["omni", "wlan0", "AA:BB:CC:DD:EE:FF"], attacks_cmds._cmd_omni),
+    (["smart", "wlan0", "AA:BB:CC:DD:EE:FF"], attacks_cmds._cmd_smart),
+    (["wep", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], attacks_cmds._cmd_wep),
+    (["wps-pixie", "wlan0", "AA:BB:CC:DD:EE:FF", "MySSID"], attacks_cmds._cmd_wps_pixie),
+    (["wps-oneshot", "wlan0", "AA:BB:CC:DD:EE:FF"], attacks_cmds._cmd_wps_oneshot),
+    (["gui"], misc_cmds._cmd_gui),
+    (["crack", "hash.22000", "words.txt"], crack_cmds._cmd_crack),
+    (["eviltwin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6"], attacks_cmds._cmd_eviltwin),
 ])
 def test_subcommand_parses_and_wires_correct_handler(argv, expected_func):
     parser = build_parser()
@@ -55,9 +59,14 @@ def test_scan_rejects_invalid_band():
         build_parser().parse_args(["scan", "wlan0", "--band", "60GHz"])
 
 
-def test_deauth_inject_default_timeout_is_bounded():
-    args = build_parser().parse_args(["deauth-inject", "wlan0", "AA:BB:CC:DD:EE:FF"])
-    assert args.timeout == 30.0
+def test_injection_test_default_count_is_30():
+    args = build_parser().parse_args(["injection-test", "wlan0"])
+    assert args.count == 30
+
+
+def test_injection_test_bssid_optional_defaults_none():
+    args = build_parser().parse_args(["injection-test", "wlan0"])
+    assert args.bssid is None
 
 
 def test_crack_aircrack_optional_bssid_defaults_none():
@@ -74,6 +83,7 @@ def test_eviltwin_channel_is_parsed_as_int():
 
 
 # --- _run_bounded: the timeout-hang fix from code review --------------------
+# Still used by crack-cap (a permitted cap/pcap-format wrapper).
 
 
 def test_run_bounded_returns_stdout_on_normal_completion(monkeypatch):
@@ -90,14 +100,14 @@ def test_run_bounded_returns_stdout_on_normal_completion(monkeypatch):
 
 def test_run_bounded_reports_clean_timeout_instead_of_raising(monkeypatch):
     """Regression test for the real hang found live during code review:
-    aireplay-ng waiting on a beacon that never arrives used to hang
-    subprocess.run() forever (no timeout at all originally). Must now
-    return a clean error instead of propagating TimeoutExpired."""
+    a vendored engine waiting on a beacon that never arrives used to
+    hang subprocess.run() forever (no timeout at all originally). Must
+    now return a clean error instead of propagating TimeoutExpired."""
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    rc, out, err = _run_bounded(["aireplay-ng", "-0", "3"], timeout=10)
+    rc, out, err = _run_bounded(["aircrack-ng", "-w", "words.txt", "cap.cap"], timeout=10)
     assert rc == 1
     assert "timed out after 10" in err
     assert "beacon" in err
@@ -113,51 +123,33 @@ def test_run_bounded_nonzero_exit_is_reported(monkeypatch):
     assert err == "boom"
 
 
-# --- _cmd_deauth_inject / _cmd_crack_cap: missing-binary guard -------
-
-
-def test_deauth_inject_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
-    missing = tmp_path / "aireplay-ng"
-    monkeypatch.setattr(atwa_cli, "INJECTOR_BIN", missing)
-    args = build_parser().parse_args(["deauth-inject", "wlan0", "AA:BB:CC:DD:EE:FF"])
-    rc = atwa_cli._cmd_deauth_inject(args)
-    assert rc == 1
-    assert "not built" in capsys.readouterr().err
+# --- _cmd_crack_cap / _cmd_wps_recon: missing-binary guard -------
 
 
 def test_crack_aircrack_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "aircrack-ng"
-    monkeypatch.setattr(atwa_cli, "CAPCRACK_BIN", missing)
+    monkeypatch.setattr("atwa.cli_commands.crack.CAPCRACK_BIN", missing)
     args = build_parser().parse_args(["crack-cap", "cap.cap", "words.txt"])
-    rc = atwa_cli._cmd_crack_cap(args)
+    rc = crack_cmds._cmd_crack_cap(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
 def test_wash_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
     missing = tmp_path / "wash"
-    monkeypatch.setattr(atwa_cli, "WPSRECON_BIN", missing)
+    monkeypatch.setattr("atwa.cli_commands.scan.WPSRECON_BIN", missing)
     args = build_parser().parse_args(["wps-recon", "wlan0"])
-    rc = atwa_cli._cmd_wps_recon(args)
+    rc = scan_cmds._cmd_wps_recon(args)
     assert rc == 1
     assert "not built" in capsys.readouterr().err
 
 
-def test_injection_test_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
-    missing = tmp_path / "aireplay-ng"
-    monkeypatch.setattr(atwa_cli, "INJECTOR_BIN", missing)
-    args = build_parser().parse_args(["injection-test", "wlan0"])
-    rc = atwa_cli._cmd_injection_test(args)
-    assert rc == 1
-    assert "not built" in capsys.readouterr().err
-
-
-# --- wash / injection-test: SIGINT-and-collect pattern (Popen mocked) ------
+# --- wash: SIGINT-and-collect pattern (Popen mocked) ------
 
 
 class FakeLongRunningProc:
-    """Stands in for a process like wash/aireplay-ng -9 that runs until
-    signaled — never exits on its own, only on send_signal + communicate."""
+    """Stands in for a process like `wash` that runs until signaled —
+    never exits on its own, only on send_signal + communicate."""
 
     def __init__(self, cmd, **kwargs):
         self.cmd = cmd
@@ -174,34 +166,21 @@ class FakeLongRunningProc:
 def test_wash_sends_sigint_and_collects_output(monkeypatch, tmp_path):
     fake_bin = tmp_path / "wash"
     fake_bin.write_text("")
-    monkeypatch.setattr(atwa_cli, "WPSRECON_BIN", fake_bin)
+    monkeypatch.setattr("atwa.cli_commands.scan.WPSRECON_BIN", fake_bin)
     monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
-    monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(scan_cmds.time, "sleep", lambda _s: None)
 
     args = build_parser().parse_args(["wps-recon", "wlan0", "--duration", "1"])
-    rc = atwa_cli._cmd_wps_recon(args)
-    assert rc == 0
-
-
-def test_injection_test_sends_sigint_and_collects_output(monkeypatch, tmp_path):
-    fake_bin = tmp_path / "aireplay-ng"
-    fake_bin.write_text("")
-    monkeypatch.setattr(atwa_cli, "INJECTOR_BIN", fake_bin)
-    monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
-    monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
-
-    args = build_parser().parse_args(["injection-test", "wlan0", "--duration", "1"])
-    rc = atwa_cli._cmd_injection_test(args)
+    rc = scan_cmds._cmd_wps_recon(args)
     assert rc == 0
 
 
 def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
-    """Regression test: the same stdin-inheritance hang class of bug,
-    already found and fixed once for deauth-inject — must not recur
-    in wash/injection-test."""
+    """Regression test: the stdin-inheritance hang class of bug found
+    live for the (now-removed) deauth-inject path must not recur here."""
     fake_bin = tmp_path / "wash"
     fake_bin.write_text("")
-    monkeypatch.setattr(atwa_cli, "WPSRECON_BIN", fake_bin)
+    monkeypatch.setattr("atwa.cli_commands.scan.WPSRECON_BIN", fake_bin)
     captured = {}
 
     def fake_popen(cmd, **kwargs):
@@ -209,8 +188,8 @@ def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
         return FakeLongRunningProc(cmd, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(atwa_cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(scan_cmds.time, "sleep", lambda _s: None)
 
     args = build_parser().parse_args(["wps-recon", "wlan0", "--duration", "1"])
-    atwa_cli._cmd_wps_recon(args)
+    scan_cmds._cmd_wps_recon(args)
     assert captured.get("stdin") == subprocess.DEVNULL

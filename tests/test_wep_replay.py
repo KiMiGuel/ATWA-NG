@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from scapy.layers.dot11 import Dot11, RadioTap
 
-import atwa.attacks.wep as wep_module
+import atwa.attacks.wep_replay as wep_module
 
 
 def _fake_captured_frame():
