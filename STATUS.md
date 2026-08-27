@@ -673,3 +673,75 @@ around other tools.
   configuration; do not treat the graph as current until it is rebuilt.
 - Local project docs (`STATUS.md`, `CHECKPOINT.md`) updated first as the
   canonical session record.
+
+## Update — 2026-08-27, live-GUI bugfix pass + full reskin toward v1 look
+
+Two-phase session driven by the user actually running `atwa gui --demo`
+and reporting back what was broken/wrong live, then a long iterative
+visual reskin toward the original n2-ng v1 tool's look — explicitly kept
+on ATWA-NG's own metallic-blue branding rather than v1's green.
+
+**Phase 1 — bug fixes (from live use):**
+- Stop Attack didn't stop anything while OMNI was running its WPS
+  pixie-dust stage. Root cause: `attacks/wps.py` blocked on
+  `sniffer.join()` with no way to interrupt a 60s M3 wait, and two call
+  sites (`omni.py` `_stage_wps`, `gui/attack_runner.py`
+  `wps_null_pin`/`wps_pixie`) weren't even passing `stop_event` down into
+  the attack functions in the first place. Fixed with a new poll-based
+  `_sniff_until()` (checks `stop_event` every 0.05s) threaded through the
+  whole WPS call chain, plus wiring `stop_event` through the two call
+  sites that were dropping it.
+- Signal graph rendered as a static dot instead of a growing line. Real
+  cause was a reset loop in `gui/app.py`'s `_on_target_select`:
+  `_render_targets()` calls `selection_set()` on every scan tick, which
+  re-fires `<<TreeviewSelect>>` even when the selection didn't actually
+  change, clearing the graph's sample buffer each time. Also fixed
+  `gui/widgets.py`'s `SignalGraph._draw()` X-axis step math
+  (`w / (maxlen - 1)`, not `w / (len(samples) - 1)`) so the line now
+  genuinely grows left-to-right and scrolls once full, with a live-marker
+  dot on the newest sample.
+- Added the missing right-click context menu on the client list.
+- Reworded a log line that implied entering monitor mode was itself "an
+  attack."
+- New regression tests: `test_wait_for_aborts_promptly_on_stop_event`,
+  `test_send_until_m3_aborts_promptly_on_stop_event`
+  (`tests/test_wps_exchange.py`).
+
+**Phase 2 — full GUI reskin (25+ live-screenshot-verified iterations):**
+- Layout: collapsed the old tabbed/paned layout to a single pane
+  (matches v1's structure), toolbar restructured and reordered
+  (stacked Adapter/AP-iface combos, Start/Stop Scan, Start/Stop Monitor,
+  WPS Scan, Unlock, toolbar logo), status pill replaced with plain
+  colored text, wasted space trimmed throughout.
+- Palette (`gui/theme.py`): near-black background, one vivid saturated
+  accent color for body text (replacing a prior pale ice-blue that read
+  as washed out), white outlines on every box/button/combobox/treeview
+  (v1 reference), bold fonts bumped a size up, widened tree row-banding
+  for readability.
+- New features: WPS Scan dialog (`_open_wps_scan` — interactive, unlike
+  v1's click-dead equivalent popup), PINCER attack button (greyed out
+  unless dual-Alfa requirements are met), menu-bar tagline ("Airwave
+  Teardown Wireless Auditing-NG"), rewritten About dialog (custom
+  centered `tk.Toplevel`, contact links restored).
+- Mouse-wheel scrolling made reliable and independent across all three
+  scrollable regions (AP tree, target panel, Captures list) via a new
+  `_bind_wheel_recursive()` helper, replacing a prior Enter/Leave-bound
+  approach that broke on any child widget.
+- Logo integration: metallic-recolored variant of the user-supplied logo
+  chosen over a neon A/B alternative; regenerated all `gui/assets/icon_*`
+  PNGs at 8-bit depth (16-bit silently fails to load in `tk.PhotoImage`)
+  plus a new `logo_toolbar.png`; wired into window icons, toolbar
+  (click-to-About), and CLI background.
+
+**Verification:**
+- `pytest -q` → `127 passed` (up from 125 — two new stop_event
+  regression tests).
+- `ruff check src/atwa --select F401,F541` → clean.
+- `atwa gui --demo` launched and screenshotted at the very end of the
+  session (`/tmp/final_verify.png`) to confirm the final combined state
+  renders with no errors: scan tree, target panel, growing signal graph
+  with live-marker dot, log pane all correct.
+
+**Vault note:** `~/CCM2/ATWA-NG/architecture/decisions.md`'s "Branding"
+section is now stale (says no logo integration has happened) — update
+alongside this entry.

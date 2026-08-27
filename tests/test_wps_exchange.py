@@ -50,7 +50,13 @@ def _make_ap_eap_frame(
 
 
 class _MockSniffer:
-    """Deterministic AsyncSniffer replacement for unit tests."""
+    """Deterministic AsyncSniffer replacement for unit tests.
+
+    Production code now polls for `found`/`result` state instead of
+    blocking in sniffer.join() (so a stop_event can interrupt mid-wait),
+    so packet delivery has to happen on a background thread from start()
+    -- a synchronous join() is never called by the code under test.
+    """
 
     def __init__(self, packets: list[Packet], delay: float = 0.0):
         self.packets = list(packets)
@@ -58,6 +64,7 @@ class _MockSniffer:
         self.kwargs: dict = {}
         self._prn: Callable | None = None
         self._stop_filter: Callable | None = None
+        self._thread: threading.Thread | None = None
 
     def __call__(self, *, prn, stop_filter, **kwargs):
         self.kwargs = kwargs
@@ -66,16 +73,24 @@ class _MockSniffer:
         return self
 
     def start(self) -> None:
-        pass
+        def run():
+            if self.delay:
+                time.sleep(self.delay)
+            assert self._prn is not None and self._stop_filter is not None
+            for pkt in self.packets:
+                self._prn(pkt)
+                if self._stop_filter(pkt):
+                    break
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
 
     def join(self) -> None:
-        if self.delay:
-            time.sleep(self.delay)
-        assert self._prn is not None and self._stop_filter is not None
-        for pkt in self.packets:
-            self._prn(pkt)
-            if self._stop_filter(pkt):
-                break
+        if self._thread is not None:
+            self._thread.join()
+
+    def stop(self) -> None:
+        pass
 
 
 def test_wait_for_rejects_frame_destined_to_other_station(monkeypatch):
@@ -159,6 +174,49 @@ def test_send_until_m3_proactively_resends_m2(monkeypatch):
         assert opcode == eap.WSC_OP_MSG
         assert payload == m2
         assert version == 1
+
+
+def test_wait_for_aborts_promptly_on_stop_event(monkeypatch):
+    """A long timeout must not block Stop -- stop_event should abort the
+    wait almost immediately instead of running to `timeout` (2026-08-27
+    user report: OMNI's Stop button did nothing during the WPS stage's
+    60s M3 wait)."""
+    monkeypatch.setattr(wps_module, "AsyncSniffer", _MockSniffer([], delay=5.0))
+    stop_event = threading.Event()
+
+    def trigger_stop():
+        time.sleep(0.1)
+        stop_event.set()
+
+    threading.Thread(target=trigger_stop, daemon=True).start()
+    start = time.monotonic()
+    result = wps_module._wait_for(
+        "wlan0", BSSID, CLIENT, lambda p: True, timeout=5.0, stop_event=stop_event,
+    )
+    elapsed = time.monotonic() - start
+
+    assert result is None
+    assert elapsed < 1.0
+
+
+def test_send_until_m3_aborts_promptly_on_stop_event(monkeypatch):
+    monkeypatch.setattr(wps_module, "_send_wsc_message", lambda *a, **k: None)
+    monkeypatch.setattr(wps_module, "AsyncSniffer", _MockSniffer([], delay=5.0))
+    stop_event = threading.Event()
+
+    def trigger_stop():
+        time.sleep(0.1)
+        stop_event.set()
+
+    threading.Thread(target=trigger_stop, daemon=True).start()
+    start = time.monotonic()
+    result = wps_module._send_until_m3(
+        "wlan0", BSSID, CLIENT, b"\x02", identifier=7, timeout=60.0, stop_event=stop_event,
+    )
+    elapsed = time.monotonic() - start
+
+    assert result is None
+    assert elapsed < 1.0
 
 
 def test_send_until_m3_stops_resending_once_m3_arrives(monkeypatch):

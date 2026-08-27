@@ -170,6 +170,7 @@ class AttackRunner:
 
         outcome = null_pin_attack(
             self._iface, ap.bssid, ap.ssid, channel=ap.channel, progress_fn=self._progress_fn,
+            stop_event=self._stop_event,
         )
         if outcome.network_key:
             return f"{outcome.outcome.value}: key={outcome.network_key}"
@@ -180,6 +181,7 @@ class AttackRunner:
 
         result = pixie_attempt(
             self._iface, ap.bssid, ap.ssid, channel=ap.channel, progress_fn=self._progress_fn,
+            stop_event=self._stop_event,
         )
         if result.outcome.name == "SUCCESS":
             return f"pixie-dust success: key={result.network_key}"

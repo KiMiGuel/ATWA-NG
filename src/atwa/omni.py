@@ -261,7 +261,9 @@ class OmniOrchestrator:
 
         # Pixie-dust: one M1→M3 exchange + offline crack + optional M1→M7 verify
         self._log("WPS: trying pixie-dust first (one live exchange, then offline crack)")
-        pd_result = self._pixie_fn(self.iface, ap.bssid, ap.ssid or "", channel=ap.channel, progress_fn=self._log)
+        pd_result = self._pixie_fn(
+            self.iface, ap.bssid, ap.ssid or "", channel=ap.channel, progress_fn=self._log, stop_event=self._stop,
+        )
         if pd_result.outcome is AttemptOutcome.AP_SETUP_LOCKED:
             report.stages.append(StageReport("wps", StageResult.SKIPPED, "AP Setup Locked"))
             return False

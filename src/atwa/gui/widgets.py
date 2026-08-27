@@ -19,7 +19,7 @@ class SignalGraph:
     """
 
     def __init__(self, parent):
-        self.canvas = tk.Canvas(parent, bg=THEME["panel"], height=110, highlightthickness=0)
+        self.canvas = tk.Canvas(parent, bg=THEME["panel"], height=90, highlightthickness=0)
         self.canvas.pack(fill=tk.X)
         self.samples: deque[int] = deque(maxlen=60)
         self._draw_after_id = None
@@ -66,10 +66,19 @@ class SignalGraph:
             y = h - ((max(-90, min(-30, self.samples[0])) + 90) / 60) * h
             self.canvas.create_oval(-3, y - 3, 3, y + 3, fill=THEME["accent"], outline="")
             return
-        step = w / (len(self.samples) - 1)
+        # Fixed X step sized for a full buffer: the line GROWS left-to-right
+        # as samples arrive, then scrolls once the deque is full. The old
+        # step = w/(len-1) rescaled the axis on every sample, so the line
+        # always spanned the full width and just shifted — looked like it
+        # "moved but never grew" in live use (2026-08-27 user report).
+        step = w / (self.samples.maxlen - 1)
         points = []
         for i, val in enumerate(self.samples):
             y = h - ((max(-90, min(-30, val)) + 90) / 60) * h
             points.append((i * step, y))
         flat = [c for p in points for c in p]
         self.canvas.create_line(flat, fill=THEME["accent"], width=2, smooth=True)
+        # Dot on the newest sample so the live end of the line is obvious.
+        x_last, y_last = points[-1]
+        self.canvas.create_oval(x_last - 3, y_last - 3, x_last + 3, y_last + 3,
+                                fill=THEME["go"], outline="")

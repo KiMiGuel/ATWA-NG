@@ -1,21 +1,10 @@
-"""Visual theme: ATWA-NG's electric-blue-to-black identity.
+"""Visual theme: ATWA-NG's electric-blue-on-black identity.
 
-2026-08-26: rebranded from an earlier neon-green-on-black palette to the
-ATWA-NG brand (electric blue fading to black). This swaps the color
-*values* only — every widget class still keys off the same semantic
-tokens (bg/panel/panel_alt/border/accent/etc.), so the rebrand is
-entirely contained here.
-
-Not yet a true pixel gradient: ttk widgets paint flat per-style
-backgrounds, not gradients, and retrofitting a real top-to-bottom canvas
-gradient behind the existing pack/grid layout would mean redoing how
-every frame is composited (each widget drawn as a canvas window instead
-of packed directly) — a bigger, riskier change than a color swap. This
-approximates the "electric blue up top, fading toward black" feel by
-making progressively deeper/lower content panels progressively darker
-(bg > panel > panel_alt, each a step closer to black), with the
-brightest blue reserved for accents/headings. A real smooth gradient is
-a legitimate follow-up once the logo's final colors are locked in.
+2026-08-27: reworked toward the old n2-ng v1 look (near-black background,
+one vivid saturated color for all body text) after live-test feedback
+that the prior palette's pale ice-blue fg (#e8faff) read as washed out
+rather than vivid, and the background wasn't dark enough for it to pop.
+Same token structure as before -- only the values changed.
 """
 
 from __future__ import annotations
@@ -24,18 +13,30 @@ import tkinter.font as tk_font
 from tkinter import ttk
 
 THEME = {
-    "bg": "#050b14",
-    "panel": "#03060c",
-    "panel_alt": "#010308",
-    "border": "#123a55",
-    "fg": "#e8faff",
-    "accent": "#00f3ff",
+    "bg": "#000000",
+    "panel": "#040910",
+    "panel_alt": "#000000",
+    # White outline around every box/button (v1 reference screenshot) --
+    # the old dark-blue border barely showed against a near-black bg.
+    "border": "#e8f4ff",
+    "fg": "#33bbff",
+    "accent": "#00e5ff",
     "accent_dim": "#0d94c9",
     "accent_text": "#00131a",
     "warn": "#ffe600",
     "error": "#ff3366",
     "info": "#7df9ff",
-    "muted": "#5590ad",
+    "muted": "#3d7fa3",
+    # Green for open networks (user live-test note 2026-08-27: cyan/baby-blue
+    # clashed with the blue background and was unreadable).
+    "go": "#39ff6a",
+    # Row banding for trees: near-black surface, odd rows one step up --
+    # widened further (was #0d1f30) so light/dark banding reads clearly
+    # even with just a couple of rows on screen, doubling as the main
+    # row-separation cue since ttk.Treeview has no real per-cell gridline
+    # option (2026-08-27 user report: rows "bunched up", hard to scan).
+    "tree_bg": "#000000",
+    "tree_band": "#22456b",
 }
 
 
@@ -49,12 +50,14 @@ def apply(root) -> dict[str, tk_font.Font]:
     mono_family = next((f for f in ("Consolas", "DejaVu Sans Mono", "Liberation Mono") if f in families), "Courier")
     ui_family = next((f for f in ("Segoe UI", "DejaVu Sans", "Liberation Sans") if f in families), "TkDefaultFont")
 
+    # Sizes bumped and body text defaulted to bold (2026-08-27 user report:
+    # fonts too small/thin next to v1's blocky bold-monospace look).
     fonts = {
-        "ui": tk_font.Font(family=ui_family, size=10),
-        "ui_bold": tk_font.Font(family=ui_family, size=10, weight="bold"),
-        "mono": tk_font.Font(family=mono_family, size=10),
-        "mono_bold": tk_font.Font(family=mono_family, size=10, weight="bold"),
-        "title": tk_font.Font(family=ui_family, size=13, weight="bold"),
+        "ui": tk_font.Font(family=ui_family, size=11, weight="bold"),
+        "ui_bold": tk_font.Font(family=ui_family, size=11, weight="bold"),
+        "mono": tk_font.Font(family=mono_family, size=11, weight="bold"),
+        "mono_bold": tk_font.Font(family=mono_family, size=11, weight="bold"),
+        "title": tk_font.Font(family=ui_family, size=15, weight="bold"),
     }
     root.option_add("*Font", fonts["ui"])
     root.configure(bg=THEME["bg"])
@@ -62,8 +65,13 @@ def apply(root) -> dict[str, tk_font.Font]:
     style.configure("TFrame", background=THEME["bg"])
     style.configure("Panel.TFrame", background=THEME["panel"])
     style.configure("Toolbar.TFrame", background=THEME["panel"])
+    # Plain bordered box, no title -- ttk.LabelFrame with an empty text=""
+    # still reserves a small gap in the top border for the (absent) label,
+    # which read as a pointless blank notch (2026-08-27 user report).
+    style.configure("Bordered.TFrame", background=THEME["bg"], relief="solid",
+                     borderwidth=1, bordercolor=THEME["border"])
 
-    style.configure("TLabel", background=THEME["bg"], foreground=THEME["fg"])
+    style.configure("TLabel", background=THEME["bg"], foreground=THEME["fg"], font=fonts["ui"])
     style.configure("Panel.TLabel", background=THEME["panel"], foreground=THEME["fg"])
     style.configure("Toolbar.TLabel", background=THEME["panel"], foreground=THEME["fg"])
     style.configure("Muted.TLabel", background=THEME["bg"], foreground=THEME["muted"])
@@ -73,45 +81,68 @@ def apply(root) -> dict[str, tk_font.Font]:
     style.configure("Error.TLabel", background=THEME["bg"], foreground=THEME["error"])
 
     style.configure("TButton", background=THEME["panel_alt"], foreground=THEME["fg"],
-                     borderwidth=1, relief="flat", padding=(10, 6))
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid", padding=(8, 3))
     style.map("TButton",
               background=[("active", THEME["border"]), ("disabled", THEME["panel"])],
-              foreground=[("disabled", THEME["muted"])])
+              foreground=[("active", THEME["accent_text"]), ("disabled", THEME["muted"])])
 
     style.configure("Accent.TButton", background=THEME["accent_dim"], foreground=THEME["accent_text"],
-                     font=fonts["ui_bold"], padding=(10, 6))
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid",
+                     font=fonts["ui_bold"], padding=(8, 3))
     style.map("Accent.TButton",
               background=[("active", THEME["accent"]), ("disabled", THEME["panel"])],
               foreground=[("disabled", THEME["muted"])])
 
+    # Toolbar buttons get roomier padding than list/attack buttons (v1
+    # reference: toolbar buttons are chunky with real breathing room, while
+    # dense data panels stay tight -- 2026-08-27 user report: toolbar
+    # buttons "not spaced out enough" next to v1's).
+    style.configure("Toolbar.TButton", background=THEME["panel_alt"], foreground=THEME["fg"],
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid",
+                     font=fonts["ui_bold"], padding=(11, 7))
+    style.map("Toolbar.TButton",
+              background=[("active", THEME["border"]), ("disabled", THEME["panel"])],
+              foreground=[("active", THEME["accent_text"]), ("disabled", THEME["muted"])])
+
+    style.configure("Toolbar.Accent.TButton", background=THEME["accent_dim"], foreground=THEME["accent_text"],
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid",
+                     font=fonts["ui_bold"], padding=(11, 7))
+    style.map("Toolbar.Accent.TButton",
+              background=[("active", THEME["accent"]), ("disabled", THEME["panel"])],
+              foreground=[("disabled", THEME["muted"])])
+
     style.configure("Danger.TButton", background=THEME["error"], foreground="#1a0000",
-                     font=fonts["ui_bold"], padding=(10, 6))
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid",
+                     font=fonts["ui_bold"], padding=(8, 3))
     style.map("Danger.TButton", background=[("active", "#ff7676"), ("disabled", THEME["panel"])])
 
+    style.configure("TLabelframe", background=THEME["bg"], bordercolor=THEME["border"],
+                     relief="solid", borderwidth=1)
+    style.configure("TLabelframe.Label", background=THEME["bg"], foreground=THEME["accent"],
+                     font=fonts["ui_bold"])
+
     style.configure("TCombobox", fieldbackground=THEME["panel_alt"], background=THEME["panel_alt"],
-                     foreground=THEME["fg"], arrowcolor=THEME["fg"])
+                     foreground=THEME["fg"], arrowcolor=THEME["fg"],
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid")
     style.map("TCombobox", fieldbackground=[("readonly", THEME["panel_alt"])])
 
     style.configure("TEntry", fieldbackground=THEME["panel_alt"], foreground=THEME["fg"],
-                     insertcolor=THEME["fg"])
+                     insertcolor=THEME["fg"], bordercolor=THEME["border"], borderwidth=1, relief="solid")
 
-    style.configure("Treeview", background=THEME["bg"], fieldbackground=THEME["bg"],
-                     foreground=THEME["fg"], font=fonts["mono"], rowheight=22, borderwidth=0)
+    style.configure("Treeview", background=THEME["tree_bg"], fieldbackground=THEME["tree_bg"],
+                     foreground=THEME["fg"], font=fonts["mono"], rowheight=22,
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid")
+    # Each heading cell boxed individually (v1 reference, and 2026-08-27
+    # user report: needs more outlines/separator lines) -- true per-cell
+    # gridlines in the body rows aren't a real ttk.Treeview style option
+    # under "clam" (row banding is the existing workaround for that), but
+    # headings are separate elements and DO take a real border.
     style.configure("Treeview.Heading", background=THEME["panel"], foreground=THEME["accent"],
-                     font=fonts["mono_bold"], relief="flat")
+                     font=fonts["mono_bold"], relief="solid", borderwidth=1,
+                     bordercolor=THEME["border"])
     style.map("Treeview",
               background=[("selected", THEME["accent_dim"])],
               foreground=[("selected", THEME["accent_text"])])
-
-    style.configure("TNotebook", background=THEME["bg"], borderwidth=0, tabmargins=(2, 4, 2, 0))
-    style.configure("TNotebook.Tab", background=THEME["panel"], foreground=THEME["muted"], padding=(14, 7))
-    # Both states listed explicitly, not just "selected" — under the clam
-    # theme, leaving the unselected state to fall back on configure()
-    # alone rendered backwards (inactive tab looked highlighted, active
-    # tab looked plain), confirmed live/reported by the user.
-    style.map("TNotebook.Tab",
-              background=[("selected", THEME["accent_dim"]), ("!selected", THEME["panel"])],
-              foreground=[("selected", THEME["accent_text"]), ("!selected", THEME["muted"])])
 
     style.configure("TPanedwindow", background=THEME["border"])
 
