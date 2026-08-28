@@ -15,11 +15,13 @@ build/
 bin/
 dist/
 atwa.spec
+cli.spec
 graphify-out/
 
-# IDE
+# IDE / local tool configs
 .idea/
 Pycharm/
+.codex/
 
 # Captures and cracked credentials — never committed
 *.pcap
