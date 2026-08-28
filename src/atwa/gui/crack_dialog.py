@@ -74,6 +74,14 @@ class CrackDialog(tk.Toplevel):
         ttk.Label(self.bssid_row, text="(auto-filled if the folder name ends in a MAC address)",
                   style="Muted.TLabel").pack(side=tk.LEFT, padx=8)
 
+        buttons = ttk.Frame(self)
+        buttons.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
+        self.run_btn = ttk.Button(buttons, text="Run", command=self._run, style="Accent.TButton")
+        self.run_btn.pack(side=tk.LEFT)
+        self.stop_btn = ttk.Button(buttons, text="Stop", command=self._stop, style="Danger.TButton", state=tk.DISABLED)
+        self.stop_btn.pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="Close", command=self.destroy).pack(side=tk.RIGHT)
+
         output_frame = ttk.Frame(self)
         output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 4))
         self.output = tk.Text(output_frame, bg=THEME["bg"], fg=THEME["bright"], insertbackground=THEME["bright"],
@@ -83,14 +91,6 @@ class CrackDialog(tk.Toplevel):
         self.output.configure(yscrollcommand=output_vsb.set)
         self.output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         output_vsb.pack(side=tk.LEFT, fill=tk.Y)
-
-        buttons = ttk.Frame(self)
-        buttons.pack(fill=tk.X, padx=10, pady=(0, 10))
-        self.run_btn = ttk.Button(buttons, text="Run", command=self._run, style="Accent.TButton")
-        self.run_btn.pack(side=tk.LEFT)
-        self.stop_btn = ttk.Button(buttons, text="Stop", command=self._stop, style="Danger.TButton", state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, padx=6)
-        ttk.Button(buttons, text="Close", command=self.destroy).pack(side=tk.RIGHT)
 
         self._update_bssid_state()
         self.after(100, self._drain_queue)

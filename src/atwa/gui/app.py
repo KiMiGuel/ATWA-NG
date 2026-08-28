@@ -755,9 +755,16 @@ class App:
             ("Crack Selected", self._capture_crack, "TButton"),
             ("Copy Path", self._capture_copy_path, "TButton"),
             ("Crack Handshakes (folder)...", self._open_crack_dialog, "Accent.TButton"),
+            ("Crack w/ John", self._capture_crack_john, "TButton"),
+            ("Crack w/ Aircrack", self._capture_crack_aircrack, "TButton"),
             ("Cleanup Handshakes...", self._capture_cleanup, "Danger.TButton"),
         ]
-        actions_per_row = 5
+        # 6 per row (not 5): 12 buttons / 6 = exactly 2 full rows, so the
+        # last-row-span logic below never triggers -- Cleanup Handshakes
+        # used to be the lone short-row leftover and got stretched across
+        # 4 columns as a result (2026-08-28 user report: "that red button
+        # is too big").
+        actions_per_row = 6
         n = len(action_defs)
         for col in range(actions_per_row):
             actions.columnconfigure(col, weight=1)
@@ -2406,16 +2413,26 @@ class App:
         else:
             self._crack_with_aircrack(cap_paths, wordlist)
 
-    def _crack_with_john(self, paths: list[str], wordlist: str):
+    def _crack_with_john(self, paths: list[str], wordlist: str, cap_paths: list[str] | None = None):
+        """cap_paths (optional): raw .cap/.pcap/.pcapng files to convert to
+        22000 first, for the quick 'Crack w/ John' button which accepts
+        either hash or capture files straight from the Captures selection."""
         from ..crack.convert import merge_22000_files
         from ..crack.john import JohnCracker, JohnUnavailableError
 
         def work():
             from pathlib import Path
 
-            hashfile = paths[0]
-            if len(paths) > 1:
-                merged_lines = merge_22000_files(paths)
+            from ..crack.convert import cap_to_22000
+
+            all_paths = list(paths)
+            for cap in cap_paths or []:
+                out = cap + ".22000"
+                cap_to_22000(cap, out)
+                all_paths.append(out)
+            hashfile = all_paths[0]
+            if len(all_paths) > 1:
+                merged_lines = merge_22000_files(all_paths)
                 hashfile = str(Path(self.capture_dir_var.get()) / "merged_batch.22000")
                 Path(hashfile).write_text("\n".join(merged_lines) + "\n")
             try:
@@ -2463,6 +2480,36 @@ class App:
             return f"cracked: {results.get(bssid)}"
 
         self._run_bg(f"Crack with aircrack-ng ({bssid})", work)
+
+    def _capture_crack_john(self):
+        """Quick button: force John on the current selection regardless of
+        file type (caps get auto-converted), skipping _capture_crack's
+        auto-detect."""
+        selected = self._selected_capture_paths()
+        hash_paths = [p for p in selected if p.endswith(".22000")]
+        cap_paths = [p for p in selected if p.lower().endswith((".cap", ".pcap", ".pcapng"))]
+        if not hash_paths and not cap_paths:
+            messagebox.showwarning("ATWA-NG", "Select one or more .22000 hash files or capture files first.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        self._crack_with_john(hash_paths, wordlist, cap_paths=cap_paths)
+
+    def _capture_crack_aircrack(self):
+        """Quick button: force aircrack-ng on the current selection."""
+        selected = self._selected_capture_paths()
+        cap_paths = [p for p in selected if p.lower().endswith((".cap", ".pcap", ".pcapng"))]
+        if not cap_paths:
+            messagebox.showwarning(
+                "ATWA-NG", "Aircrack-ng needs .cap/.pcap/.pcapng file(s) — select capture file(s), not .22000 hashes.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        self._crack_with_aircrack(cap_paths, wordlist)
 
     def _capture_cleanup(self):
         """Preview then run housekeeping.cleanup_handshakes — merges each
