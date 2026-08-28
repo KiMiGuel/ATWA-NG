@@ -27,13 +27,14 @@ _JOHN_FALLBACK_PATHS = [
 
 
 def _resolve_john_binary(binary: str) -> str:
-    """Return the first usable John binary: explicit arg, PATH lookup, or
-    a known local clone location (e.g. ~/john/run/john)."""
-    if shutil.which(binary):
-        return binary
+    """Return the first usable John binary: a known local clone location
+    (e.g. ~/john/run/john, kept newer/self-built than the distro package)
+    takes priority over explicit arg / PATH lookup."""
     for path in _JOHN_FALLBACK_PATHS:
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
+    if shutil.which(binary):
+        return binary
     return binary
 
 
