@@ -76,7 +76,7 @@ class CrackDialog(tk.Toplevel):
 
         output_frame = ttk.Frame(self)
         output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 4))
-        self.output = tk.Text(output_frame, bg=THEME["bg"], fg=THEME["fg"], insertbackground=THEME["fg"],
+        self.output = tk.Text(output_frame, bg=THEME["bg"], fg=THEME["bright"], insertbackground=THEME["bright"],
                                font=fonts["mono"], wrap=tk.WORD, borderwidth=0,
                                highlightthickness=1, highlightbackground=THEME["border"])
         output_vsb = ttk.Scrollbar(output_frame, orient=tk.VERTICAL, command=self.output.yview)

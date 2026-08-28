@@ -13,13 +13,24 @@ import tkinter.font as tk_font
 from tkinter import ttk
 
 THEME = {
-    "bg": "#000000",
-    "panel": "#040910",
-    "panel_alt": "#000000",
+    # 2026-08-28: softened pure #000 to a dark slate for a less flat/harsh
+    # "modern dev-tool" feel (user-requested polish pass) -- still reads
+    # as near-black, keeps the v1 identity intact.
+    "bg": "#0a0e14",
+    "panel": "#0f141c",
+    "panel_alt": "#11161f",
     # White outline around every box/button (v1 reference screenshot) --
     # the old dark-blue border barely showed against a near-black bg.
     "border": "#e8f4ff",
+    # Softer border for hover/active states -- flipping straight to the
+    # full-white "border" color on every hover read as a harsh flash;
+    # this mid-tone reads as a deliberate hover highlight instead.
+    "border_dim": "#5c7a94",
     "fg": "#33bbff",
+    # Plain white -- for the one spot (crack dialog output) that was
+    # asked repeatedly to NOT use the blue body-text color like every
+    # other widget.
+    "bright": "#ffffff",
     "accent": "#00e5ff",
     "accent_dim": "#0d94c9",
     "accent_text": "#00131a",
@@ -35,7 +46,7 @@ THEME = {
     # even with just a couple of rows on screen, doubling as the main
     # row-separation cue since ttk.Treeview has no real per-cell gridline
     # option (2026-08-27 user report: rows "bunched up", hard to scan).
-    "tree_bg": "#000000",
+    "tree_bg": "#0a0e14",
     "tree_band": "#22456b",
 }
 
@@ -83,7 +94,7 @@ def apply(root) -> dict[str, tk_font.Font]:
     style.configure("TButton", background=THEME["panel_alt"], foreground=THEME["fg"],
                      bordercolor=THEME["border"], borderwidth=1, relief="solid", padding=(8, 3))
     style.map("TButton",
-              background=[("active", THEME["border"]), ("disabled", THEME["panel"])],
+              background=[("active", THEME["border_dim"]), ("disabled", THEME["panel"])],
               foreground=[("active", THEME["accent_text"]), ("disabled", THEME["muted"])])
 
     style.configure("Accent.TButton", background=THEME["accent_dim"], foreground=THEME["accent_text"],
@@ -101,7 +112,7 @@ def apply(root) -> dict[str, tk_font.Font]:
                      bordercolor=THEME["border"], borderwidth=1, relief="solid",
                      font=fonts["ui_bold"], padding=(11, 7))
     style.map("Toolbar.TButton",
-              background=[("active", THEME["border"]), ("disabled", THEME["panel"])],
+              background=[("active", THEME["border_dim"]), ("disabled", THEME["panel"])],
               foreground=[("active", THEME["accent_text"]), ("disabled", THEME["muted"])])
 
     style.configure("Toolbar.Accent.TButton", background=THEME["accent_dim"], foreground=THEME["accent_text"],
@@ -145,6 +156,18 @@ def apply(root) -> dict[str, tk_font.Font]:
               foreground=[("selected", THEME["accent_text"])])
 
     style.configure("TPanedwindow", background=THEME["border"])
+
+    # Unstyled "clam" TNotebook renders its tab strip and content pane in
+    # the theme's default white/gray -- clashed hard against the rest of
+    # the near-black window (2026-08-28 user report: "the tabs box is
+    # completely white, needs to match colors") once the Target/Captures
+    # split moved from a PanedWindow to a Notebook.
+    style.configure("TNotebook", background=THEME["bg"], bordercolor=THEME["border"], borderwidth=1)
+    style.configure("TNotebook.Tab", background=THEME["panel_alt"], foreground=THEME["fg"],
+                     bordercolor=THEME["border"], borderwidth=1, font=fonts["ui_bold"], padding=(12, 6))
+    style.map("TNotebook.Tab",
+              background=[("selected", THEME["accent_dim"])],
+              foreground=[("selected", THEME["accent_text"])])
 
     for orient in ("Vertical", "Horizontal"):
         style.configure(f"{orient}.TScrollbar", background=THEME["panel"], troughcolor=THEME["bg"],

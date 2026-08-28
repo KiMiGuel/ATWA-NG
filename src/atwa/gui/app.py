@@ -34,13 +34,17 @@ BROADCAST = "ff:ff:ff:ff:ff:ff"
 
 TARGET_COLUMNS = (
     ("bssid", "BSSID", 165),
-    ("ssid", "SSID", 180),
+    ("ssid", "SSID", 220),
     ("channel", "CH", 45),
     ("security", "Security", 100),
     ("pmf", "PMF", 90),
     ("wps", "WPS", 75),
     ("signal", "Signal", 75),
 )
+# Column that absorbs leftover width instead of every column staying a
+# fixed drag-only size (2026-08-28 user report: SSID text truncating while
+# other columns sat on wasted space).
+TARGET_STRETCH_COLUMN = "ssid"
 
 CAPTURE_COLUMNS = (
     ("name", "File", 220),
@@ -48,6 +52,9 @@ CAPTURE_COLUMNS = (
     ("size", "Size", 80),
     ("path", "Path", 420),
 )
+# Path is the column worth growing when there's slack width; the others
+# are already sized to their content (same reasoning as TARGET_STRETCH_COLUMN).
+CAPTURE_STRETCH_COLUMN = "path"
 
 # Channel-lock discipline: selecting a target auto-locks the adapter to
 # that target's channel so a background scan loop doesn't keep hopping
@@ -66,9 +73,9 @@ class App:
         # laptops, netbooks, anyone without a full-HD-or-larger monitor)
         # opened off-screen/clipped on first launch.
         screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        win_w, win_h = min(1380, int(screen_w * 0.95)), min(780, int(screen_h * 0.88))
+        win_w, win_h = min(1380, int(screen_w * 0.95)), min(860, int(screen_h * 0.92))
         self.root.geometry(f"{win_w}x{win_h}+{(screen_w - win_w) // 2}+{(screen_h - win_h) // 2}")
-        self.root.minsize(min(760, win_w), min(480, win_h))
+        self.root.minsize(min(760, win_w), min(560, win_h))
         self._set_window_icon()
 
         self.fonts = theme_mod.apply(root)
@@ -160,28 +167,6 @@ class App:
         if demo:
             self._load_demo_data()
 
-    def _build_toolbar_logo(self, row1):
-        """Logo mark in the toolbar's empty right-hand strip (2026-08-27
-        user report: unused black space, "put that logo... as a button").
-        Doubles as an About-dialog shortcut. Best-effort -- a missing/
-        unreadable asset shouldn't block the toolbar from finishing."""
-        assets = Path(__file__).parent / "assets"
-        try:
-            self._logo_image = tk.PhotoImage(file=str(assets / "logo_toolbar.png"))
-        except tk.TclError:
-            return
-        # Accent-colored outline + hover highlight so it reads as clickable
-        # and actually stands out against the toolbar (2026-08-27 user
-        # report: "looks perfect except make it more noticeable").
-        logo = tk.Label(
-            row1, image=self._logo_image, bg=self.THEME["panel"], cursor="hand2",
-            highlightthickness=2, highlightbackground=self.THEME["border"], highlightcolor=self.THEME["border"],
-        )
-        logo.pack(side=tk.RIGHT, padx=6)
-        logo.bind("<Button-1>", lambda _e: self._show_about())
-        logo.bind("<Enter>", lambda _e: logo.configure(bg=self.THEME["border"]))
-        logo.bind("<Leave>", lambda _e: logo.configure(bg=self.THEME["panel"]))
-
     def _set_window_icon(self):
         """Window/taskbar icon from the approved logo mark. Best-effort --
         a missing/unreadable asset shouldn't block the GUI from launching."""
@@ -248,6 +233,7 @@ class App:
         cap_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
         cap_menu.add_command(label="Refresh Captures", command=self._refresh_captures)
         cap_menu.add_command(label="Inspect Selected", command=self._capture_inspect)
+        cap_menu.add_command(label="Inspect All", command=self._capture_inspect_all)
         cap_menu.add_command(label="Convert to 22000", command=self._capture_convert)
         cap_menu.add_command(label="Fix Capture", command=self._capture_fix)
         cap_menu.add_command(label="Merge Selected", command=self._capture_merge)
@@ -329,13 +315,12 @@ class App:
             side=tk.LEFT, padx=4)
         ttk.Button(row1, text="Unlock", command=self._unlock_channel, style="Toolbar.TButton").pack(
             side=tk.LEFT, padx=4)
-        self._build_toolbar_logo(row1)
         # No toolbar monitor-status pill (removed per 2026-08-27 user
         # report -- monitor state still logs via _run_bg's own start/result
         # lines and the status bar, just not as a standing toolbar widget).
 
     # ------------------------------------------------------------------
-    # Body: PanedWindow(target tree | single scrolling target/captures pane) + log
+    # Body: PanedWindow(target tree | Notebook(Target tab, Captures tab)) + log
     # ------------------------------------------------------------------
     def _make_scrollable(self, parent) -> ttk.Frame:
         """Canvas+Scrollbar wrapper — the Target tab's content (signal
@@ -397,28 +382,54 @@ class App:
             self._bind_wheel_recursive(child, on_wheel, skip)
 
     def _build_body(self):
-        # Single scrolling right-hand pane, no tabs (2026-08-27 reskin toward
-        # v1's dense layout) -- Target details, signal graph, Clients, Attacks,
-        # and Captures all stack in one column instead of splitting Target/
-        # Captures across notebook tabs, which cost a click and vertical
-        # space for the tab strip itself.
+        # Top-level Notebook (Target tab | Captures tab) instead of one long
+        # silent-scroll column (2026-08-27 reskin) -- that single column
+        # buried Captures, and most of the Attacks list, below the fold with
+        # no visible cue there was more to see (2026-08-28 user report:
+        # "resizing makes hidden buttons appear that I was not aware of";
+        # Captures could shrink to nothing at normal window heights). Tabs
+        # give each one the *full* body height instead (2026-08-28 user
+        # request, citing v1/n2-ng's own tabbed raw-log precedent).
+        #
+        # The Scanned Access Points list lives INSIDE the Target tab, not
+        # beside the Notebook -- Captures work (managing/cracking files) has
+        # no use for it, so keeping it always-visible just stole width from
+        # the Captures button row/file table for no reason (2026-08-28 user
+        # request: "make the captures tab open all the way to the left to
+        # hide the scanned access points window"). It reappears automatically
+        # when the Target tab is reselected, since it's that tab's own child,
+        # not a separately-hidden widget.
+        #
+        # Log itself stays untabbed, always a full-width bottom strip (user
+        # live-test note 2026-08-27: moving IT into a notebook tab hid it).
         body = ttk.Frame(self.root, padding=2)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        pane = ttk.PanedWindow(body, orient=tk.HORIZONTAL)
+        notebook = ttk.Notebook(body)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        target_tab = ttk.Frame(notebook)
+        notebook.add(target_tab, text="Target")
+        pane = ttk.PanedWindow(target_tab, orient=tk.HORIZONTAL)
         pane.pack(fill=tk.BOTH, expand=True)
 
-        left = ttk.Frame(body)
+        left = ttk.Frame(target_tab)
         pane.add(left, weight=2)
         self._build_target_tree(left)
 
-        right = ttk.Frame(body)
+        right = ttk.Frame(target_tab)
         pane.add(right, weight=3)
         inner = self._make_scrollable(right)
         self._build_target_panel(inner)
         canvas, on_wheel = self._wheel_bind_target
-        self._bind_wheel_recursive(inner, on_wheel, skip={self.captures_box})
+        self._bind_wheel_recursive(inner, on_wheel)
         self._bind_wheel_recursive(canvas, on_wheel)
+
+        captures_tab = ttk.Frame(notebook)
+        notebook.add(captures_tab, text="Captures")
+        self.captures_box = ttk.LabelFrame(captures_tab, text="Captures")
+        self.captures_box.pack(fill=tk.BOTH, expand=True)
+        self._build_captures_panel(self.captures_box)
 
         # Log stays a full-width bottom strip, always visible (user
         # live-test note 2026-08-27: moving it into a notebook tab hid it).
@@ -473,12 +484,14 @@ class App:
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
         for key, heading, width in TARGET_COLUMNS:
             self.tree.heading(key, text=heading, command=lambda c=key: self._on_target_heading_click(c))
-            # stretch=False: columns keep whatever width the user drags them
-            # to instead of ttk auto-compressing them to fit the visible
-            # pane — needed for the horizontal scrollbar below to mean
-            # anything (2026-08-26 live-test note: columns weren't
-            # comfortably resizable/reachable when narrower than total width).
-            self.tree.column(key, width=width, minwidth=40, stretch=False)
+            # stretch=False on every column but TARGET_STRETCH_COLUMN: fixed
+            # columns keep whatever width the user drags them to instead of
+            # ttk auto-compressing them to fit the visible pane (2026-08-26
+            # live-test note: columns weren't comfortably resizable/reachable
+            # when narrower than total width) — but one column has to absorb
+            # slack width or it just sits wasted while SSID truncates
+            # (2026-08-28 user report).
+            self.tree.column(key, width=width, minwidth=40, stretch=(key == TARGET_STRETCH_COLUMN))
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         hsb.configure(command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -623,10 +636,18 @@ class App:
             ("Evil Twin (Captive Portal)", self._attack_eviltwin, "TButton"),
             ("Online Password Guess", self._attack_online_guess, "TButton"),
         ]
+        # 2-column grid instead of one-per-row: halves the panel's total
+        # height, which is what was pushing WPS/Evil-Twin/Online-Guess (and
+        # Captures below them) off the bottom of the window at normal sizes
+        # (2026-08-28 user report: "resizing makes hidden buttons appear").
+        attack_grid = ttk.Frame(attacks_box)
+        attack_grid.pack(fill=tk.X, padx=2, pady=(0, 1))
+        attack_grid.columnconfigure(0, weight=1)
+        attack_grid.columnconfigure(1, weight=1)
         self.attack_buttons: list[ttk.Button] = []
-        for label, cmd, style in buttons:
-            b = ttk.Button(attacks_box, text=label, command=cmd, style=style)
-            b.pack(fill=tk.X, padx=4, pady=1)
+        for i, (label, cmd, style) in enumerate(buttons):
+            b = ttk.Button(attack_grid, text=label, command=cmd, style=style)
+            b.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=1)
             self.attack_buttons.append(b)
 
         # PINCER kept out of self.attack_buttons: it needs a second enable
@@ -638,10 +659,6 @@ class App:
         )
         self.pincer_button.pack(fill=tk.X, padx=4, pady=1)
 
-        self.captures_box = ttk.LabelFrame(parent, text="Captures")
-        self.captures_box.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
-        self._build_captures_panel(self.captures_box)
-
     def _build_captures_panel(self, parent):
         opts_row = ttk.Frame(parent)
         opts_row.pack(fill=tk.X, padx=4, pady=(4, 6))
@@ -651,23 +668,54 @@ class App:
         ttk.Label(opts_row, text="Wordlist:").grid(row=1, column=0, sticky=tk.W, pady=2)
         ttk.Entry(opts_row, textvariable=self.wordlist_var, width=40).grid(row=1, column=1, sticky=tk.EW, padx=6)
         ttk.Button(opts_row, text="Browse", command=self._choose_wordlist).grid(row=1, column=2)
-        opts_row.columnconfigure(1, weight=1)
+        # minsize floor -- without it, grid shrinks this column straight to
+        # 0 (entry fully invisible, label butted against Browse) once the
+        # right pane gets narrow, instead of just truncating the text
+        # (2026-08-28 user report: fields vanishing on resize).
+        opts_row.columnconfigure(1, weight=1, minsize=100)
 
+        # Wrapping grid, not a single pack(side=LEFT) row -- 9 buttons in one
+        # unwrapped row ran off the right edge with no way to reach the last
+        # few short of the Captures menu (2026-08-28 user report: "captures
+        # tab still has hidden buttons"). Fixed column count wraps them onto
+        # as many rows as needed instead of however wide the window happens
+        # to be.
         actions = ttk.Frame(parent)
         actions.pack(fill=tk.X, padx=4, pady=(0, 4))
-        for label, cmd in (
-            ("Refresh", self._refresh_captures),
-            ("Inspect", self._capture_inspect),
-            ("Convert to 22000", self._capture_convert),
-            ("Fix", self._capture_fix),
-            ("Merge (2+)", self._capture_merge),
-            ("Crack Selected", self._capture_crack),
-            ("Copy Path", self._capture_copy_path),
-        ):
-            ttk.Button(actions, text=label, command=cmd).pack(side=tk.LEFT, padx=2)
-        ttk.Button(actions, text="Crack Handshakes (folder)...", command=self._open_crack_dialog,
-                   style="Accent.TButton").pack(side=tk.LEFT, padx=(10, 2))
-        ttk.Button(actions, text="Cleanup Handshakes...", command=self._capture_cleanup, style="Danger.TButton").pack(side=tk.LEFT, padx=2)
+        action_defs = [
+            ("Refresh", self._refresh_captures, "TButton"),
+            ("Inspect", self._capture_inspect, "TButton"),
+            ("Inspect All", self._capture_inspect_all, "TButton"),
+            ("Convert to 22000", self._capture_convert, "TButton"),
+            ("Fix", self._capture_fix, "TButton"),
+            ("Merge (2+)", self._capture_merge, "TButton"),
+            ("Crack Selected", self._capture_crack, "TButton"),
+            ("Copy Path", self._capture_copy_path, "TButton"),
+            ("Crack Handshakes (folder)...", self._open_crack_dialog, "Accent.TButton"),
+            ("Cleanup Handshakes...", self._capture_cleanup, "Danger.TButton"),
+        ]
+        actions_per_row = 5
+        n = len(action_defs)
+        for col in range(actions_per_row):
+            actions.columnconfigure(col, weight=1)
+        for i, (label, cmd, style) in enumerate(action_defs):
+            row, col = divmod(i, actions_per_row)
+            # Last button spans the remaining columns when its row is short
+            # a full set -- otherwise it sits at its natural width with dead
+            # space stretching out past it instead of reaching the row's
+            # right edge like every full row does (2026-08-28 user report:
+            # "wasted space after the red crack button").
+            row_is_short = (n - row * actions_per_row) < actions_per_row
+            span = actions_per_row - col if (i == n - 1 and row_is_short) else 1
+            ttk.Button(actions, text=label, command=cmd, style=style).grid(
+                row=row, column=col, columnspan=span, sticky="ew", padx=2, pady=2)
+
+        # Horizontal scrollbar packed before tree_frame claims the bottom
+        # strip first (same ordering as the target tree above) -- packing
+        # it after would leave it no space once tree_frame's fill=BOTH/
+        # expand=True already claimed everything.
+        capture_hsb = ttk.Scrollbar(parent, orient=tk.HORIZONTAL)
+        capture_hsb.pack(fill=tk.X, padx=4)
 
         tree_frame = ttk.Frame(parent)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
@@ -675,19 +723,32 @@ class App:
         self.capture_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended", height=6)
         for key, heading, width in CAPTURE_COLUMNS:
             self.capture_tree.heading(key, text=heading)
-            self.capture_tree.column(key, width=width, minwidth=40)
-        self.capture_tree.tag_configure("row_even", background=self.THEME["tree_bg"], foreground=self.THEME["fg"])
-        self.capture_tree.tag_configure("row_odd", background=self.THEME["tree_band"], foreground=self.THEME["fg"])
+            # stretch=False on every column but CAPTURE_STRETCH_COLUMN: same
+            # fix as the target tree -- without it ttk auto-compresses every
+            # column to fit the visible width instead of leaving them at
+            # their set width with a scrollbar, which is what was mangling
+            # "Kind"/"Size" headers into "Kin"/"Siz" on a narrow window
+            # (2026-08-28 user report). Path still stretches so slack width
+            # goes somewhere useful instead of sitting wasted.
+            self.capture_tree.column(key, width=width, minwidth=40, stretch=(key == CAPTURE_STRETCH_COLUMN))
+        # "bright" (white), not the standard blue body-text color -- same
+        # reasoning as the crack dialog's output Text widget (2026-08-28
+        # user report: "the captures list is STILL BLUE COLOR when it needs
+        # to be WHITE").
+        self.capture_tree.tag_configure("row_even", background=self.THEME["tree_bg"], foreground=self.THEME["bright"])
+        self.capture_tree.tag_configure("row_odd", background=self.THEME["tree_band"], foreground=self.THEME["bright"])
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.capture_tree.yview)
-        self.capture_tree.configure(yscrollcommand=vsb.set)
+        capture_hsb.configure(command=self.capture_tree.xview)
+        self.capture_tree.configure(yscrollcommand=vsb.set, xscrollcommand=capture_hsb.set)
         self.capture_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.capture_tree.bind("<Button-3>", self._on_capture_right_click)
 
         # Own dedicated scroll, not the outer page's (2026-08-27 user
         # report: "the handshakes box needs its own scroll bars") --
-        # excluded from the outer canvas's recursive wheel-bind via
-        # skip={self.captures_box} in _build_body().
+        # naturally isolated from the Attacks pane's wheel-bind now that
+        # Captures lives in its own PanedWindow pane (2026-08-28 reskin),
+        # not inside the Attacks pane's scrollable canvas.
         def on_capture_wheel(event):
             if event.num == 5 or event.delta < 0:
                 self.capture_tree.yview_scroll(1, "units")
@@ -745,6 +806,8 @@ class App:
                     messagebox.showinfo("ATWA-NG", payload)
                 elif kind == "captures_ready":
                     self._populate_capture_tree(payload)
+                elif kind == "inspect_all_done":
+                    self._on_inspect_all_done(payload)
         except queue.Empty:
             pass
         self.root.after(100, self._drain_queue)
@@ -2033,6 +2096,110 @@ class App:
             parts.append("no PMKID/handshake material found")
         return ", ".join(parts)
 
+    def _show_scroll_dialog(self, title: str, text: str, *, buttons=("OK",)) -> str | None:
+        """Fixed-size, word-wrapped, scrollable dialog -- messagebox.showinfo
+        grows unbounded-tall with one line per file, unreadable past a
+        handful of results (2026-08-28 user report)."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=self.THEME["bg"])
+        dlg.geometry("560x480")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        text_frame = ttk.Frame(dlg)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        txt = tk.Text(text_frame, wrap=tk.WORD, bg=self.THEME["panel_alt"], fg=self.THEME["bright"],
+                       insertbackground=self.THEME["bright"], relief="solid", borderwidth=1,
+                       highlightthickness=0, font=self.fonts["mono"])
+        scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=txt.yview)
+        txt.configure(yscrollcommand=scroll.set)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.insert("1.0", text)
+        txt.configure(state=tk.DISABLED)
+
+        result: dict[str, str | None] = {"choice": None}
+
+        def choose(label):
+            result["choice"] = label
+            dlg.destroy()
+
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(fill=tk.X, padx=8, pady=(0, 8))
+        for label in buttons:
+            style = "Accent.TButton" if label in ("OK", "Yes") else "TButton"
+            ttk.Button(btn_row, text=label, command=lambda l=label: choose(l), style=style).pack(
+                side=tk.RIGHT, padx=4)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        dlg.wait_visibility()
+        dlg.focus_set()
+        self.root.wait_window(dlg)
+        return result["choice"]
+
+    def _capture_inspect_all(self):
+        paths = [self.capture_tree.set(iid, "path") for iid in self.capture_tree.get_children()]
+        if not paths:
+            messagebox.showinfo("ATWA-NG", "No captures to inspect.")
+            return
+
+        def work():
+            from pathlib import Path
+
+            lines, empty = [], []
+            for p in paths:
+                path = Path(p)
+                if path.suffix.lower() == ".22000":
+                    text = path.read_text()
+                    pmkid = sum(1 for line in text.splitlines() if line.startswith("WPA*01*"))
+                    hs = sum(1 for line in text.splitlines() if line.startswith("WPA*02*"))
+                    lines.append(f"{path.name}: {pmkid} PMKID line(s), {hs} handshake line(s)")
+                    if not pmkid and not hs:
+                        empty.append(p)
+                else:
+                    desc = self._inspect_capture(path)
+                    lines.append(f"{path.name}: {desc}")
+                    if "no PMKID/handshake material found" in desc or "could not parse" in desc:
+                        empty.append(p)
+            self._queue.put(("inspect_all_done", (lines, empty)))
+            return f"{len(paths)} inspected, {len(empty)} with no handshake/PMKID material"
+
+        self._run_bg("Inspect all captures", work)
+
+    def _on_inspect_all_done(self, payload):
+        lines, empty = payload
+        self._show_scroll_dialog("Inspect All", "\n".join(lines))
+        if not empty:
+            return
+        from pathlib import Path
+
+        names = "\n".join(Path(p).name for p in empty)
+        choice = self._show_scroll_dialog(
+            "Delete empty captures",
+            f"{len(empty)} file(s) have no PMKID/handshake material:\n\n{names}",
+            buttons=("No", "Yes"),
+        )
+        if choice != "Yes":
+            return
+
+        deleted, failed = [], []
+        for p in empty:
+            try:
+                Path(p).unlink()
+            except OSError as exc:
+                failed.append(f"{Path(p).name}: {exc}")
+            else:
+                deleted.append(p)
+                if self.capture_tree.exists(p):
+                    self.capture_tree.delete(p)
+
+        status = f"Deleted {len(deleted)} file(s)"
+        if failed:
+            status += f", {len(failed)} failed"
+        self.status_var.set(status)
+        if failed:
+            self._show_scroll_dialog("Delete failed", "Could not delete:\n\n" + "\n".join(failed))
+
     def _capture_convert(self):
         paths = self._selected_capture_paths()
         if not paths:
@@ -2329,13 +2496,18 @@ class App:
         win.configure(bg=self.THEME["bg"])
         win.resizable(False, False)
         win.transient(self.root)
+        try:
+            self._about_logo_image = tk.PhotoImage(file=str(Path(__file__).parent / "assets" / "logo_about.png"))
+            tk.Label(win, image=self._about_logo_image, bg=self.THEME["bg"]).pack(padx=32, pady=(24, 0))
+        except tk.TclError:
+            pass
         text = (
             f"ATWA-NG\nVersion {__version__}\n\n"
             "by KiMiGuel — INDEPENTEST LLC\n"
             "github.com/KiMiGuel\n"
             "indepentest.pro"
         )
-        ttk.Label(win, text=text, justify=tk.CENTER, anchor=tk.CENTER).pack(padx=32, pady=(24, 12))
+        ttk.Label(win, text=text, justify=tk.CENTER, anchor=tk.CENTER).pack(padx=32, pady=(12, 12))
         ttk.Button(win, text="OK", command=win.destroy).pack(pady=(0, 16))
         win.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
