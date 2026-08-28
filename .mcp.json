@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mcp-debugpy": {
+      "type": "stdio",
+      "command": "/home/KaliMa/mcp-debugpy/.venv/bin/mcp-debug-server",
+      "args": [],
+      "env": {}
+    }
+  }
+}

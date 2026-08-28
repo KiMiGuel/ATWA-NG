@@ -6,7 +6,7 @@ import sys
 
 from ..crack.convert import cap_to_22000
 from ..crack.john import JohnCracker
-from . import CAPCRACK_BIN, _run_bounded
+from . import CAPCRACK_BIN, EAPOLDUMP_BIN, _run_bounded
 
 
 def _cmd_crack(args) -> int:
@@ -32,6 +32,18 @@ def _cmd_crack_cap(args) -> int:
         cmd += ["-b", args.bssid]
     cmd.append(args.capfile)
     rc, out, err = _run_bounded(cmd, timeout=args.timeout)
+    print(out)
+    if rc != 0 and err:
+        print(err, file=sys.stderr)
+    return rc
+
+
+def _cmd_verify_handshake(args) -> int:
+    cmd = [str(EAPOLDUMP_BIN), args.capfile]
+    if args.mac:
+        cmd.append(args.mac)
+        cmd += [str(n) for n in args.frames]
+    rc, out, err = _run_bounded(cmd, timeout=30.0)
     print(out)
     if rc != 0 and err:
         print(err, file=sys.stderr)

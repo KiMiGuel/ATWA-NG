@@ -13,7 +13,13 @@ __pycache__/
 # Build/scan artifacts
 build/
 bin/
+dist/
+atwa.spec
 graphify-out/
+
+# IDE
+.idea/
+Pycharm/
 
 # Captures and cracked credentials — never committed
 *.pcap

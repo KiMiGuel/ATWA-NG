@@ -122,6 +122,8 @@ def caffe_latte(
 
     # Phase 2: replay + collect fresh IVs from client replies
     def _on_reply(pkt: Packet) -> None:
+        if not _is_reply_from_client(pkt):
+            return
         extracted = wep_iv_and_ciphertext(pkt)
         if extracted is None:
             return

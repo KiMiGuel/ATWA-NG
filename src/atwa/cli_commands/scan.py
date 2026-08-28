@@ -9,7 +9,7 @@ import time
 
 from ..injection_test import injection_test
 from ..scan import channels_for_band, scan
-from . import WPSRECON_BIN
+from . import EAPOLHUNTER_BIN, WPSRECON_BIN, _python_for_scripts
 
 
 def _cmd_scan(args) -> int:
@@ -50,6 +50,25 @@ def _cmd_wps_recon(args) -> int:
     cmd = [str(WPSRECON_BIN), "-i", args.iface]
     if args.channel:
         cmd += ["-c", str(args.channel)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, text=True)
+    try:
+        time.sleep(args.duration)
+    finally:
+        proc.send_signal(signal.SIGINT)
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+    print(out)
+    return 0
+
+
+def _cmd_eapol_hunt(args) -> int:
+    cmd = [_python_for_scripts(), str(EAPOLHUNTER_BIN), args.iface]
+    if args.bssid:
+        cmd.append(args.bssid)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL, text=True)
     try:

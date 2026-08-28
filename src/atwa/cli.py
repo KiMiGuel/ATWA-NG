@@ -31,9 +31,14 @@ from .cli_commands.attacks import (
     _cmd_wps_oneshot,
     _cmd_wps_pixie,
 )
-from .cli_commands.crack import _cmd_crack, _cmd_crack_cap
+from .cli_commands.crack import _cmd_crack, _cmd_crack_cap, _cmd_verify_handshake
 from .cli_commands.misc import _cmd_gui
-from .cli_commands.scan import _cmd_injection_test, _cmd_scan, _cmd_wps_recon
+from .cli_commands.scan import (
+    _cmd_eapol_hunt,
+    _cmd_injection_test,
+    _cmd_scan,
+    _cmd_wps_recon,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--channel", type=int)
     p.add_argument("--duration", type=int, default=15)
     p.set_defaults(func=_cmd_wps_recon)
+
+    p = sub.add_parser("eapol-hunt", help="independent passive EAPOL handshake capture")
+    p.add_argument("iface")
+    p.add_argument("--bssid")
+    p.add_argument("--duration", type=float, default=300.0)
+    p.set_defaults(func=_cmd_eapol_hunt)
+
+    p = sub.add_parser("verify-handshake", help="independently verify a captured EAPOL handshake")
+    p.add_argument("capfile")
+    p.add_argument("--mac")
+    p.add_argument("--frames", type=int, nargs="*", default=[])
+    p.set_defaults(func=_cmd_verify_handshake)
 
     p = sub.add_parser("crack-cap", help="crack a WPA/WEP capture directly")
     p.add_argument("capfile")

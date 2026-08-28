@@ -355,8 +355,7 @@ class OneShot:
         return False
 
     def single_connection(self, bssid: str, pin: str | None = None,
-                          pixiemode: bool = False, pbc_mode: bool = False,
-                          pixieforce: bool = False) -> OneShotResult:
+                          pixiemode: bool = False, pbc_mode: bool = False) -> OneShotResult:
         if pbc_mode:
             self.wps_connection(bssid=bssid, pbc_mode=True)
             bssid = self.connection_status.bssid or bssid

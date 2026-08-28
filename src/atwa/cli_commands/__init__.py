@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "aircrack-ng"
-_WPSRECON_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "reaver" / "src"
+# Under a PyInstaller-frozen build, __file__ resolves inside the extracted
+# _MEIPASS temp dir, not the repo tree — vendor/ isn't bundled into the
+# onefile blob (its libtool wrapper scripts/symlinks don't survive
+# relocation), so it ships as a sibling directory next to the executable
+# instead. Resolve against the exe's own directory when frozen.
+if getattr(sys, "frozen", False):
+    _REPO_ROOT = Path(sys.executable).resolve().parent
+else:
+    _REPO_ROOT = Path(__file__).resolve().parents[3]
+_VENDOR_ROOT = _REPO_ROOT / "vendor" / "aircrack-ng"
+_WPSRECON_ROOT = _REPO_ROOT / "vendor" / "reaver" / "src"
 # aireplay-ng (injection) is intentionally not listed here — native scapy
 # injection (frames.py + attacks/deauth.py + injection_test.py) fully
 # replaced it (2026-08-27), matching the project's policy that the only
@@ -16,6 +27,14 @@ _WPSRECON_ROOT = Path(__file__).resolve().parents[2] / "vendor" / "reaver" / "sr
 # ported (see docs/vendor_inventory.md Phase 6e).
 CAPCRACK_BIN = _VENDOR_ROOT / "aircrack-ng"
 WPSRECON_BIN = _WPSRECON_ROOT / "wash"
+EAPOLHUNTER_BIN = _REPO_ROOT / "vendor" / "eapol_hunter" / "eapol_hunter.py"
+EAPOLDUMP_BIN = _REPO_ROOT / "vendor" / "eapol_dump" / "eapol_dump.sh"
+
+
+def _python_for_scripts() -> str:
+    if getattr(sys, "frozen", False):
+        return shutil.which("python3") or "python3"
+    return sys.executable
 
 
 def _run_bounded(cmd: list[str], timeout: float) -> tuple[int, str, str]:
