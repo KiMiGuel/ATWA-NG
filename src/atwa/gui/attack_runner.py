@@ -289,7 +289,7 @@ class AttackRunner:
                 if self._stop_event.is_set():
                     self._log(f"PINCER: stop requested before round {round_n + 1}/{max_rounds}")
                     break
-                sent = deauth(attack_mon, ap.bssid, count=1, channel=ap.channel, progress_fn=self._log)
+                sent = deauth(attack_mon, ap.bssid, channel=ap.channel, progress_fn=self._log)
                 if sent == 0:
                     self._log(
                         f"PINCER round {round_n + 1}/{max_rounds}: deauth did NOT go out "

@@ -738,3 +738,99 @@ agreed to do that directly, no agent, in the next session slice.
 `attacks/wps.py`'s `attempt_pin()`; separately, extend `secure.py`'s
 `wps_profile()` with manufacturer/model/device-name to close the `wash`
 gap (small, independent task).
+
+## 2026-08-27: 1-frame-deauth root cause found (== the handshake-capture gap vs v1), client-tree selection bug, log verbosity, "Network is down" explained
+
+User reported 4 live-use issues in one batch: a scapy "[Errno 100]
+Network is down" warning on the terminal, the Clients box's row
+highlight looking "stuck" on the center row with clicks on rows
+above/below not registering, deauth attacks only sending 1 frame
+instead of 64, and a repeat ask (raised before) for much higher LOG
+verbosity — "see every deauth sent" when an attack runs.
+
+**Root cause common to two of the four items — v1-parity was broken
+during the native port, not by design:** grepped
+`vendor/n2-ng-v1-src/n2ng/main.py`'s own deauth call sites and found the
+comment `# count=1: aireplay-ng sends 64 deauth frames per count unit`.
+v1's `count` param was in *aireplay-ng burst* units — `count=1` there
+meant one aireplay-ng `-0 1` invocation, which itself fires 64 real
+802.11 deauth frames. When deauth was rewritten natively (scapy
+`sendp()` instead of shelling out to aireplay-ng), three call sites
+(`gui/app.py` auto-deauth loop, `attack_runner.py` PINCER, `attacks/
+eviltwin.py`'s deauth loop) kept the literal `count=1` from the old
+call sites but lost the aireplay-ng multiplier context — so `count=1`
+now means exactly one raw frame per round, a 64x weaker attack than
+v1's equivalent. This is very likely *the* reason atwa-ng under-
+performs v1 at handshake capture: a single deauth frame is easy for a
+client to simply not receive (unencrypted management frame, no
+retry/ack), while a 64-frame burst is what v1 relied on for
+reliability. Fixed all three call sites to drop the explicit `count=1`
+and fall through to `deauth()`'s own default of 64
+([deauth.py](src/atwa/attacks/deauth.py),
+[app.py:1711](src/atwa/gui/app.py:1711),
+[attack_runner.py:292](src/atwa/gui/attack_runner.py:292),
+[eviltwin.py:337](src/atwa/attacks/eviltwin.py:337)). `deauth_all()`/
+`deauth_client()` (the manual "Deauth All Clients" / "Deauth Client"
+buttons) already used `count=64` — only the three *automated/looping*
+call sites had the bug.
+
+**Log verbosity — third time this was raised, fixed at the actual
+send layer this time.** Previous sessions added per-*round* summary
+lines ("sent N deauth frame(s)"), but `deauth()` still handed the
+whole batch to a single `sendp(pkt, count=N, inter=interval)` call
+with no visibility into individual frames. Rewrote `deauth()` to open
+one `conf.L2socket(iface=...)` and loop `sock.send(pkt)` itself, so
+every single frame gets its own log line ("deauth frame i/N sent: bssid
+-> client") as it goes out, not just a post-hoc count. Kept per-frame
+error handling (a mid-loop `OSError` returns the partial count sent so
+far rather than silently claiming the full count). Rewrote
+`tests/test_deauth.py` to mock `conf.L2socket` instead of the now-gone
+`sendp` import; 9/9 pass, no other tests touched `deauth_module.sendp`.
+
+**Clients box "stuck" highlight — confirmed real bug, not a Tk
+rendering glitch.** `_on_target_select` (already documented in its own
+docstring as refiring on *every scan-tick redraw*, not just real
+clicks — this was the mechanism behind an earlier signal-graph-reset
+bug) unconditionally did
+`client_tree.delete(*get_children())` + full re-`insert()` on every
+single firing, including the non-click refires. Since a locked
+target's client list is typically static between ticks, this meant
+the Clients treeview was being torn down and rebuilt several times a
+second — any selection a user made in the small window between two
+scan ticks got silently wiped before the click could register,
+reading as "stuck"/unresponsive rather than "selection keeps getting
+reset." Fixed by only touching tree structure when the actual client
+*set* changes (compare current child iids to the new sorted list); when
+it's unchanged, only refresh signal values in place via `.item()` and
+leave the existing selection alone. When the set does change, the
+previous selection is now carried forward into the rebuild if that
+client MAC is still present, instead of being dropped
+([app.py:1239](src/atwa/gui/app.py:1239)).
+
+**"[Errno 100] Network is down" — explained, not a new bug, already
+non-fatal.** This is scapy's own diagnostic print (`WARNING: Socket
+<...> failed with '[Errno 100] Network is down'. It was closed.`)
+firing when the scan loop's `sniff(iface=mon_iface, timeout=dwell,
+...)` call (`app.py:1056`) hits a socket read exactly as the adapter
+(mt76x0u, confirmed flaky on fast 2.4→5GHz hops — see the code comment
+at that line) transiently drops link mid-hop. The surrounding
+try/except already exists specifically for this — logs "scan hop
+failed, retrying" to the in-app Log panel and continues to the next
+0.3s dwell; the scan session does not die. The two lines the user saw
+are scapy's own stderr print (its global logger, independent of our
+try/except), not evidence of an unhandled crash. Left as-is — no code
+change — since it's cosmetic terminal noise around an already-mitigated
+transient condition, not a functional defect; flagged to the user as
+optional follow-up if they want scapy's log level raised to suppress
+it from the terminal.
+
+**Verification:** `pytest -q` → 128 passed (was 125 at the last
+checkpoint + 3 net from the deauth test rewrite). `ruff check` and
+`mypy` clean on all four changed files. Not yet live-tested against a
+real AP this session — the deauth/handshake fix in particular needs a
+live re-test to confirm it actually closes the capture-rate gap with
+v1, not just restores the frame count on paper.
+
+**Next:** live re-test auto-deauth/handshake capture against a real AP
+now that deauth rounds are back to 64 frames, to confirm this actually
+was the v1-parity gap and not just one contributing factor.

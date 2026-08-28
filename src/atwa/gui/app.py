@@ -1236,13 +1236,34 @@ class App:
             f"Signal: {ap.signal if ap.signal is not None else '-'} dBm\n"
             f"Clients seen: {len(ap.clients)}"
         )
-        self.client_tree.delete(*self.client_tree.get_children())
-        for i, mac in enumerate(sorted(ap.clients)):
-            signal = ap.client_signal.get(mac)
-            band_tag = "row_even" if i % 2 == 0 else "row_odd"
-            self.client_tree.insert(
-                "", tk.END, iid=mac, values=(mac, signal if signal is not None else "-"), tags=(band_tag,),
-            )
+        # _on_target_select refires on every scan-tick redraw (see docstring
+        # above), not just on a real click. Blindly delete()+insert()ing the
+        # client_tree every time wiped the user's row selection out from
+        # under them on the very next scan hop -- clicking a client above/
+        # below the currently-selected one looked "stuck" because any
+        # selection made between two ticks got destroyed before it could be
+        # acted on. Only touch the tree structure when the client set
+        # actually changed; otherwise just refresh signal values in place
+        # and leave the existing selection alone. When it does change,
+        # carry the previous selection forward if that client is still present.
+        current_ids = self.client_tree.get_children()
+        new_ids = tuple(sorted(ap.clients))
+        if current_ids == new_ids:
+            for mac in new_ids:
+                signal = ap.client_signal.get(mac)
+                self.client_tree.item(mac, values=(mac, signal if signal is not None else "-"))
+        else:
+            prev_selection = self.client_tree.selection()
+            self.client_tree.delete(*current_ids)
+            for i, mac in enumerate(new_ids):
+                signal = ap.client_signal.get(mac)
+                band_tag = "row_even" if i % 2 == 0 else "row_odd"
+                self.client_tree.insert(
+                    "", tk.END, iid=mac, values=(mac, signal if signal is not None else "-"), tags=(band_tag,),
+                )
+            still_present = [mac for mac in prev_selection if mac in new_ids]
+            if still_present:
+                self.client_tree.selection_set(still_present)
 
         if not is_new_bssid:
             return
@@ -1708,7 +1729,7 @@ class App:
                 if stop_event.is_set():
                     break
                 try:
-                    sent = deauth(self.mon_iface, ap.bssid, count=1, channel=ap.channel, progress_fn=self._log)
+                    sent = deauth(self.mon_iface, ap.bssid, channel=ap.channel, progress_fn=self._log)
                     if sent == 0:
                         self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: did NOT go out to {ap.bssid} — see the warning above")
                     else:
@@ -2293,6 +2314,21 @@ class App:
         self._scanning.clear()
         self._stop_event.set()
         self._stop_lock_capture()
+        # The scan loop thread (_start_scan) may be mid-blocking-sniff() when
+        # _scanning is cleared -- sniff()'s call is timed (up to one dwell
+        # period) and doesn't notice the flag until it returns. Without
+        # waiting here, set_managed_mode() below (which does `ip link set
+        # <iface> down`) could run while that thread's raw socket is still
+        # open, yanking the interface out from under a live read -- this is
+        # exactly the "[Errno 100] Network is down" scapy warning users see
+        # on close, reproduced live (2026-08-27): AsyncSniffer left running
+        # + set_managed_mode() called concurrently = deterministic ENETDOWN.
+        # No driver quirk involved -- any open raw socket on an interface
+        # that goes admin-down behaves this way, on any adapter. The join
+        # timeout only needs to cover one dwell period plus loop overhead
+        # (dwell defaults to 0.3s); 2s leaves comfortable margin.
+        if self._scan_thread is not None:
+            self._scan_thread.join(timeout=2.0)
         self._save_settings()
         if self.mon_iface and "demo" not in self.mon_iface:
             try:

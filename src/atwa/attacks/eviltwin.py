@@ -334,7 +334,7 @@ def run_eviltwin(
             while not stop.is_set() and not result_box:
                 round_n += 1
                 try:
-                    sent = _deauth(iface_mon, bssid, count=1, channel=channel, progress_fn=log)
+                    sent = _deauth(iface_mon, bssid, channel=channel, progress_fn=log)
                     if sent == 0:
                         log(f"eviltwin deauth round {round_n}: did NOT go out to {bssid} — see the warning above")
                     else:

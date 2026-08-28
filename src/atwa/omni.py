@@ -298,7 +298,7 @@ class OmniOrchestrator:
         return False
 
     def _stage_handshake(self, ap: AccessPoint, report: OmniReport) -> HandshakeStatus:
-        """Deauth rounds (count=1 discipline, 15s pacing) with a capture gate.
+        """Deauth rounds (64-frame bursts, 15s pacing) with a capture gate.
 
         Skipped outright when PMF is required (802.11w drops the deauths,
         so there's no point attempting the stage at all).
@@ -332,7 +332,7 @@ class OmniOrchestrator:
                 cap.authorized(a, c) for a, c in cap.messages
             ):
                 break
-            sent = self._deauth_fn(self.iface, ap.bssid, client=client, count=1, channel=ap.channel, progress_fn=self._log)
+            sent = self._deauth_fn(self.iface, ap.bssid, client=client, channel=ap.channel, progress_fn=self._log)
             if sent == 0:
                 self._log(f"handshake round {round_no}/{self.handshake_max_rounds}: deauth did NOT go out to {client} — see the warning above")
             else:
