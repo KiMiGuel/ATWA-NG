@@ -81,6 +81,7 @@ class App:
 
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
+        self._captures_refreshing = False
         self._scanning = threading.Event()
         self._stop_event = threading.Event()
         self._scan_thread: threading.Thread | None = None
@@ -570,8 +571,8 @@ class App:
         self.client_tree.column("station", width=160, minwidth=120)
         self.client_tree.heading("signal", text="Signal")
         self.client_tree.column("signal", width=70, minwidth=50)
-        self.client_tree.tag_configure("row_even", background=self.THEME["tree_bg"])
-        self.client_tree.tag_configure("row_odd", background=self.THEME["tree_band"])
+        self.client_tree.tag_configure("row_even", background=self.THEME["tree_bg"], foreground=self.THEME["fg"])
+        self.client_tree.tag_configure("row_odd", background=self.THEME["tree_band"], foreground=self.THEME["fg"])
         self.client_tree.bind("<Button-3>", self._on_client_right_click)
         client_vsb = ttk.Scrollbar(client_frame, orient=tk.VERTICAL, command=self.client_tree.yview)
         self.client_tree.configure(yscrollcommand=client_vsb.set)
@@ -675,8 +676,8 @@ class App:
         for key, heading, width in CAPTURE_COLUMNS:
             self.capture_tree.heading(key, text=heading)
             self.capture_tree.column(key, width=width, minwidth=40)
-        self.capture_tree.tag_configure("row_even", background=self.THEME["tree_bg"])
-        self.capture_tree.tag_configure("row_odd", background=self.THEME["tree_band"])
+        self.capture_tree.tag_configure("row_even", background=self.THEME["tree_bg"], foreground=self.THEME["fg"])
+        self.capture_tree.tag_configure("row_odd", background=self.THEME["tree_band"], foreground=self.THEME["fg"])
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.capture_tree.yview)
         self.capture_tree.configure(yscrollcommand=vsb.set)
         self.capture_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -742,6 +743,8 @@ class App:
                     messagebox.showerror("ATWA-NG", payload)
                 elif kind == "info":
                     messagebox.showinfo("ATWA-NG", payload)
+                elif kind == "captures_ready":
+                    self._populate_capture_tree(payload)
         except queue.Empty:
             pass
         self.root.after(100, self._drain_queue)
@@ -1560,7 +1563,10 @@ class App:
             return
 
         def work():
-            return self._runner().handshake(ap)
+            result = self._runner().handshake(ap)
+            if "authorized" in result.lower():
+                self._queue.put(("info", f"AUTHORIZED handshake captured for {ap.bssid} ({ap.ssid or '<hidden>'}).\n{result}"))
+            return result
 
         self._run_bg(f"Handshake capture on {ap.bssid}", work)
 
@@ -1923,8 +1929,28 @@ class App:
                       key=lambda p: p.stat().st_mtime, reverse=True)
 
     def _refresh_captures(self):
+        """The scan (_capture_files' rglob + stat over the whole capture
+        tree) can take a long time on a large/deep directory — running it
+        synchronously on the Tk thread froze the entire GUI (2026-08-28
+        user report: switching capture dir "completely freezes" it).
+        Walk off-thread, populate the tree once the listing comes back."""
+        if self._captures_refreshing:
+            return
+        self._captures_refreshing = True
+
+        def work():
+            try:
+                files = self._capture_files()
+            except Exception:  # noqa: BLE001 - never let a bad dir kill the thread silently
+                files = []
+            self._queue.put(("captures_ready", files))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _populate_capture_tree(self, files: list):
+        self._captures_refreshing = False
         self.capture_tree.delete(*self.capture_tree.get_children())
-        for i, path in enumerate(self._capture_files()):
+        for i, path in enumerate(files):
             size = path.stat().st_size
             size_str = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KB" if size < 1024 ** 2 else f"{size / 1024 ** 2:.1f} MB"
             kind = "hash" if path.suffix.lower() == ".22000" else "capture"
