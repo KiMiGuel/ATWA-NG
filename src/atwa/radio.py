@@ -191,6 +191,39 @@ def fix_antenna_mask(iface: str) -> bool:
         return False  # some chipsets don't support runtime antenna reconfig — non-fatal
 
 
+# Same interfering-process list airmon-ng's own "check kill" uses -- these
+# are what actually race a raw AF_PACKET capture socket for control of the
+# radio (NetworkManager + wpa_supplicant reassociating/rescanning,
+# dhclient renewing a lease mid-capture, avahi re-probing on link changes).
+# Plain process kill, not nmcli/systemctl -- confirmed live (2026-08-28)
+# that NM left running on an interface will periodically randomize its MAC
+# and cycle its supplicant state on its own schedule, which yanks the
+# interface admin-down out from under a raw socket mid-capture -- the exact
+# ENETDOWN failure previously misattributed to atwa's own races.
+_AIRMON_INTERFERING_PROCESSES = (
+    "NetworkManager", "wpa_action", "wpa_supplicant", "wpa_cli",
+    "dhclient", "dhclient3", "dhcdbd", "udhcpc", "dhcpcd",
+    "avahi-autoipd", "avahi-daemon",
+)
+
+
+def check_kill_interfering_processes() -> list[str]:
+    """Kill the same processes airmon-ng's `airmon-ng check kill` does.
+    Best-effort and system-wide, matching airmon-ng's own behavior exactly
+    -- not scoped to one interface, no nmcli/systemctl involved, and no
+    automatic restart afterward (airmon-ng doesn't restart NetworkManager
+    for you either; that's a manual `systemctl start NetworkManager` once
+    you're done). Returns the process names actually killed."""
+    killed = []
+    for name in _AIRMON_INTERFERING_PROCESSES:
+        proc = subprocess.run(
+            ["pkill", "-x", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False,
+        )
+        if proc.returncode == 0:
+            killed.append(name)
+    return killed
+
+
 def set_monitor_mode(
     iface: str,
     randomize_mac: bool = False,
@@ -204,6 +237,7 @@ def set_monitor_mode(
     patch_txpower: auto-apply the ACHM EEPROM fix for mt76x0u adapters
     (no-op for other drivers). Pass False in unit tests to skip the
     debugfs dependency."""
+    check_kill_interfering_processes()
     permanent_mac = get_permanent_mac(iface) if randomize_mac else None
     _run(["ip", "link", "set", iface, "down"])
     try:

@@ -1129,3 +1129,83 @@ retracted (struck through, with the correction directly above it) —
 it was cross-session process contention (the user's own live `atwa
 gui` fighting a separate diagnostic script for the same radio), not a
 hardware defect. wlan0 is fine on channel 1.
+
+## 2026-08-28: real root cause of the ENETDOWN/hang reports — NetworkManager churn
+
+Live testing (`atwa scan wlan1`) reproduced an unhandled crash:
+`scapy.error.Scapy_Exception: Not running !` from `scan.py`'s
+`sniffer.stop()`, triggered by the same `[Errno 100] Network is down`
+warning the user had already been seeing. `journalctl -u
+NetworkManager` for the exact crash timestamp showed NM actively
+randomizing wlan1's MAC ("scanning") and cycling its supplicant state
+at that instant — confirmed, not inferred. Since the user had NM
+restored to managing wlan0/wlan1 earlier this session (removed the
+standing `99-n2ng-unmanaged.conf`), NM was free to yank the interface
+admin-down mid-capture on its own schedule, killing any raw
+AF_PACKET socket regardless of atwa's own code. This is very likely
+also the real explanation behind the separately-reported "OMNI loops
+forever" / "Stop Attack does nothing" / "no handshake captured" live
+bugs — NM silently killing the capture socket mid-attack could leave
+a GUI worker thread dead without cleanly updating busy-state, which
+would look exactly like a stuck attack from the user's side.
+
+First fix attempt was a scoped `nmcli device set <iface> managed no`
+toggle in `set_monitor_mode()`/`managed yes` in `set_managed_mode()`
+— live-verified to fix the crash, but the user explicitly rejected
+this approach ("match airmon-ng's check kill thats it it doesnt make
+nmcli unmanaged") after correcting a wrong claim I made along the way
+(I'd said killing NetworkManager would drop eth0/the ProtonVPN
+tunnel — live-tested and confirmed false: killing the NM process
+leaves already-up kernel interfaces, including the WireGuard tunnel,
+fully functional; ping through `proton0` succeeded immediately after
+the kill). Replaced with `radio.py`'s new
+`check_kill_interfering_processes()` — plain `pkill -x` against the
+same process list airmon-ng's own `check kill` uses (NetworkManager,
+wpa_supplicant, wpa_action, wpa_cli, dhclient/dhclient3/dhcdbd,
+udhcpc, dhcpcd, avahi-autoipd, avahi-daemon), wired into
+`set_monitor_mode()`, no nmcli/systemctl involved, no auto-restart
+(matches real airmon-ng — user must `systemctl start
+NetworkManager` themselves when done). Live-verified: killed
+NetworkManager + wpa_supplicant, eth0 and proton0 both kept their IPs
+and worked, and the `atwa scan wlan1` crash was gone on re-run.
+
+## 2026-08-28: live OMNI run against Indepentester — first real, user-witnessed handshake capture
+
+`atwa omni wlan1 22:87:ec:67:42:b1 --channel 1` with all of the
+above fixes plus the earlier deauth/beacon/CHALLENGE-gating fixes in
+place: PMKID stage failed cleanly (2 attempts, no PMKID exposed — AP
+doesn't leak it), WPS stage correctly detected AP Setup Locked and
+skipped bruteforce, handshake stage sent a full 64-frame deauth burst
+in round 1/6, and captured EAPOL M1+M2+M3 (AUTHORIZED) against a real
+client on the first attempt. Report: `handshake: captured
+/home/KaliMa/atwa-hs/2287ec6742b1.pcap`, batched to a 2-line 22000
+hash file. This is the first handshake capture this project has
+actually produced end-to-end against a live target with the user
+watching, as opposed to a unit test or an isolated CLI check.
+
+Also fixed in this same pass, each confirmed against real code paths
+(not yet all live-tested individually, see below):
+- `gui/crack_dialog.py`: the "Crack Handshakes" dialog's output `Text`
+  widget had no scrollbar at all (only auto-scroll-to-end) — added one.
+- `gui/app.py`: the Adapter dropdown embedded the MAC address inside
+  the combobox's own values, which ttk truncates in the popdown list
+  (a real, already-documented ttk limitation — the target-filter combo
+  had already been fixed this way in an earlier session, but the
+  Adapter combo itself was missed). Moved the MAC to its own label next
+  to the combo, same pattern.
+- `attacks/deauth.py`: dropped the artificial 0.05s `time.sleep()`
+  between each of the 64 deauth frames (default `interval` 0.05 → 0.0).
+  aireplay-ng's own `-0 64` fires its burst back-to-back with no
+  per-frame delay; the old default stretched a 64-frame burst out to
+  3.2s of individually-spaced sends instead of one dense burst, per
+  user's live report ("deauth frame needs to be sized 64 NOT send 64
+  1 packet frames").
+
+**Not yet live-tested:** Stop Attack against a real OMNI run (the
+`proc_holder`/`run_streaming` fix from the previous session is still
+only unit-verified), the GUI's rewritten scan loop with an actual
+display, and the crack-dialog scrollbar / adapter MAC label fixes
+(code-reviewed and lint/type-checked, not clicked through live).
+
+**Verification:** `pytest -q` → 142 passed. `ruff check` / `mypy`
+clean on every changed file.

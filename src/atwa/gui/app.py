@@ -121,6 +121,7 @@ class App:
         self._iface_display_to_name: dict[str, str] = {}
         self._iface_short_display: dict[str, str] = {}
         self.mac_var = tk.StringVar(value="")
+        self.adapter_mac_var = tk.StringVar(value="")  # selected adapter's MAC, shown next to the combo -- see _refresh_adapters
         self.monitor_status_var = tk.StringVar(value="MONITOR: OFF")
         self.channel_lock_var = tk.StringVar(value="Scanning all channels")
         self.wordlist_var = tk.StringVar(value=self.settings.get("wordlist", ""))
@@ -297,6 +298,13 @@ class App:
         self.adapter_combo = ttk.Combobox(iface_col, textvariable=self.adapter_display_var, state="readonly", width=20)
         self.adapter_combo.grid(row=0, column=1, padx=(4, 0))
         self.adapter_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_adapter_selected())
+        # MAC shown as its own label, not embedded in the dropdown value --
+        # ttk.Combobox's popdown list width tracks the widget's own
+        # configured width, not its longest value, so a MAC-suffixed entry
+        # gets clipped in the dropdown itself (same real ttk limitation
+        # already worked around for the target filter combo below).
+        ttk.Label(iface_col, textvariable=self.adapter_mac_var, style="Muted.TLabel").grid(
+            row=0, column=2, sticky=tk.W, padx=(6, 0))
         ttk.Label(iface_col, text="AP iface:", style="Toolbar.TLabel").grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
         self.iface_ap_combo = ttk.Combobox(iface_col, textvariable=self.iface_ap_display_var, state="readonly", width=20)
         self.iface_ap_combo.grid(row=1, column=1, padx=(4, 0), pady=(2, 0))
@@ -856,7 +864,10 @@ class App:
             self._log(f"could not list adapters: {exc}")
             ifaces = []
 
-        displays = [self._iface_display(i) for i in ifaces]
+        # Dropdown values are the short form (iface + vendor) only -- see
+        # the MAC-label comment where adapter_combo is built for why the
+        # MAC can't safely live inside a combobox value.
+        displays = [self._iface_display_short(i) for i in ifaces]
         self._iface_display_to_name = dict(zip(displays, ifaces))
         self._iface_short_display = {i: self._iface_display_short(i) for i in ifaces}
         self.adapter_combo["values"] = displays
@@ -865,6 +876,7 @@ class App:
         if ifaces and not self.adapter_var.get():
             self.adapter_var.set(ifaces[0])
         self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+        self._update_adapter_mac_label()
 
         saved_iface_ap = self.settings.get("iface_ap", "")
         if saved_iface_ap and saved_iface_ap in ifaces:
@@ -930,21 +942,22 @@ class App:
         driver = get_driver(iface)
         return f"{iface} ({self._vendor_label(driver)})" if driver else iface
 
-    def _iface_display(self, iface: str) -> str:
-        """Full form for the dropdown list: iface + vendor + MAC. See
-        _iface_display_short() for the collapsed-field form."""
+    def _update_adapter_mac_label(self):
+        """Refresh adapter_mac_var from the currently-selected adapter's MAC.
+        Kept out of the combobox value itself -- see the label comment next
+        to adapter_combo's construction."""
         from ..radio import RadioError, get_mac
 
-        parts = [self._iface_display_short(iface)]
+        iface = self.adapter_var.get()
         try:
-            parts.append(get_mac(iface))
+            self.adapter_mac_var.set(get_mac(iface) if iface else "")
         except RadioError:
-            pass  # interface down/gone between detect and here -- MAC just isn't shown
-        return " ".join(parts)
+            self.adapter_mac_var.set("")  # interface down/gone -- MAC just isn't shown
 
     def _on_adapter_selected(self):
         self.adapter_var.set(self._iface_display_to_name.get(self.adapter_display_var.get(), self.adapter_display_var.get()))
         self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+        self._update_adapter_mac_label()
 
     def _on_iface_ap_selected(self):
         self.iface_ap_var.set(self._iface_display_to_name.get(self.iface_ap_display_var.get(), self.iface_ap_display_var.get()))

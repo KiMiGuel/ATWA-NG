@@ -15,7 +15,7 @@ def deauth(
     bssid: str,
     client: str = BROADCAST,
     count: int = 64,
-    interval: float = 0.05,
+    interval: float = 0.0,
     channel: int | None = None,
     low_rate: bool = False,
     progress_fn=None,
@@ -44,6 +44,13 @@ def deauth(
     sendp(count=...)) and logs each one -- the user asked repeatedly to
     see every individual deauth frame in the log, not just a "sent N"
     summary after the fact.
+
+    interval defaults to 0.0: aireplay-ng's own -0 <count> fires its burst
+    back-to-back with no artificial per-frame delay, relying on the driver
+    for pacing. An earlier 0.05s sleep between frames stretched a 64-frame
+    burst out to 3.2s -- 64 separately-spaced pings instead of one dense
+    burst, which is what -0 64 actually means. Still overridable by callers
+    that want throttling.
     """
     log = progress_fn or (lambda msg: None)
     if ensure_channel(iface, channel):

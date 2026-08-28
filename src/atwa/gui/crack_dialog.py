@@ -74,10 +74,15 @@ class CrackDialog(tk.Toplevel):
         ttk.Label(self.bssid_row, text="(auto-filled if the folder name ends in a MAC address)",
                   style="Muted.TLabel").pack(side=tk.LEFT, padx=8)
 
-        self.output = tk.Text(self, bg=THEME["bg"], fg=THEME["fg"], insertbackground=THEME["fg"],
+        output_frame = ttk.Frame(self)
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 4))
+        self.output = tk.Text(output_frame, bg=THEME["bg"], fg=THEME["fg"], insertbackground=THEME["fg"],
                                font=fonts["mono"], wrap=tk.WORD, borderwidth=0,
                                highlightthickness=1, highlightbackground=THEME["border"])
-        self.output.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 4))
+        output_vsb = ttk.Scrollbar(output_frame, orient=tk.VERTICAL, command=self.output.yview)
+        self.output.configure(yscrollcommand=output_vsb.set)
+        self.output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        output_vsb.pack(side=tk.LEFT, fill=tk.Y)
 
         buttons = ttk.Frame(self)
         buttons.pack(fill=tk.X, padx=10, pady=(0, 10))
