@@ -5,11 +5,17 @@ Conflating the two made the GUI's signal graph plateau after the first
 strong reading instead of tracking live RSSI."""
 from __future__ import annotations
 
-from scapy.layers.dot11 import RadioTap
+from scapy.layers.dot11 import Dot11, RadioTap
 
 from atwa.frames import craft_beacon, craft_probe_resp
 from atwa.radio import ALL_CHANNELS, CHANNELS_24GHZ, CHANNELS_5GHZ
 from atwa.scan import ScanResult, channels_for_band, process_packet
+
+
+def _data_frame(bssid: str, addr1: str, addr2: str):
+    """A data frame attributable to `bssid` via addr3 -- the shape
+    process_packet's client-detection branch keys off of."""
+    return Dot11(addr1=addr1, addr2=addr2, addr3=bssid, type=2, subtype=0)
 
 
 def _beacon_with_signal(dbm: int):
@@ -107,3 +113,48 @@ def test_channels_for_band_both():
 
 def test_channels_for_band_unknown_defaults_to_all():
     assert channels_for_band("60GHz-typo") == ALL_CHANNELS
+
+
+# --- client detection: own_mac exclusion (2026-08-28 live bug) -------------
+# Without this, a frame our own attacking interface sends AT a target
+# (auth/deauth/assoc, addr2=our MAC, addr3=target bssid) gets misread as a
+# real client of that AP -- confirmed live: an attack's own randomized
+# monitor MAC ended up listed in the target's Clients panel.
+
+
+def test_own_mac_excluded_from_client_detection():
+    result = ScanResult()
+    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+
+    process_packet(
+        _data_frame("aa:bb:cc:dd:ee:ff", addr1="aa:bb:cc:dd:ee:ff", addr2="11:22:33:44:55:66"),
+        result, own_mac="11:22:33:44:55:66",
+    )
+
+    assert result.aps["aa:bb:cc:dd:ee:ff"].clients == set()
+
+
+def test_real_client_still_detected_alongside_own_mac_exclusion():
+    result = ScanResult()
+    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+
+    process_packet(
+        _data_frame("aa:bb:cc:dd:ee:ff", addr1="aa:bb:cc:dd:ee:ff", addr2="77:88:99:aa:bb:cc"),
+        result, own_mac="11:22:33:44:55:66",
+    )
+
+    assert result.aps["aa:bb:cc:dd:ee:ff"].clients == {"77:88:99:aa:bb:cc"}
+
+
+def test_own_mac_none_keeps_old_behavior():
+    """No own_mac passed (e.g. the plain scan() call site) -> no filtering,
+    matching every existing caller's unchanged behavior."""
+    result = ScanResult()
+    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+
+    process_packet(
+        _data_frame("aa:bb:cc:dd:ee:ff", addr1="aa:bb:cc:dd:ee:ff", addr2="11:22:33:44:55:66"),
+        result,
+    )
+
+    assert result.aps["aa:bb:cc:dd:ee:ff"].clients == {"11:22:33:44:55:66"}

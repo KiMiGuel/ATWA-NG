@@ -64,8 +64,14 @@ def _is_target_frame(pkt) -> bool:
     return pkt.haslayer(Dot11Beacon) or pkt.haslayer(Dot11ProbeResp)
 
 
-def process_packet(pkt, result: ScanResult) -> None:
-    """Update result with AP and client info from one sniffed frame."""
+def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
+    """Update result with AP and client info from one sniffed frame.
+
+    own_mac (optional): the scanning/attacking adapter's own MAC, excluded
+    from client detection -- without it, our own auth/deauth/assoc frames
+    sent at the target during an attack get misread as a real client of
+    that AP (confirmed live, 2026-08-28: our randomized monitor MAC showed
+    up in a target's Clients list after running PMKID/deauth against it)."""
     if _is_target_frame(pkt):
         bssid = bssid_of(pkt)
         if not bssid:
@@ -117,7 +123,7 @@ def process_packet(pkt, result: ScanResult) -> None:
         rtap = pkt.getlayer(RadioTap)
         dbm = getattr(rtap, "dBm_AntSignal", None) if rtap else None
         for addr in (dot11.addr1, dot11.addr2):
-            if addr and addr != BROADCAST and addr != bssid:
+            if addr and addr != BROADCAST and addr != bssid and (own_mac is None or addr.lower() != own_mac.lower()):
                 ap.clients.add(addr)
                 if dbm is not None and (addr not in ap.client_signal or dbm > ap.client_signal[addr]):
                     ap.client_signal[addr] = dbm

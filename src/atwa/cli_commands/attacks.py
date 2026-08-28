@@ -75,6 +75,7 @@ def _cmd_omni(args) -> int:
     orch = OmniOrchestrator(
         args.iface, cracker=cracker, capture_dir=capture_dir,
         progress_fn=lambda msg: print(msg, flush=True),
+        iface_ap=args.iface_ap,
     )
     report = orch.run(ap, wordlist=args.wordlist)
     print(report.summary())
@@ -101,6 +102,7 @@ def _cmd_smart(args) -> int:
     orch = OmniOrchestrator(
         args.iface, cracker=cracker, capture_dir=capture_dir,
         progress_fn=lambda msg: print(msg, flush=True),
+        iface_ap=args.iface_ap,
     )
     report = orch.run_smart(ap, wordlist=args.wordlist)
     print(report.summary())

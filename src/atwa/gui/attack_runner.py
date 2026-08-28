@@ -29,6 +29,7 @@ class AttackRunner:
         log_fn: Callable[[str], None],
         watch_capture_fn: Callable[[str, threading.Event], None] | None = None,
         crack_proc_holder: dict | None = None,
+        iface_ap: str | None = None,
     ):
         self.mon_iface = mon_iface
         self.own_mac = own_mac
@@ -38,6 +39,7 @@ class AttackRunner:
         self._progress_fn = progress_fn
         self._log = log_fn
         self._watch_capture_fn = watch_capture_fn
+        self.iface_ap = iface_ap
         # Shared with App._crack_proc_holder so _stop_attack() can terminate
         # a crack subprocess started by OMNI/Smart's own crack stage, not
         # just the separate Captures-tab "Crack Selected" one.
@@ -139,7 +141,7 @@ class AttackRunner:
         orch = OmniOrchestrator(
             self._iface, cracker=cracker, capture_dir=self.capture_dir,
             stop_event=self._stop_event, progress_fn=self._progress_fn,
-            proc_holder=self._crack_proc_holder,
+            proc_holder=self._crack_proc_holder, iface_ap=self.iface_ap,
         )
         report = getattr(orch, method)(ap, wordlist=self.wordlist)
         self._log(report.summary())
@@ -154,7 +156,7 @@ class AttackRunner:
 
         key = crack_wep(
             self._iface, ap.bssid, self._mac, ap.ssid, key_len=key_len,
-            channel=ap.channel, progress_fn=self._progress_fn,
+            channel=ap.channel, progress_fn=self._progress_fn, stop_event=self._stop_event,
         )
         return key.hex() if key else "no key recovered"
 

@@ -853,34 +853,50 @@ class App:
     # come back through a queue drained on the Tk main loop via `after`.
     # ------------------------------------------------------------------
     def _drain_queue(self):
+        # Reschedule in `finally`, not as the last line of a plain `try`:
+        # an exception raised while handling any one item (e.g. a race
+        # between this loop and a background thread mutating shared state)
+        # used to escape past the `except queue.Empty` below and skip the
+        # reschedule entirely, permanently killing all future log/status/
+        # busy updates for the rest of the process — confirmed live
+        # (2026-08-28), `_render_targets()` hit "dictionary changed size
+        # during iteration" once and every attack after that ran for real
+        # but never showed anything again until the GUI was restarted.
+        # Each item is now also handled in its own try/except so one bad
+        # item can't block the rest of the same batch either.
         try:
             while True:
-                kind, payload = self._queue.get_nowait()
-                if kind == "log":
-                    self._append_log(payload)
-                elif kind == "status":
-                    self.status_var.set(payload)
-                elif kind == "scan_update":
-                    self._render_targets()
-                elif kind == "signal_sample":
-                    self.signal_graph.add_sample(payload)
-                elif kind == "auto_deauth_done":
-                    self.auto_deauth_var.set(False)
-                elif kind == "capture_size":
-                    self.capture_size_var.set(self._format_capture_size(payload))
-                elif kind == "busy":
-                    self._set_busy(payload)
-                elif kind == "error":
-                    messagebox.showerror("ATWA-NG", payload)
-                elif kind == "info":
-                    messagebox.showinfo("ATWA-NG", payload)
-                elif kind == "captures_ready":
-                    self._populate_capture_tree(payload)
-                elif kind == "inspect_all_done":
-                    self._on_inspect_all_done(payload)
-        except queue.Empty:
-            pass
-        self.root.after(100, self._drain_queue)
+                try:
+                    kind, payload = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if kind == "log":
+                        self._append_log(payload)
+                    elif kind == "status":
+                        self.status_var.set(payload)
+                    elif kind == "scan_update":
+                        self._render_targets()
+                    elif kind == "signal_sample":
+                        self.signal_graph.add_sample(payload)
+                    elif kind == "auto_deauth_done":
+                        self.auto_deauth_var.set(False)
+                    elif kind == "capture_size":
+                        self.capture_size_var.set(self._format_capture_size(payload))
+                    elif kind == "busy":
+                        self._set_busy(payload)
+                    elif kind == "error":
+                        messagebox.showerror("ATWA-NG", payload)
+                    elif kind == "info":
+                        messagebox.showinfo("ATWA-NG", payload)
+                    elif kind == "captures_ready":
+                        self._populate_capture_tree(payload)
+                    elif kind == "inspect_all_done":
+                        self._on_inspect_all_done(payload)
+                except Exception as exc:  # noqa: BLE001 - one bad queue item must not kill the drain loop
+                    self._append_log(f"    (internal) error handling {kind!r} update: {exc}")
+        finally:
+            self.root.after(100, self._drain_queue)
 
     def _append_log(self, msg: str):
         self.log_text.configure(state=tk.NORMAL)
@@ -912,6 +928,7 @@ class App:
             log_fn=self._log,
             watch_capture_fn=self._watch_capture_size,
             crack_proc_holder=self._crack_proc_holder,
+            iface_ap=self.iface_ap_var.get().strip() or None,
         )
 
     def _run_bg(self, label: str, fn, *args, **kwargs):
@@ -937,7 +954,11 @@ class App:
         # state, a stray NetworkManager reclaim, etc.) looks identical in
         # the log to "the attack ran and found nothing" without this —
         # the single most confusing failure mode to diagnose blind.
-        if self.mon_iface and "demo" not in self.mon_iface:
+        # Skipped for "Start monitor mode" itself -- that's the one action
+        # whose entire job is to fix a not-yet-monitor-mode adapter, so
+        # this check used to fire a backwards "needs monitor mode" warning
+        # on the very call that establishes it (confirmed live, 2026-08-28).
+        if self.mon_iface and "demo" not in self.mon_iface and label != "Start monitor mode":
             try:
                 from ..radio import get_mode
 
@@ -1177,7 +1198,7 @@ class App:
             def on_packet(pkt):
                 bssid = bssid_of(pkt)
                 had_ssid = result.aps[bssid].ssid if bssid in result.aps else None
-                process_packet(pkt, result)
+                process_packet(pkt, result, own_mac=self.own_mac)
                 if bssid and bssid in result.aps and not had_ssid and result.aps[bssid].ssid:
                     self._log(f"revealed hidden SSID: {result.aps[bssid].ssid} ({bssid})")
 
@@ -1285,7 +1306,11 @@ class App:
     def _render_targets(self):
         selected = self.selected_bssid
         self.tree.delete(*self.tree.get_children())
-        rows = [ap for ap in self.aps.values() if self._matches_security_filter(ap)]
+        # list(...) snapshots self.aps before iterating -- the scan thread
+        # adds new APs to this same dict concurrently, and iterating the
+        # live dict directly raised "dictionary changed size during
+        # iteration" here (confirmed live, 2026-08-28).
+        rows = [ap for ap in list(self.aps.values()) if self._matches_security_filter(ap)]
 
         if self._sort_col is None:
             rows.sort(key=lambda ap: ap.bssid)
@@ -2177,6 +2202,25 @@ class App:
         dlg.transient(self.root)
         dlg.grab_set()
 
+        result: dict[str, str | None] = {"choice": None}
+
+        def choose(label):
+            result["choice"] = label
+            dlg.destroy()
+
+        # btn_row packed (and its space reserved) BEFORE text_frame, and
+        # anchored side=BOTTOM -- text_frame's fill=BOTH/expand=True below
+        # would otherwise claim all the fixed 560x480 window's space first
+        # and push the buttons off the bottom edge, invisible, on displays/
+        # themes where the text content renders taller than expected. Same
+        # bug, same fix as crack_dialog.py's Run/Stop/Close row (2026-08-28).
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
+        for label in buttons:
+            style = "Accent.TButton" if label in ("OK", "Yes") else "TButton"
+            ttk.Button(btn_row, text=label, command=lambda l=label: choose(l), style=style).pack(
+                side=tk.RIGHT, padx=4)
+
         text_frame = ttk.Frame(dlg)
         text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         txt = tk.Text(text_frame, wrap=tk.WORD, bg=self.THEME["panel_alt"], fg=self.THEME["bright"],
@@ -2188,19 +2232,6 @@ class App:
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         txt.insert("1.0", text)
         txt.configure(state=tk.DISABLED)
-
-        result: dict[str, str | None] = {"choice": None}
-
-        def choose(label):
-            result["choice"] = label
-            dlg.destroy()
-
-        btn_row = ttk.Frame(dlg)
-        btn_row.pack(fill=tk.X, padx=8, pady=(0, 8))
-        for label in buttons:
-            style = "Accent.TButton" if label in ("OK", "Yes") else "TButton"
-            ttk.Button(btn_row, text=label, command=lambda l=label: choose(l), style=style).pack(
-                side=tk.RIGHT, padx=4)
         dlg.protocol("WM_DELETE_WINDOW", lambda: choose(None))
         dlg.wait_visibility()
         dlg.focus_set()

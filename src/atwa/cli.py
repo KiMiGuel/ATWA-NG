@@ -119,6 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile-duration", type=float, default=8.0)
     p.add_argument("--wordlist")
     p.add_argument("--capture-dir", default=None)
+    p.add_argument("--iface-ap", default=None, help="second interface to host the eviltwin stage's rogue AP on")
     p.set_defaults(func=_cmd_omni)
 
     p = sub.add_parser("smart", help="quick attack: pmkid -> deauth+handshake")
@@ -128,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile-duration", type=float, default=8.0)
     p.add_argument("--wordlist")
     p.add_argument("--capture-dir", default=None)
+    p.add_argument("--iface-ap", default=None, help="second interface to host the eviltwin stage's rogue AP on")
     p.set_defaults(func=_cmd_smart)
 
     p = sub.add_parser("wep", help="native WEP: fake-auth + ARP replay + PTW")

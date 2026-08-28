@@ -32,6 +32,7 @@ def crack_wep(
     sendp_fn=sendp,
     auth_fn=fake_authenticate,
     progress_fn=None,
+    stop_event=None,
 ) -> bytes | None:
     """Full attack: fake-auth, find one ARP frame, replay it, harvest IVs,
     recover the key with PTW. Not yet live-tested (see STATUS.md) —
@@ -44,7 +45,13 @@ def crack_wep(
     in tests/test_wep_ptw.py (25k sessions, top_k=16), not compute_key's
     own defaults (8/50_000), which weren't sufficient at that scale.
 
-    Returns the recovered root key, or None if `timeout` elapses first.
+    stop_event (optional): checked once per poll_interval so the GUI's
+    Stop Attack button can actually abort this instead of the caller being
+    stuck for up to `timeout` seconds regardless — confirmed live
+    (2026-08-28) that without this, Stop Attack on a running WEP attack
+    was a no-op until the full 300s default timeout elapsed.
+
+    Returns the recovered root key, or None if `timeout`/`stop_event` fires first.
     """
     auth_fn(iface, bssid, client, ssid, channel=channel)
 
@@ -57,7 +64,11 @@ def crack_wep(
         if add_captured_frame_to_table(table, pkt) and seed_frame is None:
             seed_frame = with_forced_rate(pkt, mbps=2) if low_rate else pkt
 
-    while time.monotonic() < deadline and len(table.sessions) < target_sessions:
+    while (
+        time.monotonic() < deadline
+        and len(table.sessions) < target_sessions
+        and not (stop_event is not None and stop_event.is_set())
+    ):
         sniff_fn(iface=iface, timeout=poll_interval, prn=on_packet, store=False)
         if progress_fn is not None:
             pct = 100 * len(table.sessions) // target_sessions
