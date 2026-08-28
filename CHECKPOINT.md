@@ -1337,3 +1337,57 @@ the same desktop — confirmed which window was which via `wmctrl`/
 confirmed via demo-mode screenshots (Notebook tabs, Inspect All flow,
 About dialog, toolbar logo) — not committed to running the real
 hardware path.
+
+## 2026-08-28: toolbar logo button removed, toolbar made fully width-responsive (wrap + stretch)
+
+Two follow-ups from the same session, both user-driven:
+
+1. User rejected the toolbar logo button outright ("the logo button
+   messed up everything remove it. i didnt ask for it") even after the
+   row-overflow bug above was fixed. Deleted `_build_toolbar_logo` and
+   its dedicated row entirely. Window icon (`_set_window_icon`) and the
+   About-dialog logo were kept — not what was reported as broken.
+2. User then asked for a stronger guarantee: "if I choose to resize or
+   minimize everything adapts to it meaning no buttons hide, same as
+   fullscreen." The toolbar (Adapter/AP-iface column + 6 action
+   buttons) previously overflowed off-window below ~1400px with no
+   wrap — the menu bar duplicates every action as a fallback, but the
+   user wants the toolbar itself to never clip. Implemented
+   `_reflow_toolbar`: measures each item's `winfo_reqwidth()` and packs
+   items into as many row frames as needed to fit the container's
+   actual width, re-run on every `<Configure>`.
+
+   Two real bugs surfaced building this, both only visible by actually
+   launching and resizing live (not from code review):
+   - **Reentrancy**: calling `item.update_idletasks()` inside the
+     reflow loop let Tk dispatch the `<Configure>` event that packing a
+     new row frame itself generates, recursively re-entering
+     `_reflow_toolbar` mid-loop and destroying `self._toolbar_rows`
+     out from under the outer call (`bad window path name` — reproduced
+     first in a standalone repro script, then fixed the same way in
+     `app.py`). Fixed with a `self._toolbar_reflowing` guard flag and
+     by dropping the per-item `update_idletasks()` call entirely.
+   - **Stacking order**: even after the reentrancy fix, the toolbar
+     rendered completely blank despite debug logging confirming every
+     item packed without error. Cause: row frames and toolbar items are
+     Tcl siblings (all children of the same `container`, attached to
+     their row only via `pack(in_=row)`, not true reparenting) — a
+     freshly created sibling window stacks *above* older siblings by
+     default in X11, so each new row frame's own opaque background was
+     painting directly over the already-existing buttons "inside" it.
+     Fixed with `row.lower()` right after creating each row frame.
+   - **Wasted space**: the first working wrap left short trailing rows
+     (e.g. "Unlock" alone) left-packed with a large blank gap after
+     them (2026-08-28 user report: fixed the clipping but "now theres
+     wasted empty spaces"). Switched from `pack(side=LEFT)` within each
+     row to `grid` with `columnconfigure(col, weight=1)` per column and
+     `sticky="ew"` per item, so a row's items always stretch to fill
+     its full width — same pattern already used for the Captures
+     action-button grid.
+
+**Verification:** live-tested via demo-mode screenshots at multiple
+window widths (default ~1360px, and a forced-narrow 700px via
+`xdotool windowsize`) — confirmed the toolbar always renders fully
+populated across 1–3 rows depending on width, with no clipped or
+hidden buttons and no leftover blank gaps. `get_file_problems`: no
+errors.

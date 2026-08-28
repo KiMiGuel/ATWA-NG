@@ -262,21 +262,21 @@ class App:
     # even on its own), authoritative access stays in the menu bar above.
     # ------------------------------------------------------------------
     def _build_toolbar(self):
-        # Two short rows rather than one long one: each row alone is far
-        # below the width where wrapping/clipping would ever kick in, and
-        # the menu bar above duplicates every action here regardless.
+        # Toolbar items wrap onto as many rows as needed instead of
+        # overflowing off the visible window (2026-08-28 user report: a
+        # fixed single row clipped "Unlock" and pushed the logo button off
+        # entirely on screens under ~1400px). _reflow_toolbar reparents
+        # these widgets into fresh row frames on every resize based on
+        # actual measured width, so nothing is ever hidden -- only the
+        # toolbar's own height grows.
         container = ttk.Frame(self.root, style="Toolbar.TFrame", padding=4)
         container.pack(side=tk.TOP, fill=tk.X)
-
-        row1 = ttk.Frame(container, style="Toolbar.TFrame")
-        row1.pack(side=tk.TOP, fill=tk.X)
 
         # Adapter/AP iface stacked in their own column (AP iface directly
         # under Adapter, per user request) -- keeps the two interface
         # pickers grouped and visually paired instead of strung out along
         # one long row with the action buttons.
-        iface_col = ttk.Frame(row1, style="Toolbar.TFrame")
-        iface_col.pack(side=tk.LEFT, padx=(2, 10))
+        iface_col = ttk.Frame(container, style="Toolbar.TFrame")
         ttk.Label(iface_col, text="Adapter:", style="Toolbar.TLabel").grid(row=0, column=0, sticky=tk.W)
         # Chipset/vendor shown inside the dropdown itself ("wlan1
         # (Mediatek)"), not as a separate always-on label (2026-08-27 user
@@ -303,21 +303,84 @@ class App:
         # toggling button, matching Start/Stop Monitor's pattern -- order
         # per user request: Start Scanning, Stop Scan, Start Monitor,
         # Stop Monitor, WPS Scan, Unlock.
-        self.scan_btn = ttk.Button(row1, text="Start Scanning", command=self._start_scan, style="Toolbar.Accent.TButton")
-        self.scan_btn.pack(side=tk.LEFT, padx=4)
-        ttk.Button(row1, text="Stop Scan", command=self._stop_scan, style="Toolbar.TButton").pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(row1, text="Start Monitor", command=self._start_monitor, style="Toolbar.TButton").pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(row1, text="Stop Monitor", command=self._stop_monitor, style="Toolbar.TButton").pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(row1, text="WPS Scan", command=self._open_wps_scan, style="Toolbar.TButton").pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(row1, text="Unlock", command=self._unlock_channel, style="Toolbar.TButton").pack(
-            side=tk.LEFT, padx=4)
+        self.scan_btn = ttk.Button(container, text="Start Scanning", command=self._start_scan, style="Toolbar.Accent.TButton")
+        stop_scan_btn = ttk.Button(container, text="Stop Scan", command=self._stop_scan, style="Toolbar.TButton")
+        start_mon_btn = ttk.Button(container, text="Start Monitor", command=self._start_monitor, style="Toolbar.TButton")
+        stop_mon_btn = ttk.Button(container, text="Stop Monitor", command=self._stop_monitor, style="Toolbar.TButton")
+        wps_btn = ttk.Button(container, text="WPS Scan", command=self._open_wps_scan, style="Toolbar.TButton")
+        unlock_btn = ttk.Button(container, text="Unlock", command=self._unlock_channel, style="Toolbar.TButton")
         # No toolbar monitor-status pill (removed per 2026-08-27 user
         # report -- monitor state still logs via _run_bg's own start/result
         # lines and the status bar, just not as a standing toolbar widget).
+
+        self._toolbar_container = container
+        self._toolbar_items = [
+            iface_col, self.scan_btn, stop_scan_btn, start_mon_btn, stop_mon_btn, wps_btn, unlock_btn,
+        ]
+        self._toolbar_rows: list[ttk.Frame] = []
+        self._toolbar_reflow_width = -1
+        self._toolbar_reflowing = False
+        container.bind("<Configure>", self._reflow_toolbar)
+        self.root.after_idle(self._reflow_toolbar)
+
+    def _reflow_toolbar(self, _event=None):
+        # Re-entrancy guard: packing a new row frame into `container` fires
+        # another <Configure> on `container` itself, and winfo_reqwidth()
+        # below is enough to let Tk dispatch that queued event *during* this
+        # same call -- without the guard that recursive call tears down
+        # self._toolbar_rows mid-loop while the outer call is still packing
+        # into them ("bad window path name", reproduced live 2026-08-28).
+        if self._toolbar_reflowing:
+            return
+        container = self._toolbar_container
+        width = container.winfo_width()
+        if width <= 1 or width == self._toolbar_reflow_width:
+            return
+        self._toolbar_reflowing = True
+        try:
+            self._toolbar_reflow_width = width
+
+            for row in self._toolbar_rows:
+                row.destroy()
+            self._toolbar_rows = []
+            for item in self._toolbar_items:
+                item.pack_forget()
+                item.grid_forget()
+
+            # Group items into rows by measured width first, then grid each
+            # row's items with equal column weight so a short trailing row
+            # (e.g. just "Unlock" alone) stretches to fill the row instead
+            # of leaving a large blank gap (2026-08-28 user report: wrapping
+            # fixed the clipping but left "wasted empty spaces").
+            rows: list[list[tk.Widget]] = [[]]
+            used = 0
+            for item in self._toolbar_items:
+                req = item.winfo_reqwidth() + 8
+                if used + req > width and rows[-1]:
+                    rows.append([])
+                    used = 0
+                rows[-1].append(item)
+                used += req
+
+            for row_items in rows:
+                # Each row frame is a sibling of the toolbar items (all
+                # children of `container`), placed via -in rather than true
+                # reparenting. A freshly created sibling window stacks above
+                # its older siblings by default, so the row's own opaque
+                # background was painting straight over the already-existing
+                # buttons inside it ("packed successfully" per logging, but
+                # invisible on screen -- reproduced live 2026-08-28).
+                # lower() fixes the stacking order.
+                row = ttk.Frame(container, style="Toolbar.TFrame")
+                row.pack(side=tk.TOP, fill=tk.X)
+                row.lower()
+                self._toolbar_rows.append(row)
+                for col, item in enumerate(row_items):
+                    row.columnconfigure(col, weight=1)
+                    pad = (2, 10) if item is self._toolbar_items[0] else 4
+                    item.grid(in_=row, row=0, column=col, sticky="ew", padx=pad, pady=2)
+        finally:
+            self._toolbar_reflowing = False
 
     # ------------------------------------------------------------------
     # Body: PanedWindow(target tree | Notebook(Target tab, Captures tab)) + log
