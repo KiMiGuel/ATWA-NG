@@ -11,8 +11,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from scapy.data import DLT_IEEE802_11_RADIO
+from scapy.layers.dot11 import Dot11Beacon, Dot11ProbeResp
 from scapy.sendrecv import AsyncSniffer
 from scapy.utils import PcapWriter
 
@@ -110,10 +112,21 @@ def capture_handshake(
     # parse. Monitor-mode sniffs always come back RadioTap-wrapped, so the
     # correct type is DLT_IEEE802_11_RADIO, always, not a guess.
     writer = PcapWriter(outfile, linktype=DLT_IEEE802_11_RADIO, append=True, sync=True) if outfile else None
+    beacon_written = False
 
     def handler(pkt) -> None:
+        nonlocal beacon_written
         if not pkt.addr3 or pkt.addr3.lower() != bssid.lower():
             return
+        # hcxpcapngtool refuses to convert an EAPOL-only capture -- it needs
+        # a beacon or probe-response frame too, since that's the only place
+        # the ESSID (mandatory for PMK computation) lives. Grab exactly one,
+        # the first seen, alongside the EAPOL frames -- beacons arrive every
+        # ~100ms so this is essentially free during any real listen window.
+        if writer and not beacon_written and (pkt.haslayer(Dot11Beacon) or pkt.haslayer(Dot11ProbeResp)):
+            writer.write(pkt)
+            beacon_written = True
+            log("beacon frame captured (carries the ESSID needed for hash conversion)")
         msg_no = _classify(pkt)
         if msg_no is None:
             return
@@ -147,4 +160,17 @@ def capture_handshake(
         writer.close()
     if not cap.messages:
         log("no EAPOL frames seen for this BSSID")
+        # Trash: a deauth round that got no reconnect at all (or just a lone
+        # beacon frame with zero handshake material) is worthless downstream
+        # -- nothing to crack, ever. Discard it here rather than letting the
+        # capture folder fill up with empty files from every failed round.
+        # CHALLENGE-only captures (M1+M2, no M3) are NOT trash -- they're
+        # still real, potentially crackable material -- so this only fires
+        # when cap.messages is completely empty.
+        if outfile:
+            try:
+                Path(outfile).unlink()
+                log(f"discarded empty capture file ({outfile})")
+            except OSError:
+                pass
     return cap

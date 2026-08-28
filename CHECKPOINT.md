@@ -834,3 +834,298 @@ v1, not just restores the frame count on paper.
 **Next:** live re-test auto-deauth/handshake capture against a real AP
 now that deauth rounds are back to 64 frames, to confirm this actually
 was the v1-parity gap and not just one contributing factor.
+
+## 2026-08-27 (continued): live-tested the 64-frame fix, found + fixed a missing-beacon bug and an OMNI crack-gating bug, ported scan.py's persistent-socket fix into the GUI
+
+Live re-test happened this session (user-authorized, own gear —
+Indepentester/Indepentester-666/Totalplay-CAAF, confirmed by their own
+sequential BSSIDs `22:87:ec:67:42:b0/b1/b4/b5` all being the same
+physical router). Found and fixed a chain of real bugs along the way,
+each confirmed against actual hardware, not just code-read:
+
+**CORRECTION (later same session): the "wlan0 can't receive on channel
+1" finding below was wrong — invalidate it, don't cite it.** Root
+cause of the original test result: the user's own live `atwa gui`
+process was actively running against the same physical radios (wlan0
+in particular) the entire time these diagnostic scripts were run
+directly against wlan0 — two independent processes fighting over
+channel-set/monitor-mode state on the same adapter, not a hardware or
+RX defect. Confirmed via `ps aux` mid-session: a real `atwa gui`
+process (58%+ CPU) had been running since before this test started.
+User called this out directly and correctly; left the original wrong
+paragraph struck through below for the record rather than deleting it
+outright, since the *process-contention* mechanism it accidentally
+surfaced is real and worth remembering — don't run adapter-level
+diagnostics from a second, independent script/session while a real
+atwa session already holds the same interface. No further action
+needed on wlan0/ch1 itself; it was never actually broken.
+
+~~**wlan0 (rtw88_8814au) genuinely cannot receive on channel 1** — a
+direct, repeated, non-transient RX test (raw scapy `sniff()`, bypassing
+all app code) got 0 BSSIDs on ch1 while the same test got 7 BSSIDs on
+ch6, and wlan1 (mt76x0u) sees ch1 fine (Indepentester at -32 dBm,
+right next to the radio). Regulatory domain and phy capabilities both
+show ch1 as fully allowed, no restriction. Left open — no code fix
+identified, likely a real hardware/antenna issue specific to this one
+adapter+channel. All further live testing this session used wlan1.~~
+
+**The 64-frame deauth fix is now live-proven, not just theoretical.**
+`atwa smart wlan1 22:87:ec:67:42:b1 --channel 1` got a full AUTHORIZED
+handshake (M1+M2+M3) within round 1/6 — previously (1-frame rounds)
+this target never completed a handshake at all in prior live sessions.
+
+**New bug found via the live test: handshake captures were never
+crackable even when AUTHORIZED.** `attacks/handshake.py`'s packet
+writer only ever wrote EAPOL frames — never a beacon/probe-response —
+so `hcxpcapngtool` refused every conversion ("does not contain BEACON
+or PROBERESPONSE frames... mandatory to calculate a PMK"), confirmed
+directly by running it on the real captured file. Fixed: `capture_handshake()`
+now grabs exactly one beacon/probe-response frame (first seen) into the
+same pcap alongside the EAPOL frames. Live-verified on a second run:
+`hcxpcapngtool` wrote 2 real, valid 22000 hash lines from the resulting
+file (one AUTHORIZED, one CHALLENGE).
+
+**Auto-delete for genuinely empty captures.** `capture_handshake()` now
+unlinks its own `outfile` when `cap.messages` ends up completely empty
+(a deauth round that got no reconnect at all) — CHALLENGE-only (M1+M2)
+is explicitly NOT deleted, since it's real material (see below).
+
+**Second bug found from the same live run: OMNI/Smart's crack stage
+was silently discarding CHALLENGE-only captures.** `_stage_handshake`
+only ever fed `AUTHORIZED` captures to `_stage_crack`'s `hash_lines`;
+CHALLENGE (M1+M2, unverified by the AP) was marked FAILED and never
+even attempted. This is simply wrong — offline WPA cracking has never
+needed M3, only the AP's own real-time confirmation does. Proven
+directly: the same live capture that produced the AUTHORIZED hash also
+had a CHALLENGE-only pair sitting next to it, and `hcxpcapngtool`
+converted *both* into valid, crackable 22000 lines. Fixed: CHALLENGE
+now gets `StageResult.SUCCESS` (labeled "unverified by the AP" in the
+report) and feeds `hash_lines` the same as AUTHORIZED; `run()`'s
+`material_captured` flag for skipping the ONLINE stage now checks
+`hs_status is not HandshakeStatus.NONE` instead of
+`is HandshakeStatus.AUTHORIZED`, so CHALLENGE material correctly skips
+the (much slower) online-guessing fallback too, same as AUTHORIZED
+always did.
+
+**Lock-capture folder bloat — root-caused to something else entirely.**
+User reported the `~/atwa-hs` capture folder "fills up super fast."
+Checked directly: 55 files, 5.5MB, almost all `lock_*.pcap` scattered
+across dozens of SSID folders the user never actually attacked — not
+from empty handshake attempts (which the fix above already covers),
+but from `LockCapture`, which starts a continuous background capture
+on every single click in the target list (already a documented v1-
+parity trade-off from an earlier session). Fixed per user's own
+proposed approach: `_lock_channel` now only starts the lock capture
+when the target already has at least one known client
+(`ap.clients` non-empty) — a client-less network can never yield a
+handshake anyway, so recording it was pure write-and-discard. Does
+**not** affect PMKID/WPS/WEP attacks, which are genuinely clientless
+and run their own independent capture, entirely separate from
+`LockCapture`.
+
+**Separately flagged and fixed: the GUI's own scan loop never got
+scan.py's persistent-socket fix.** `scan.py`'s `scan()` function
+already fixed the "fresh `sniff()` socket opened/closed every single
+channel hop" bug (mt76x0u flaps promiscuous mode in lockstep with the
+dwell timer, confirmed via dmesg in an earlier session) by holding one
+persistent `AsyncSniffer` for the whole scan. The GUI's own
+`_start_scan` loop in `gui/app.py` never got that same fix — it was
+still doing a fresh blocking `sniff(iface=..., timeout=hopper.dwell,
+...)` every hop. This is also the exact, live-reproduced mechanism
+behind the "[Errno 100] Network is down" warning users see (an open
+raw socket + a concurrent interface-down event = deterministic
+ENETDOWN, confirmed by direct reproduction this session — not an
+adapter-specific quirk as an older comment claimed). Ported the same
+persistent-`AsyncSniffer` pattern into the GUI's loop, with a
+restart-if-the-socket-dies check each iteration (since a persistent
+socket, unlike a per-hop one, needs its own recovery path if it does
+die mid-session). Side effect: `hopper.hop()` already sleeps for the
+dwell period itself, so dropping the old code's *second*,
+redundant dwell-length wait inside the per-hop `sniff(timeout=...)`
+call roughly halves full-spectrum sweep time.
+
+**`_on_close` race, confirmed live via a clean, deterministic
+reproduction (not just code-reading):** started a real `AsyncSniffer`
+on `wlan0`, called `set_managed_mode('wlan0')` (which does `ip link set
+down`) while it was still running — got the exact same scapy
+`L2ListenSocket ... [Errno 100] Network is down` warning on the first
+try, with nothing in `dmesg` at all (confirmed this is generic Linux
+raw-socket/ENETDOWN behavior, not a driver quirk — any open
+`AF_PACKET` socket on an interface that goes admin-down behaves this
+way, on any adapter). The `_on_close` fix from earlier this session
+(join `_scan_thread` before calling `set_managed_mode`) is still
+correct and now also benefits from the new loop's explicit
+`sniffer.stop()` in its `finally` block, which gives a real, positive
+confirmation of teardown rather than just "hope the timing works out."
+
+**mcp-debugpy tried and abandoned for this work, by design, not a
+failure:** attempted to use the newly-connected `mcp-debugpy` server to
+step through a live scan — it crashed immediately with a
+`PermissionError` opening the raw socket, since the debuggee process
+has no `CAP_NET_RAW`/root. Reproduced the identical crash running the
+same script plainly (no debugger) to confirm it wasn't debugger-
+specific. User chose to keep using plain `sudo`-run scripts for
+anything needing real packet capture rather than granting the venv's
+python binary `CAP_NET_RAW` via `setcap` (a persistent, security-
+relevant system change) — noted here so a future session doesn't
+re-litigate this from scratch.
+
+**Verification:** `pytest -q` → 138 passed (was 128; +10 net: 6 new
+`tests/test_handshake.py` tests for the beacon-capture and
+auto-delete behavior, 4 new `tests/test_omni_handshake_stage.py` tests
+for the CHALLENGE-crack-stage fix). `ruff check` and `mypy` clean on
+every changed file. The scan-loop rewrite in `gui/app.py` has **not**
+been live-tested with the actual GUI running (no display available in
+this session) — the underlying persistent-`AsyncSniffer` mechanism is
+proven (same pattern already live-verified via `scan.py`'s `scan()`
+this session), but the GUI-specific wiring around it (busy-gating,
+restart-on-death, queue-push cadence) has only been syntax/lint/type
+checked, not run against real hardware with a real window.
+
+**Next:** live-test the rewritten GUI scan loop specifically (launch
+`atwa gui` for real, watch Start Scanning behave, confirm restart-on-
+death actually recovers if triggered); consider a debounce for
+click-to-lock as a possible follow-up to the clients-gate fix if
+users still find it noisy while browsing populated networks. (The
+wlan0/channel-1 item below was retracted the same session — see the
+correction further down — no longer an open item.)
+
+## 2026-08-27 (same day, continued): Stop Attack couldn't touch a running crack; NetworkManager unmanaged-devices config removed
+
+User was running a real live `atwa gui` session (own gear) during this
+part of the session and hit a genuine, serious bug: **Stop Attack did
+nothing while OMNI/Smart's crack stage was running John the Ripper.**
+Screenshot evidence: "... Smart Attack on 22:87:ec:67:42:b1 still
+running (320s)" with three identical "stop requested" log lines from
+three separate clicks, none of which had any effect. Confirmed via
+`ps aux`: a real `john --format=wpapsk --wordlist=...` process, 291%
+CPU, 15+ minutes runtime, completely unreachable by anything in the
+app. Killed it by hand (`sudo kill -TERM`, escalated to `-9`, since
+`-TERM` didn't land — check needed) to give immediate relief.
+
+**Root cause:** `omni.py`'s `_stage_crack()` called the plain blocking
+`Cracker.crack()` — a `subprocess.run()` with no process handle exposed
+anywhere. The *separate* Captures-tab "Crack Selected" button already
+had a proper fix for exactly this (`Cracker.run_streaming()`, Popen +
+a `proc_holder` dict `_stop_attack()` can reach into and `.terminate()`
+— from the 2026-08-26 stop-attack session) but that fix was never
+wired into OMNI/Smart's own internal crack stage, which is a
+completely separate code path. So the *manual* crack flow had a real
+Stop button and OMNI/Smart's *automatic* one (arguably the more common
+way a crack actually gets run) did not.
+
+**Fixed:** `OmniOrchestrator.__init__` now takes a `proc_holder: dict`
+param (empty dict by default, never a shared mutable default — each
+orchestrator gets its own unless the caller passes one in).
+`_stage_crack()` now prefers `cracker.run_streaming()` over
+`cracker.crack()` whenever the cracker exposes it (both `JohnCracker`
+and `AirCracker` already do), clearing and populating that same
+`proc_holder` the way the Captures-tab flow already did. Threaded
+through: `AttackRunner.__init__` gains `crack_proc_holder`,
+`App._runner()` passes `self._crack_proc_holder` (the *same* dict
+`_stop_attack()` already checks), `attack_runner.py`'s `_omni_style()`
+passes it into `OmniOrchestrator(...)`. No changes needed to
+`_stop_attack()` itself — it already had the right kill logic, it just
+never had anything to point at for this specific stage.
+
+**NetworkManager side quest, from the same live session:** user
+couldn't see wlan0/wlan1 in their normal WiFi UI at all after this
+session's earlier live testing. Root cause: `/etc/NetworkManager/
+conf.d/99-n2ng-unmanaged.conf` (`unmanaged-devices=driver:mt76x0u;
+driver:rtw88_8814au`) — a standing config from before the rename,
+presumably set up so NetworkManager wouldn't fight atwa for the
+adapters during monitor-mode work. `nmcli device set managed yes` did
+NOT stick (NM immediately re-applies the keyfile policy). User chose
+to remove the file entirely (not just temporarily disable it) since
+they use these adapters for normal WiFi too; removed + `nmcli general
+reload`, confirmed both adapters back to normal `disconnected` (not
+`unmanaged`) state. **Known follow-on risk, not yet addressed:** atwa's
+own code doesn't proactively tell NetworkManager to back off an
+adapter before putting it into monitor mode, so a future atwa session
+may now have NetworkManager try to reclaim wlan0/wlan1 mid-attack.
+Offered to add that (e.g. `nmcli device set <iface> managed no` inside
+`set_monitor_mode()`, restored in `set_managed_mode()`) — not done yet,
+no answer from the user on this specific follow-up yet.
+
+**Verification:** new `tests/test_omni_crack_stage.py` (4 tests:
+streaming-preferred-when-available, blocking-fallback-when-not,
+proc_holder-cleared-before-each-run, default-proc_holder-not-shared-
+between-instances) — all pass. Full suite 142/142. `ruff`/`mypy` clean
+on all three changed files (`omni.py`, `gui/app.py`,
+`gui/attack_runner.py`). **Not yet live-tested** — the fix logic is
+sound and unit-tested, but hasn't been confirmed against a real,
+actually-running John process being killed via a real Stop Attack
+click in the live GUI (the user's own session was already being shut
+down by the time this fix landed).
+
+**Next:** live-test the Stop Attack fix specifically — start a real
+OMNI/Smart run against a target with a wordlist big enough that John
+is still running after a minute or two, hit Stop Attack, confirm the
+process actually dies and the GUI unblocks. Decide on the
+NetworkManager-adapter-handoff follow-up (self-manage unmanaged state
+during monitor mode vs. leave the standing config file approach to the
+user).
+
+## SESSION PAUSED (usage limit hit) — state as of pause
+
+**Uncommitted working tree** (nothing from this whole session has been
+committed yet — user approved one commit mid-session for the earlier
+deauth/client-tree batch, that one landed as `35a6fa0`; everything
+since is still sitting as local changes):
+```
+ M CHECKPOINT.md
+ M src/atwa/attacks/handshake.py
+ M src/atwa/gui/app.py
+ M src/atwa/gui/attack_runner.py
+ M src/atwa/omni.py
+?? tests/test_handshake.py
+?? tests/test_omni_crack_stage.py
+?? tests/test_omni_handshake_stage.py
+```
+All of it is tested and clean as of the last check: full suite
+142/142, `ruff`/`mypy` clean on every touched file. Safe to commit as-
+is whenever asked — nothing known-broken is sitting in the tree.
+
+**Immediately pending, not started:** user asked for an audit of atwa
+against a WiFi-pentesting reference doc they shared
+(`~/Downloads/compass_artifact_wf-c4433f78-3ccc-50ac-8530-c763cf22fe6d_text_markdown.md`
+— a solid technical write-up covering EAPOL/handshake fields, WEP
+attack lineage, PMKID, WPA3-SAE/Dragonfly, KRACK, hashcat 22000 format,
+tooling, staged build recommendations). They chose "audit atwa against
+it, report gaps" — no code changes implied yet, just a gap report.
+Session hit its usage limit right as this started; **next session
+should pick this up first** — read the doc (already read once this
+session, full text available), then check atwa's actual coverage
+against each of its 9 numbered sections, particularly: WPA3-SAE/PMF
+detection maturity (`secure.py`'s `security_profile()`/
+`recommend_attack()` — already does *some* of this, extent unknown),
+whether an authorization-scope-file (Stage 4 recommendation: "explicit
+authorization gate — scope file of permitted BSSIDs") is worth adding
+given this session's own back-and-forth about which BSSIDs were
+authorized to test, and general WEP/KRACK/enterprise-rogue-AP coverage
+comparison.
+
+**Other open follow-ups from this session, not yet acted on:**
+- NetworkManager: offered to make `atwa` self-manage the NM-unmanaged
+  state around monitor mode (`nmcli device set <iface> managed no` in
+  `set_monitor_mode()`, restored in `set_managed_mode()`) since the
+  standing `99-n2ng-unmanaged.conf` config file that used to handle
+  this was removed at the user's request this session. No decision
+  from the user yet on whether to build this.
+- The Stop Attack / OMNI crack-stage fix (`proc_holder` wiring) is
+  unit-tested but **not live-tested** — the user's own live session
+  had already been shut down by the time the fix landed. Worth a real
+  OMNI/Smart run + Stop Attack click against a real slow crack before
+  fully trusting it.
+- The GUI scan-loop rewrite (persistent `AsyncSniffer` instead of
+  per-hop `sniff()`) is also not live-tested with a real display.
+- Debounce-on-click-to-lock was mentioned as a possible follow-up to
+  the clients-gate fix if the current behavior still feels noisy in
+  practice — not requested yet, just noted as an option.
+
+**Corrections on record from this session — don't re-litigate:** the
+"wlan0 can't receive on channel 1" finding earlier in this file is
+retracted (struck through, with the correction directly above it) —
+it was cross-session process contention (the user's own live `atwa
+gui` fighting a separate diagnostic script for the same radio), not a
+hardware defect. wlan0 is fine on channel 1.

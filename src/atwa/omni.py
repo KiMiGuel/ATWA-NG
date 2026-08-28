@@ -102,10 +102,20 @@ class OmniOrchestrator:
         listener_settle: float = 2.0,
         online_max_attempts: int | None = 25,
         progress_fn=None,
+        proc_holder: dict | None = None,
     ):
         self.iface = iface
         self.cracker = cracker
         self.capture_dir = Path(capture_dir)
+        # Shared with the caller's own Stop button (e.g. App._crack_proc_holder)
+        # so a live john/aircrack-ng subprocess launched by _stage_crack can
+        # actually be terminated from outside -- without this, Stop Attack
+        # had no handle on the crack stage's process at all and a running
+        # crack (which can take many minutes against a real wordlist) simply
+        # ignored it completely (confirmed live 2026-08-27: John kept running
+        # 320+s after multiple Stop Attack clicks, each of which only ever
+        # re-logged "stop requested" with nothing behind it for this stage).
+        self._proc_holder = proc_holder if proc_holder is not None else {}
         self._pmkid_fn = pmkid_fn
         self._handshake_fn = handshake_fn
         self._deauth_fn = deauth_fn
@@ -163,7 +173,11 @@ class OmniOrchestrator:
         self._log("stage: EVILTWIN")
         self._stage_eviltwin(ap, report)
         self._log("stage: ONLINE")
-        self._stage_online(ap, report, material_captured=hs_status is HandshakeStatus.AUTHORIZED, wordlist=wordlist)
+        # CHALLENGE material is crackable too now (see _stage_handshake), so
+        # it counts as "material captured" for skipping the online stage
+        # the same way AUTHORIZED does -- only a bare NONE leaves nothing to
+        # crack offline and still needs the online fallback.
+        self._stage_online(ap, report, material_captured=hs_status is not HandshakeStatus.NONE, wordlist=wordlist)
 
         self._log("stage: CRACK")
         self._stage_crack(report, wordlist)
@@ -359,12 +373,23 @@ class OmniOrchestrator:
             report.stages.append(StageReport("handshake", StageResult.SUCCESS, f"captured {outfile}"))
             report.hash_lines.append(outfile)  # resolved to 22000 lines in _stage_crack
         elif best is HandshakeStatus.CHALLENGE:
+            # M1+M2 alone is real, standard WPA handshake material -- offline
+            # cracking (hashcat/John mode 22000) never needs M3 at all, only
+            # the AP's own real-time confirmation does. Previously this was
+            # treated as "not crackable-confirmed" and never even reached
+            # _stage_crack, silently discarding genuinely usable hashes.
+            # Live-verified 2026-08-27: hcxpcapngtool wrote a real crackable
+            # 22000 line from a CHALLENGE-only pair sitting right next to an
+            # AUTHORIZED one in the same capture. Still worth flagging as
+            # unverified-by-the-AP in the report, but it goes to the crack
+            # stage the same as AUTHORIZED.
             report.stages.append(
                 StageReport(
-                    "handshake", StageResult.FAILED,
-                    "CHALLENGE only (M1+M2, unverified) — not crackable-confirmed, kept trying",
+                    "handshake", StageResult.SUCCESS,
+                    f"captured {outfile} (CHALLENGE only — M1+M2, unverified by the AP, but crackable)",
                 )
             )
+            report.hash_lines.append(outfile)
         else:
             report.stages.append(StageReport("handshake", StageResult.FAILED, "no EAPOL captured"))
         return best
@@ -488,8 +513,17 @@ class OmniOrchestrator:
             return
 
         self._log(f"crack: running John against {wordlist}")
+        run_streaming = getattr(self.cracker, "run_streaming", None)
         try:
-            results = self.cracker.crack(str(batch_path), wordlist)
+            if run_streaming is not None:
+                # Streaming (Popen + proc_holder), not the plain blocking
+                # crack() -- this is what actually makes Stop Attack able to
+                # kill a long-running crack, same mechanism the Captures
+                # tab's own crack dialog already used.
+                self._proc_holder.clear()
+                results = run_streaming(str(batch_path), wordlist, self._log, self._proc_holder)
+            else:
+                results = self.cracker.crack(str(batch_path), wordlist)
         except Exception as exc:  # noqa: BLE001 - cracker backend errors must not crash the chain
             report.stages.append(StageReport("crack", StageResult.FAILED, str(exc)))
             return

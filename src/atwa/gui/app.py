@@ -767,6 +767,7 @@ class App:
             progress_fn=self._progress_fn,
             log_fn=self._log,
             watch_capture_fn=self._watch_capture_size,
+            crack_proc_holder=self._crack_proc_holder,
         )
 
     def _run_bg(self, label: str, fn, *args, **kwargs):
@@ -1003,7 +1004,7 @@ class App:
         def loop():
             import time
 
-            from scapy.sendrecv import sniff
+            from scapy.sendrecv import AsyncSniffer
 
             from ..frames import bssid_of
             from ..radio import ALL_CHANNELS, ChannelHopper
@@ -1031,57 +1032,82 @@ class App:
                 if bssid and bssid in result.aps and not had_ssid and result.aps[bssid].ssid:
                     self._log(f"revealed hidden SSID: {result.aps[bssid].ssid} ({bssid})")
 
-            while self._scanning.is_set():
-                # An attack (deauth/capture/PMKID/WPS/PINCER/auto-deauth)
-                # needs exclusive use of mon_iface. Without this check the
-                # scan loop kept opening/closing its own sniff() socket on
-                # the same interface every dwell period even while an
-                # attack was running, which starved both TX (deauth frames
-                # never actually went out — confirmed via `ip -s link`
-                # showing 0 TX packets) and RX (capture files came back
-                # with 0 packets) and occasionally raised a real ENETDOWN
-                # from the resulting socket churn. Pause hopping/sniffing
-                # entirely while busy instead of fighting over the radio.
-                if self._busy:
-                    time.sleep(0.3)
-                    continue
-                # Locked/unlocked can change mid-session (double-click a
-                # different target, hit Unlock) — pick that up each hop
-                # rather than only at loop start.
-                wanted = self._scan_channels or list(ALL_CHANNELS)
-                if hopper.channels != wanted:
-                    hopper.channels = wanted
-                hopper.hop()
-                try:
-                    sniff(iface=self.mon_iface, timeout=hopper.dwell, prn=on_packet, store=False)
-                except Exception as exc:  # noqa: BLE001 - transient driver errors during hop must not kill scan
-                    # Transient: some drivers (e.g. mt76x0u) briefly drop the
-                    # link during a fast 2.4->5GHz channel hop, which makes
-                    # scapy's L2 socket setup fail for that one dwell window
-                    # (observed live: "[Errno 100] Network is down"). Treating
-                    # that as fatal silently killed the whole scan session —
-                    # button still said "Stop Scanning" but nothing was being
-                    # captured, which reads as "this adapter just sees fewer
-                    # APs" rather than "the scan died a few seconds in".
-                    self._log(f"scan hop failed, retrying: {exc}")
-                    time.sleep(0.5)
-                    continue
-                if self.locked_bssid and self.locked_bssid in result.aps:
-                    self._lock_lost_since = None
-                # Signal graph follows whatever's SELECTED, not just locked
-                # (2026-08-26 live-test note: single-click a row should
-                # immediately start updating the graph, not just after a
-                # double-click lock — selected_bssid equals locked_bssid
-                # once you do lock, since selection fires with the click).
-                if self.selected_bssid and self.selected_bssid in result.aps:
-                    # last_signal, not signal -- signal is a running best-ever
-                    # max (by design, for the target list/sort column), which
-                    # ratchets up once and then plateaus forever. Feeding that
-                    # into a rolling time graph made it look permanently stuck
-                    # after the first strong reading instead of tracking the
-                    # actual live RSSI.
-                    self._queue.put(("signal_sample", result.aps[self.selected_bssid].last_signal))
-                self._queue.put(("scan_update", None))
+            def start_sniffer():
+                s = AsyncSniffer(iface=self.mon_iface, prn=on_packet, store=False)
+                s.start()
+                return s
+
+            # ONE persistent capture socket for the whole scanning session,
+            # not a fresh sniff() opened and closed every single hop -- the
+            # exact same bug scan.py's own scan() function already fixed
+            # (per-hop sniff() flaps promiscuous mode in lockstep with the
+            # dwell timer on some drivers, confirmed live via dmesg, eating
+            # into the listening window every hop and occasionally raising
+            # a real ENETDOWN from the socket churn), just never ported into
+            # the GUI's own loop until now. hopper.hop() already sleeps for
+            # the dwell period itself, so this also drops the old code's
+            # redundant *second* dwell-length wait from the per-hop
+            # sniff(timeout=hopper.dwell) call -- a full channel sweep now
+            # takes roughly half as long as before.
+            try:
+                sniffer = start_sniffer()
+            except Exception as exc:  # noqa: BLE001 - transient driver errors must not kill the scan loop
+                self._log(f"scan capture failed to start, retrying: {exc}")
+                sniffer = None
+
+            try:
+                while self._scanning.is_set():
+                    if sniffer is None or not sniffer.thread or not sniffer.thread.is_alive():
+                        # The socket died underneath us (e.g. the transient
+                        # "[Errno 100] Network is down" seen on some drivers
+                        # during a fast band switch) -- restart it rather
+                        # than silently scanning with no capture at all.
+                        try:
+                            sniffer = start_sniffer()
+                            self._log("scan capture socket (re)started")
+                        except Exception as exc:  # noqa: BLE001
+                            self._log(f"scan capture restart failed, retrying: {exc}")
+                            sniffer = None
+                            time.sleep(0.5)
+                            continue
+                    # An attack (deauth/capture/PMKID/WPS/PINCER/auto-deauth)
+                    # needs exclusive use of mon_iface's channel. Pause
+                    # hopping while busy instead of fighting an attack over
+                    # which channel the radio is parked on; the persistent
+                    # sniffer keeps passively receiving on whatever channel
+                    # is currently set either way, so scan data isn't lost.
+                    if self._busy:
+                        time.sleep(0.3)
+                        continue
+                    # Locked/unlocked can change mid-session (double-click a
+                    # different target, hit Unlock) — pick that up each hop
+                    # rather than only at loop start.
+                    wanted = self._scan_channels or list(ALL_CHANNELS)
+                    if hopper.channels != wanted:
+                        hopper.channels = wanted
+                    hopper.hop()
+                    if self.locked_bssid and self.locked_bssid in result.aps:
+                        self._lock_lost_since = None
+                    # Signal graph follows whatever's SELECTED, not just locked
+                    # (2026-08-26 live-test note: single-click a row should
+                    # immediately start updating the graph, not just after a
+                    # double-click lock — selected_bssid equals locked_bssid
+                    # once you do lock, since selection fires with the click).
+                    if self.selected_bssid and self.selected_bssid in result.aps:
+                        # last_signal, not signal -- signal is a running best-ever
+                        # max (by design, for the target list/sort column), which
+                        # ratchets up once and then plateaus forever. Feeding that
+                        # into a rolling time graph made it look permanently stuck
+                        # after the first strong reading instead of tracking the
+                        # actual live RSSI.
+                        self._queue.put(("signal_sample", result.aps[self.selected_bssid].last_signal))
+                    self._queue.put(("scan_update", None))
+            finally:
+                if sniffer is not None:
+                    try:
+                        sniffer.stop()
+                    except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
+                        pass
 
         self._scan_thread = threading.Thread(target=loop, daemon=True)
         self._scan_thread.start()
@@ -1349,7 +1375,20 @@ class App:
                 return f"channel {ap.channel}"
 
             self._run_bg(f"Set channel {ap.channel}", work)
-            self._start_lock_capture(ap)
+            # A client-less target can never yield a handshake (nothing to
+            # deauth/reconnect), so a continuous lock capture there is pure
+            # write-and-discard -- and single-click locking means every row
+            # glanced at while browsing starts one. Most of the folder-
+            # filling clutter was exactly this: dozens of near-empty
+            # lock_*.pcap files across networks the user never actually
+            # attacked, just scrolled past. Skip starting the capture
+            # entirely when no clients are known yet; if one shows up
+            # later while still locked, re-locking (e.g. Unlock + relock,
+            # or double-click) will pick it up.
+            if ap.clients:
+                self._start_lock_capture(ap)
+            else:
+                self._log(f"no clients seen yet on {ap.bssid} — skipping lock capture (nothing to record)")
 
     def _start_lock_capture(self, ap: AccessPoint):
         """Native AsyncSniffer-backed capture (lock_capture.LockCapture),
