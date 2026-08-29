@@ -47,7 +47,7 @@ If you've ever lost a handshake because your one adapter blinked at the wrong mo
 
 **This is the feature nothing else has.**
 
-Requires two specific Alfa adapters — an **AWUS036ACHM** (listener) and an **AWUS1900** (attacker), auto-detected by chipset. Plug both in. Lock a target. Hit **PINCER**. From that instant:
+Requires two Alfa adapters — an **AWUS036ACHM** (listener) and an **AWUS1900** (attacker), auto-detected by chipset. Plug both in. Lock a target. Hit **PINCER**. From that instant:
 
 - **Radio A never stops listening.** Parked on the target's channel, ears open, waiting for the handshake — full-time, not squeezed in between other jobs.
 - **Radio B never stops hammering.** Continuous deauth rounds against the target, full-time, on its own separate channel-lock.
