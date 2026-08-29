@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/version-2.0.0-%2300c8ff?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
-  <img src="https://img.shields.io/badge/status-Systems--Down-red?style=flat-square" alt="Status">
+  <img src="https://img.shields.io/badge/status-Systems--Down-black?style=flat-square" alt="Status">
 </p>
 
 ---
