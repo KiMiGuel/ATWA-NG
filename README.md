@@ -47,7 +47,7 @@ If you've ever lost a handshake because your one adapter blinked at the wrong mo
 
 **This is the feature nothing else has.**
 
-Plug in two adapters. Lock a target. Hit **PINCER**. From that instant:
+Requires two specific Alfa adapters — an **AWUS036ACHM** (listener) and an **AWUS1900** (attacker), auto-detected by chipset. Plug both in. Lock a target. Hit **PINCER**. From that instant:
 
 - **Radio A never stops listening.** Parked on the target's channel, ears open, waiting for the handshake — full-time, not squeezed in between other jobs.
 - **Radio B never stops hammering.** Continuous deauth rounds against the target, full-time, on its own separate channel-lock.
@@ -98,7 +98,7 @@ atwa smart wlan0 <bssid>
 atwa omni wlan0 <bssid> --wordlist rockyou.txt
 ```
 
-**Requirements:** Linux, Python 3.10+, a WiFi adapter capable of monitor mode + injection (two adapters to unlock PINCER).
+**Requirements:** Linux, Python 3.10+, a WiFi adapter capable of monitor mode + injection (an AWUS036ACHM + AWUS1900 pair to unlock PINCER).
 
 ---
 

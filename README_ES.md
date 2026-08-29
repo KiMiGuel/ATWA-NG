@@ -47,7 +47,7 @@ Si alguna vez perdiste un handshake porque tu único adaptador parpadeó en el m
 
 **Esta es la función que nadie más tiene.**
 
-Conecta dos adaptadores. Fija un objetivo. Presiona **PINCER**. Desde ese instante:
+Requiere dos adaptadores Alfa específicos — un **AWUS036ACHM** (el que escucha) y un **AWUS1900** (el que ataca), detectados automáticamente por chipset. Conecta ambos. Fija un objetivo. Presiona **PINCER**. Desde ese instante:
 
 - **El Radio A nunca deja de escuchar.** Fijo en el canal del objetivo, con los oídos abiertos, esperando el handshake — tiempo completo, sin compartirse con otros trabajos.
 - **El Radio B nunca deja de golpear.** Rondas continuas de deauth contra el objetivo, tiempo completo, con su propio canal fijo separado.
@@ -98,7 +98,7 @@ atwa smart wlan0 <bssid>
 atwa omni wlan0 <bssid> --wordlist rockyou.txt
 ```
 
-**Requisitos:** Linux, Python 3.10+, un adaptador WiFi capaz de modo monitor + inyección (dos adaptadores para desbloquear PINCER).
+**Requisitos:** Linux, Python 3.10+, un adaptador WiFi capaz de modo monitor + inyección (un par AWUS036ACHM + AWUS1900 para desbloquear PINCER).
 
 ---
 
