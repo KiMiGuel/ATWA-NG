@@ -9,7 +9,7 @@ description = "ATWA-NG: native WiFi security auditing engine with vendored scann
 requires-python = ">=3.10"
 # Self-contained as of 2026-08-25 — no runtime dependency on n2ng2.
 # Just: ~/ATWA-NG/.venv/bin/pip install -e ~/ATWA-NG
-dependencies = ["scapy>=2.5", "cryptography>=42"]
+dependencies = ["scapy>=2.5", "cryptography>=42", "pycryptodome>=3.20"]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.15", "mypy>=1.10", "pyflakes>=3.2"]

@@ -1,8 +1,15 @@
-"""WEP crypto primitives: RC4 (KSA/PRGA) and the CRC-32 ICV.
+"""WEP crypto primitives: RC4 and the CRC-32 ICV.
 
-Native RC4 rather than a pip dependency (`arc4` etc.) — it's ~15 lines and
-this project prefers native implementations over wrapping/depending on
-external packages where the algorithm itself is this small.
+RC4 via pycryptodome's C-accelerated `Crypto.Cipher.ARC4` (2026-08-30,
+`pycryptodome` ships the `Crypto` namespace — `Cryptodome` is the separate
+`pycryptodomex` package) rather than the
+hand-rolled pure-Python KSA/PRGA this used to have: `cryptography` (already
+a project dependency) dropped RC4 entirely as insecure-by-design, so it can't
+cover this path, and WEP cracking (PTW voting tries many keystream
+candidates) is CPU-bound enough for the C backend to matter.
+`rc4_keystream`/`rc4_crypt` keep their original signatures so callers
+(`ptw.py`, and this module's own encrypt/decrypt helpers below) needed no
+changes.
 
 WEP per-packet key = IV (3 bytes) || root key (5 or 13 bytes). The ICV is
 an unkeyed CRC-32 over the plaintext, little-endian, appended before RC4
@@ -14,40 +21,17 @@ from __future__ import annotations
 
 import zlib
 
-
-def rc4_ksa(key: bytes) -> list[int]:
-    """RC4 key-scheduling algorithm: build the initial 256-byte S-box."""
-    s = list(range(256))
-    j = 0
-    key_len = len(key)
-    for i in range(256):
-        j = (j + s[i] + key[i % key_len]) % 256
-        s[i], s[j] = s[j], s[i]
-    return s
-
-
-def rc4_prga(s: list[int], length: int) -> bytes:
-    """RC4 pseudo-random generation algorithm: emit `length` keystream bytes."""
-    s = s.copy()
-    i = j = 0
-    out = bytearray(length)
-    for n in range(length):
-        i = (i + 1) % 256
-        j = (j + s[i]) % 256
-        s[i], s[j] = s[j], s[i]
-        out[n] = s[(s[i] + s[j]) % 256]
-    return bytes(out)
+from Crypto.Cipher import ARC4
 
 
 def rc4_keystream(key: bytes, length: int) -> bytes:
-    """RC4 keystream of `length` bytes for `key` (KSA then PRGA)."""
-    return rc4_prga(rc4_ksa(key), length)
+    """RC4 keystream of `length` bytes for `key`."""
+    return ARC4.new(key).encrypt(bytes(length))
 
 
 def rc4_crypt(key: bytes, data: bytes) -> bytes:
     """RC4 encrypt/decrypt (XOR with keystream; symmetric)."""
-    ks = rc4_keystream(key, len(data))
-    return bytes(a ^ b for a, b in zip(data, ks))
+    return ARC4.new(key).encrypt(data)
 
 
 def icv(plaintext: bytes) -> bytes:
