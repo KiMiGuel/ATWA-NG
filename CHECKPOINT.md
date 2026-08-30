@@ -1133,3 +1133,206 @@ window widths (default ~1360px, and a forced-narrow 700px via
 populated across 1–3 rows depending on width, with no clipped or
 hidden buttons and no leftover blank gaps. `get_file_problems`: no
 errors.
+
+## 2026-08-30: pycryptodome RC4 swap (redo of the reverted 2026-08-29 attempt)
+
+`wep/crypto.py`'s hand-rolled pure-Python RC4 KSA/PRGA replaced with
+pycryptodome's C-accelerated `Crypto.Cipher.ARC4` — `cryptography`
+(already a dependency) dropped RC4 entirely as insecure-by-design, and
+WEP cracking (PTW voting) is CPU-bound enough for the C backend to
+matter. `rc4_keystream`/`rc4_crypt` keep identical signatures (`ptw.py`
+needed no changes); `rc4_ksa`/`rc4_prga` removed (no external callers).
+Added `pycryptodome>=3.20` to `pyproject.toml`.
+
+**Correction to the 2026-08-29 vault log**: that session's writeup said
+"pycryptodome's `Cryptodome.Cipher.ARC4`" — wrong namespace. The
+`pycryptodome` PyPI package ships the `Crypto` namespace;
+`Cryptodome` is the separate `pycryptodomex` package. Import fixed to
+`from Crypto.Cipher import ARC4` before this landed.
+
+**Deliberately NOT done this session** (both touch the live monitor-mode
+receive path and can't be verified without real hardware — same risk
+class as the 2026-08-29 PyRIC revert): swapping scapy for `pypacker` in
+`scan.py`'s packet-dissection hot path (research showed pypacker's lazy
+dissection benchmarks ~24x faster than scapy, and it natively supports
+Radiotap/IEEE80211 — the likely fix for scan-time CPU/fan load), and
+adding a kernel-level BPF capture filter to drop 802.11 control frames
+before scapy dissects them. Both are real candidates for the CPU/fan
+complaint but need a live session with the actual adapters to verify
+they don't silently degrade scan results, per the PyRIC lesson. pyroute2
+was researched and rejected outright for `radio.py` — its own docs
+describe the nl80211/IW module as "very initial state," same failure
+class as PyRIC.
+
+**Verification:** `pytest -q` → 147/147 passed.
+
+## 2026-08-30: mac80211_hwsim mock env built, PMF-blocks-deauth theory confirmed live
+
+Built a `mac80211_hwsim` virtual-radio harness (user-approved sudo, scoped
+to this task) to test the broadcast-vs-targeted-deauth theory from earlier
+this session without touching real hardware. Correction: this machine
+actually has real Alfa adapters attached (`wlan0`=rtw88_8814au,
+`wlan1`=mt76x0u, both up in managed mode) — not hardware-less as the
+2026-08-29 log assumed; hwsim radios (`wlan2`/`wlan3`/`atk0`) were used
+anyway for a controlled, repeatable test.
+
+Ran `attacks/deauth.py:deauth()` **unmodified** (exactly as GUI/CLI call
+it) against a real hostapd AP + wpa_supplicant client with a completed
+4-way handshake, in two configs:
+
+- **PMF off**: both broadcast and unicast-targeted deauth caused an
+  immediate real disconnect (`dmesg`: `deauthenticated ... Reason:
+  7=CLASS3_FRAME_FROM_NONASSOC_STA`), followed by sub-second
+  auto-reconnect. Broadcast worked identically to targeted — no
+  difference for this client stack, partially refuting that half of the
+  original hypothesis.
+- **PMF required** (`ieee80211w=2`, both sides): identical frames, zero
+  effect — no disconnect logged either way, `wpa_state` stayed
+  `COMPLETED`. **Confirms** the PMF half of the hypothesis decisively.
+
+**Implication**: the previously-proposed fix (thread a discovered client
+MAC into automated deauth calls) doesn't address what this test shows —
+targeting made no difference in either PMF state. The real lever is PMF
+detection/routing: a PMF-required target should skip deauth-based capture
+entirely and go straight to the online-dictionary fallback, which already
+exists for this reason. Whether `OmniOrchestrator` already routes this way
+or just silently falls through after deauth fails — not checked yet.
+
+Real harness mistake made and corrected mid-session, kept in the log
+rather than erased: first attempt put the attacker interface on the same
+phy as the client, so hwsim's virtual medium (which only connects
+different simulated radios, matching real half-duplex RF) never delivered
+anything — that run's "no effect" was a topology bug, not a finding.
+
+Environment left running for further testing. Full writeup + raw logs:
+`~/CCM2/ATWA-NG/logs/2026-08-30-hwsim-mock-env-pmf-deauth-theory-confirmed.md`.
+
+## 2026-08-30: PMF-aware + client-targeted deauth applied to PINCER/auto-deauth/eviltwin
+
+Checked `OmniOrchestrator` per user request: `_stage_handshake` (used by
+both `run()` and `run_smart()`) **already** does both fixes the earlier
+audit proposed — skips the whole deauth round loop outright when
+`ap.pmf == "required"`, and threads `next(iter(ap.clients), BROADCAST)`
+into the deauth call otherwise. No fix needed there.
+
+Applied the same two-part pattern to the three call sites the original
+audit found still hardcoded to `BROADCAST`:
+
+- `gui/attack_runner.py:pincer()` — PMF check before any monitor-mode
+  setup (skip returns before touching the radios at all, so nothing needs
+  restoring); `client` now recomputed **per round** (not once at the
+  start) since the persistent scan sniffer keeps updating `ap.clients`
+  live even while an attack is busy — a client discovered mid-run is
+  picked up on the next round.
+- `gui/app.py:_auto_deauth_run()` — same PMF check + per-round client
+  targeting. Caught a real bug while wiring this: the early-return path
+  would have skipped the `finally` block's `("auto_deauth_done", None)`
+  queue signal, leaving the "Auto-deauth until handshake" checkbox stuck
+  checked forever even though the thread had already exited. Fixed by
+  emitting that signal explicitly before the early return.
+- `attacks/eviltwin.py:run_eviltwin()` — new `client: str = BROADCAST`
+  parameter threaded into its own deauth loop; caller
+  (`gui/attack_runner.py:eviltwin()`) passes the discovered client and
+  logs a warning (not a skip) when PMF is required, since the rogue AP +
+  captive portal still has some value if a client reconnects on its
+  own — unlike PINCER/auto-deauth, evil-twin has no other capture
+  mechanism to fall back to, so aborting outright would be too aggressive.
+
+**Not done**: no new automated tests. `pincer()`/`_auto_deauth_run()`/
+`run_eviltwin()` have no existing dependency-injection test harness the
+way `OmniOrchestrator` does (all three are threading/monitor-mode-heavy
+with no seam to mock deauth_fn/pmf cheaply) — building one was judged
+disproportionate given this session's explicit token-conservation ask.
+Verified instead by code reading plus the live hwsim result confirming
+the underlying `deauth()` PMF/targeting mechanics this mirrors. Flagging
+as a real gap, not silently claiming coverage.
+
+`pytest -q` → 147/147 passed (unchanged — no test exercises these paths
+either way).
+
+## 2026-08-30: session paused/saved — bidirectional deauth fix + two scoped PMF-bypass builds queued next
+
+Session paused here at user's request (no context/token visibility inside
+PyCharm, long session). State as of pause:
+
+**Landed this session** (all verified via `pytest -q` 147/147, still
+uncommitted — see below):
+- `wep/crypto.py`: pycryptodome C-accelerated RC4 (redo of the reverted
+  2026-08-29 attempt, with the `Crypto` vs `Cryptodome` namespace bug
+  fixed).
+- PMF-aware deauth applied everywhere: `omni.py` already had it;
+  `pincer()`, `_auto_deauth_run()`, `run_eviltwin()`, `deauth_all()`,
+  `deauth_client()` now all skip/warn via the same `ap.pmf == "required"`
+  check (`AttackRunner._pmf_block_message()` using
+  `secure.recommend_attack()` for a consistent message). PINCER's confirm
+  dialog text fixed to not overpromise "goes to monitor mode" on the
+  skip path.
+- `frames.py`/`attacks/deauth.py`: **bidirectional deauth** — targeted
+  (non-broadcast) deauth now sends both AP->client and client->AP per
+  round, matching the vendored aircrack-ng's own aireplay-ng behavior
+  (confirmed by reading `vendor/aircrack-ng/src/aireplay-ng/aireplay-ng.c`
+  directly). Packet construction verified correct byte-for-byte. Forward
+  direction proven live (real disconnect+reconnect). **Reverse direction
+  could not be confirmed physically transmitting in the hwsim lab** —
+  traced to the attacker interface (`atk0`) unavoidably sharing a
+  simulated radio with the AP (only 2 hwsim radios available this
+  session) — hwsim doesn't deliver a frame back to a destination
+  co-located with the sender's own simulated phy, matching real
+  half-duplex RF. This is a lab-topology artifact, not a code doubt: on
+  real hardware the attacking radio and the target AP are always
+  separate physical devices (matches PINCER's own dual-Alfa assumption).
+  Real-hardware confirmation still outstanding.
+- Also confirmed the full PMF-blocks-deauth mock-environment finding from
+  earlier this session, and confirmed n2-ng v1 (the predecessor project,
+  vendored at `vendor/n2-ng-v1-src/`) has the identical limitation/routing
+  already — not a regression.
+
+**Researched, not yet built** — two scoped next steps, user's explicit
+call on which to build first next session:
+1. **Rogue-AP EAPOL corruption** (higher confidence): add the
+   PMKID-tag-length-underflow trick from Schepers/Ranganathan/Vanhoef's
+   WiSec 2022 paper ("On the Robustness of Wi-Fi Deauthentication
+   Countermeasures", https://github.com/domienschepers/wifi-deauthentication)
+   to `attacks/eviltwin.py`. Exact working PoC bytes are in that repo's
+   `framework/test-deauthentication.py` (`PMFDeauthClientPMKIDTagLength`
+   class) — a corrupted RSN PMKID tag length in a spoofed 4-way handshake
+   Message 1/4, sent by the framework acting AS the AP. Scope: only
+   affects clients connecting to ATWA-NG's OWN rogue AP (evil-twin
+   scenario), not clients on someone else's real AP. Patched upstream in
+   hostapd/IWD since ~2022-2023 and in Android since CVE-2023-21061
+   (March 2023) — real-world value depends on how many actual target
+   devices run outdated/unpatched stacks (plausibly common on
+   unmaintained embedded/IoT Wi-Fi).
+2. **CSA (Channel Switch Announcement) spoofing** (lower confidence,
+   exploratory): same paper's vulnerability table also lists "Invalid
+   Channel Switch Announcement" as working against Linux 5.15.0, macOS
+   12.3, and iOS 15.4 — and unlike the EAPOL trick, this one could
+   plausibly disconnect a client already associated with the REAL target
+   AP (matches the original ask better). No published PoC bytes for this
+   one in the repo ("not all proof-of-concepts are available due to
+   ongoing disclosures") — only the general concept (spoof a CSA IE
+   claiming to be from the real AP). Building this is exploratory: no
+   proof it actually triggers the underlying bug vs. just producing a
+   normal, correctly-handled channel switch. Also flagged independently
+   via https://hackersmanifest.com/wireless-pentesting/06-deauth/ (mdk4's
+   own deauth/disassoc modes, plus the same CSA/rogue-AP/auth-flood/
+   beacon-flood technique list).
+
+**Not committed**: all of this session's + the prior session's
+already-uncommitted chopchop_vendor work is still sitting in the working
+tree (`git status` confirms nothing new landed). Git/push commands were
+handed to the user earlier this session (two commits: chopchop_vendor
+wiring, then the pycryptodome swap) but not yet run as of this pause —
+this save entry's own changes (PMF fixes, bidirectional deauth) aren't
+included in those commands and will need their own commit(s) whenever
+committing resumes. `origin` is confirmed live at
+`github.com/KiMiGuel/ATWA-NG` (not the stale "local only" state
+CLAUDE.md's TOP SECRET section still describes — flagged, not yet fixed
+in CLAUDE.md itself).
+
+**Environment left running** (hwsim mock, from earlier in session):
+`wlan2`/`wlan3`/`atk0`/`sniff3` + hostapd (PMF-required config) +
+wpa_supplicant. Teardown command given earlier:
+`sudo pkill hostapd wpa_supplicant; sudo iw dev atk0 del; sudo iw dev
+sniff3 del; sudo rmmod mac80211_hwsim` (last one needs the user to run it
+— the auto-mode classifier blocks unattended `rmmod`).
