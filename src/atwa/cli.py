@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("wordlist")
     p.add_argument("--bssid")
     p.add_argument("--timeout", type=float, default=3600.0,
-                    help="give up after this long (default 1h; wordlist attacks can run long)")
+                   help="give up after this long (default 1h; wordlist attacks can run long)")
     p.set_defaults(func=_cmd_crack_cap)
 
     p = sub.add_parser("deauth", help="deauth flood (native scapy)")

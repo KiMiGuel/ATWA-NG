@@ -18,15 +18,24 @@ else:
     _REPO_ROOT = Path(__file__).resolve().parents[3]
 _VENDOR_ROOT = _REPO_ROOT / "vendor" / "aircrack-ng"
 _WPSRECON_ROOT = _REPO_ROOT / "vendor" / "reaver" / "src"
-# aireplay-ng (injection) is intentionally not listed here — native scapy
-# injection (frames.py + attacks/deauth.py + injection_test.py) fully
-# replaced it (2026-08-27), matching the project's policy that the only
-# acceptable wrappers are cracking backends and cap/pcap-format tools.
-# CAPCRACK_BIN fits that exemption (operates on capture files).
+# aireplay-ng (injection) was originally kept off this list entirely —
+# native scapy injection (frames.py + attacks/deauth.py + injection_test.py)
+# replaced deauth/arp-replay/fakeauth here (2026-08-27), under a policy that
+# the only acceptable wrappers were cracking backends and cap/pcap-format
+# tools. CHOPCHOP_BIN is a deliberate, narrow exception to that (2026-08-30):
+# the native from-scratch chopchop reimplementation in attacks/wep_client.py
+# was verified broken (two independent offline tests — see that module's
+# comment), and re-deriving the correct KoreK/RC4 math isn't worth it when
+# this project already vendors and compiles the real implementation. Every
+# other attack (deauth/arp-replay/handshake capture/fakeauth) stays native —
+# this exemption is scoped to chopchop specifically, the same way
+# WPSRECON_BIN is scoped to WPS recon rather than reopening the whole policy.
+# CAPCRACK_BIN fits the original exemption (operates on capture files).
 # WPSRECON_BIN (wash) does NOT — it's a real WPS wrapper, just not yet
 # ported (see docs/vendor_inventory.md Phase 6e).
 CAPCRACK_BIN = _VENDOR_ROOT / "aircrack-ng"
 WPSRECON_BIN = _WPSRECON_ROOT / "wash"
+CHOPCHOP_BIN = _VENDOR_ROOT / "aireplay-ng"
 EAPOLHUNTER_BIN = _REPO_ROOT / "vendor" / "eapol_hunter" / "eapol_hunter.py"
 EAPOLDUMP_BIN = _REPO_ROOT / "vendor" / "eapol_dump" / "eapol_dump.sh"
 
