@@ -30,10 +30,19 @@
   }
   *{margin:0;padding:0;box-sizing:border-box}
   html{background:var(--bg)}
-  body{background:var(--bg);color:var(--ink);font-family:var(--font-body);line-height:1.6;font-size:16px;overflow-x:hidden}
+  body{color:var(--ink);font-family:var(--font-body);line-height:1.6;font-size:16px;overflow-x:hidden}
   a{color:var(--cyan);text-decoration:none}
   a:hover{text-decoration:underline}
   .wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+
+  /* persistent watermark: sits behind the whole document, tiles and
+     scrolls with the page (never position:fixed) instead of being
+     confined to one section */
+  .page{position:relative;z-index:0}
+  .page::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+    background-image:url(brand/atwa-ng-symbol.png);
+    background-repeat:repeat-y;background-position:top center;
+    background-size:640px auto;opacity:.1}
   h1,h2,h3{font-family:var(--font-display);letter-spacing:.01em;text-wrap:balance}
   code,.mono{font-family:var(--font-mono)}
   @media (prefers-reduced-motion: reduce){ *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important} }
@@ -64,12 +73,12 @@
     background:conic-gradient(from 0deg at 50% -20%, transparent 0deg, var(--glow) 8deg, transparent 40deg, transparent 360deg);
     animation:sweep 7s linear infinite}
   @keyframes sweep{to{transform:rotate(360deg)}}
-  .symbol-bg{position:absolute;top:40px;left:50%;transform:translateX(-50%);
-    width:1600px;max-width:260%;opacity:.09;pointer-events:none;z-index:0;
-    filter:drop-shadow(0 0 40px var(--glow))}
   header .inner{position:relative;z-index:1}
   header img.wordmark{max-width:min(440px,84%);height:auto;filter:drop-shadow(0 0 34px var(--glow))}
-  .kicker-top{margin-top:28px;font-family:var(--font-mono);font-size:.78rem;letter-spacing:.25em;text-transform:uppercase;color:var(--cyan)}
+  .kicker-top{margin-top:28px;font-family:var(--font-display);font-weight:600;
+    font-size:clamp(1.05rem,3vw,1.6rem);letter-spacing:.16em;text-transform:uppercase;
+    color:var(--cyan-bright);
+    text-shadow:0 0 6px var(--cyan-bright),0 0 18px var(--cyan),0 0 38px var(--glow),0 0 70px var(--glow)}
   h1{font-size:clamp(1.7rem,4vw,2.5rem);margin:16px auto 16px;font-weight:700;max-width:820px;line-height:1.15}
   .tagline{font-size:clamp(1rem,1.8vw,1.15rem);color:var(--ink-muted);max-width:640px;margin:0 auto 34px;font-family:var(--font-body)}
   .tagline b{color:var(--ink);font-weight:600}
@@ -150,11 +159,12 @@
 </style>
 </head>
 <body>
+<div class="page">
 
 <nav>
   <div class="wrap">
     <div class="logo">
-      <img src="brand/icon-wifi.png" alt="">
+      <img src="brand/icon-air-t.png" alt="">
       <span class="word">ATWA<span>-NG</span></span>
       <span class="badge-ver">v2.2</span>
     </div>
@@ -169,12 +179,10 @@
   </div>
 </nav>
 
-<img class="symbol-bg" src="brand/atwa-ng-symbol.png" alt="" aria-hidden="true">
-
 <header>
   <div class="sweep" aria-hidden="true"></div>
   <div class="wrap inner">
-    <img class="wordmark" src="brand/atwa-ng-wordmark.png" alt="ATWA-NG">
+    <img class="wordmark" src="brand/atwa-ng-wordmark-t.png" alt="ATWA-NG">
     <p class="kicker-top">Airwave Teardown Wireless Auditing</p>
     <h1>One WiFi tool. Two radios. Zero mercy for a weak password.</h1>
     <p class="tagline">A real <b>2-in-1 WiFi pentesting and cracking</b> engine — attack and crack from one interface, one native codebase. This is <b>the last WiFi pentesting tool you'll ever need</b>.</p>
@@ -365,5 +373,6 @@ atwa gui</pre>
   </div>
 </footer>
 
+</div>
 </body>
 </html>
