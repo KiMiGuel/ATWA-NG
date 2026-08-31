@@ -1203,7 +1203,10 @@ class App:
                     self._log(f"revealed hidden SSID: {result.aps[bssid].ssid} ({bssid})")
 
             def start_sniffer():
-                s = AsyncSniffer(iface=self.mon_iface, prn=on_packet, store=False)
+                # Same conservative BPF filter as scan.scan() -- drops only
+                # control frames (ACK/RTS/CTS/block-ack), never management/
+                # data, since on_packet()/process_packet() reads both.
+                s = AsyncSniffer(iface=self.mon_iface, filter="not type ctl", prn=on_packet, store=False)
                 s.start()
                 return s
 

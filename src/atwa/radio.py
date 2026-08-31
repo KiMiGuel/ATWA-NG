@@ -37,14 +37,39 @@ def detect_interfaces() -> list[str]:
     return re.findall(r"Interface\s+(\S+)", out)
 
 
+_driver_cache: dict[str, str | None] = {}
+
+
 def get_driver(iface: str) -> str | None:
-    """iface's kernel driver name via ethtool -i, or None if undetermined."""
+    """iface's kernel driver name via ethtool -i, or None if undetermined.
+
+    Cached per interface -- a driver never changes without a hot-unplug/
+    replug (a fresh device node, i.e. a different iface name in the
+    common case, or an explicit clear_driver_cache() call after one),
+    so repeated calls against the same iface (dual-Alfa detection,
+    apply_achm_txpower_patch on every set_monitor_mode()) don't need a
+    fresh `ethtool -i` subprocess each time.
+    """
+    if iface in _driver_cache:
+        return _driver_cache[iface]
     try:
         out = _run(["ethtool", "-i", iface])
     except RadioError:
-        return None
-    match = re.search(r"^driver:\s*(\S+)", out, re.MULTILINE)
-    return match.group(1) if match else None
+        driver = None
+    else:
+        match = re.search(r"^driver:\s*(\S+)", out, re.MULTILINE)
+        driver = match.group(1) if match else None
+    _driver_cache[iface] = driver
+    return driver
+
+
+def clear_driver_cache(iface: str | None = None) -> None:
+    """Clear the get_driver() cache. Useful in tests and after a hot-unplug/
+    replug that might reuse the same interface name with different hardware."""
+    if iface is None:
+        _driver_cache.clear()
+    else:
+        _driver_cache.pop(iface, None)
 
 
 # Hardware-specific by design (STATUS.md "Ideas/undecided", 2026-08-14):
