@@ -182,6 +182,13 @@ def scan(iface: str, duration: float = 10.0, channels: list[int] | None = None) 
     hopper = ChannelHopper(iface=iface, channels=channels or list(ALL_CHANNELS))
     sniffer = AsyncSniffer(
         iface=iface,
+        # Control frames (ACK/RTS/CTS/block-ack) are the chattiest frame
+        # type on a busy channel and process_packet() never inspects them
+        # (it only reads management frames for AP info and management/data
+        # frames for client MACs) -- dropping them at the kernel/BPF level
+        # cuts a real chunk of scapy dissection work without touching any
+        # frame type this scanner actually consumes.
+        filter="not type ctl",
         prn=lambda pkt: process_packet(pkt, result),
         store=False,
     )

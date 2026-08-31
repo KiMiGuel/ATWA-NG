@@ -63,8 +63,18 @@ def _plan_targets() -> list[TargetPlan]:
     for d in sorted(root.iterdir()):
         if not d.is_dir() or d.name in _KIND_DIRS:
             continue
-        caps = sorted(str(p) for p in d.rglob("*") if p.is_file() and p.suffix.lower() in _CAP_SUFFIXES)
-        hashes = sorted(str(p) for p in d.rglob("*.22000"))
+        caps = []
+        hashes = []
+        for p in d.rglob("*"):
+            if not p.is_file():
+                continue
+            suffix = p.suffix.lower()
+            if suffix in _CAP_SUFFIXES:
+                caps.append(str(p))
+            elif suffix == ".22000":
+                hashes.append(str(p))
+        caps.sort()
+        hashes.sort()
         if caps or hashes:
             plans.append(TargetPlan(target_dir=str(d), cap_files=caps, hash_files=hashes))
     return plans

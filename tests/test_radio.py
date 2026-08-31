@@ -10,7 +10,60 @@ import atwa.radio as radio
 def _clear_channel_cache():
     """Each test starts with a clean ensure_channel() cache."""
     radio.clear_channel_cache()
+    radio.clear_driver_cache()
     yield
+
+
+def test_get_driver_caches_across_calls(monkeypatch):
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        return "driver: mt76x0u\n"
+
+    monkeypatch.setattr(radio, "_run", fake_run)
+    assert radio.get_driver("wlan1") == "mt76x0u"
+    assert radio.get_driver("wlan1") == "mt76x0u"
+    assert len(calls) == 1
+
+
+def test_get_driver_caches_undetermined_result(monkeypatch):
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        raise radio.RadioError("no such device")
+
+    monkeypatch.setattr(radio, "_run", fake_run)
+    assert radio.get_driver("wlan9") is None
+    assert radio.get_driver("wlan9") is None
+    assert len(calls) == 1
+
+
+def test_get_driver_tracks_interfaces_independently(monkeypatch):
+    monkeypatch.setattr(radio, "_run", lambda cmd: f"driver: driver-for-{cmd[-1]}\n")
+    assert radio.get_driver("wlan0") == "driver-for-wlan0"
+    assert radio.get_driver("wlan1") == "driver-for-wlan1"
+
+
+def test_clear_driver_cache_single_iface(monkeypatch):
+    calls = []
+    monkeypatch.setattr(radio, "_run", lambda cmd: calls.append(cmd) or "driver: mt76x0u\n")
+    radio.get_driver("wlan0")
+    radio.get_driver("wlan1")
+    radio.clear_driver_cache("wlan0")
+    radio.get_driver("wlan0")
+    radio.get_driver("wlan1")
+    assert len(calls) == 3  # wlan0, wlan1, wlan0-again (wlan1 stayed cached)
+
+
+def test_clear_driver_cache_all(monkeypatch):
+    calls = []
+    monkeypatch.setattr(radio, "_run", lambda cmd: calls.append(cmd) or "driver: mt76x0u\n")
+    radio.get_driver("wlan0")
+    radio.clear_driver_cache()
+    radio.get_driver("wlan0")
+    assert len(calls) == 2
 
 
 def test_ensure_channel_no_op_when_none():
