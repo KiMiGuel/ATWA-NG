@@ -1430,10 +1430,12 @@ class App:
         self.target_title_var.set(f"{ap.ssid or '<hidden>'}  ({bssid})")
         self.target_detail_var.set(
             f"BSSID: {bssid}\n"
+            f"Manufacturer: {ap.manufacturer or '-'}\n"
             f"Channel: {ap.channel or '-'}\n"
             f"Security: {ap.security or '-'}\n"
             f"PMF: {ap.pmf or '-'}\n"
             f"Signal: {ap.signal if ap.signal is not None else '-'} dBm\n"
+            f"RX quality: {ap.rx_quality}%\n"
             f"Clients seen: {len(ap.clients)}"
         )
         # _on_target_select refires on every scan-tick redraw (see docstring

@@ -267,9 +267,6 @@ def chopchop_vendor(
     outdir = Path(tempfile.mkdtemp(prefix="atwa-chopchop-"))
     cmd = [str(CHOPCHOP_BIN), "-4", "-F", "-b", bssid, "-h", own_mac, iface]
 
-    if progress_fn is not None:
-        progress_fn(f"chopchop: driving vendored aireplay-ng -4 against {bssid}")
-
     proc = subprocess.Popen(
         cmd, cwd=outdir, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

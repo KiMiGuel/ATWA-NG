@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from scapy.config import conf
 from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeResp, RadioTap
 from scapy.sendrecv import AsyncSniffer
 
@@ -49,8 +50,13 @@ class AccessPoint:
     beacon_count: int = 0  # number of Dot11Beacon frames seen (not probe responses)
     first_seen: float | None = None  # time.time() of first frame seen for this bssid
     last_seen: float | None = None  # time.time() of most recent frame seen for this bssid
+    manufacturer: str | None = None  # OUI vendor name resolved from the BSSID
+    rx_quality: int = 0  # 0-100, fraction of the AP's own beacon sequence numbers we didn't miss
     clients: set[str] = field(default_factory=set)
     client_signal: dict[str, int] = field(default_factory=dict)  # best dBm seen per client MAC
+    _last_seq: int | None = field(default=None, repr=False, compare=False)
+    _fcapt: int = field(default=0, repr=False, compare=False)
+    _fmiss: int = field(default=0, repr=False, compare=False)
 
 
 @dataclass
@@ -62,6 +68,29 @@ class ScanResult:
 
 def _is_target_frame(pkt) -> bool:
     return pkt.haslayer(Dot11Beacon) or pkt.haslayer(Dot11ProbeResp)
+
+
+def _update_rx_quality(ap: AccessPoint, pkt) -> None:
+    """Track the AP's beacon/probe-response sequence numbers to derive
+    rx_quality: what fraction of its frames we actually captured, adapted
+    from airodump-ng's update_rx_quality() (dump_add_packet()'s seq-gap
+    accounting). A gap in the 802.11 SC sequence counter means a frame
+    was sent but missed (e.g. we were hopped to another channel) --
+    cumulative fcapt/fmiss across the AP's lifetime, not airodump-ng's
+    periodic reset-and-recompute window, since this scanner has no
+    separate periodic-tick callback to drive that reset from."""
+    dot11 = pkt.getlayer(Dot11)
+    if dot11 is None:
+        return
+    seq = dot11.SC >> 4
+    if ap._last_seq is not None:
+        missed = (seq - ap._last_seq - 1) % 4096
+        if 0 < missed < 1000:  # same sanity bound as airodump-ng -- reject wraparound noise
+            ap._fmiss += missed
+    ap._fcapt += 1
+    ap._last_seq = seq
+    total = ap._fcapt + ap._fmiss
+    ap.rx_quality = min(100, int(100 * ap._fcapt / total)) if total else 0
 
 
 def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
@@ -81,9 +110,13 @@ def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
         ap = result.aps.setdefault(bssid, AccessPoint(bssid=bssid))
         if is_new:
             ap.first_seen = now
+            manuf = conf.manufdb._get_manuf(bssid)
+            if manuf and manuf.lower() != bssid.lower():
+                ap.manufacturer = manuf
         ap.last_seen = now
         if pkt.haslayer(Dot11Beacon):
             ap.beacon_count += 1
+        _update_rx_quality(ap, pkt)
         ssid = ssid_of(pkt)
         if ssid:
             ap.ssid = ssid

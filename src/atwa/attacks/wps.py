@@ -68,11 +68,15 @@ def _send_wsc_message(
                 acked.append(True)
 
         sniffer = AsyncSniffer(
-            iface=iface, timeout=frag_ack_timeout, prn=_on_ack,
+            iface=iface, prn=_on_ack,
             stop_filter=lambda p, acked=acked: bool(acked), store=False,
         )
         sniffer.start()
-        sniffer.join()
+        sniffer.join(timeout=frag_ack_timeout)
+        try:
+            sniffer.stop()
+        except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
+            pass
         if not acked:
             raise RuntimeError(
                 f"no WSC_FRAG_ACK for fragment {i + 1}/{len(fragments)} "
@@ -112,7 +116,7 @@ def _sniff_until(iface: str, timeout: float, handler, found: list, send_fn=None,
     capture_pmkid()) lets a mid-wait stop_event abort in ~50ms instead.
     """
     sniffer = AsyncSniffer(
-        iface=iface, timeout=timeout, prn=handler,
+        iface=iface, prn=handler,
         stop_filter=lambda p: bool(found), store=False,
     )
     sniffer.start()
@@ -287,7 +291,7 @@ def _send_until_m3(
                 timer.start()
 
     sniffer = AsyncSniffer(
-        iface=iface, timeout=timeout, prn=handler,
+        iface=iface, prn=handler,
         stop_filter=lambda p: "frame" in result, store=False,
     )
     sniffer.start()

@@ -1336,3 +1336,130 @@ wpa_supplicant. Teardown command given earlier:
 `sudo pkill hostapd wpa_supplicant; sudo iw dev atk0 del; sudo iw dev
 sniff3 del; sudo rmmod mac80211_hwsim` (last one needs the user to run it
 — the auto-mode classifier blocks unattended `rmmod`).
+**Update**: hwsim environment torn down and all 4 commits above landed
+later the same session (user explicitly asked to deactivate + commit) —
+see git log (`54b8994`..`76f212d`). Working tree confirmed clean after.
+
+## 2026-08-30: three more roadmap items from WPA3/WiFi6 research (hackersmanifest.com)
+
+Read https://hackersmanifest.com/wireless-pentesting/08-wpa3-wifi6/ at
+user's request. Real, substantive content, not marketing fluff. Three
+more concrete candidates added to the same queue as the PMF-bypass
+research above (user chose to log all five for later rather than build
+now):
+
+1. **WPA3/WPA2 `downgrade_twin` — confirmed stub, not implemented.**
+   `secure.recommend_attack()` returns `{"attack": "downgrade_twin", ...}`
+   for transition-mode targets, but grepped the whole tree — nothing
+   dispatches to it. `OmniOrchestrator` has no stage for it.
+   `attacks/eviltwin.py` doesn't cover this use case either (it's an
+   open-network + captive-portal password harvester, not a WPA2-PSK-only
+   rogue twin). Building this for real means a new AP config
+   (WPA2-PSK, not open) reusing eviltwin.py's deauth/AP-bringup
+   scaffolding, aimed at forcing a client onto the rogue twin to capture
+   a normal, crackable 4-way handshake. Moderate scope.
+2. **Dragonblood SAE side-channel** (CVE-2019-9494 timing,
+   CVE-2019-9495 cache) against pure WPA3-SAE (no transition mode, so
+   `downgrade_twin`/PMKID don't apply). Bigger, novel build — nothing in
+   ATWA-NG does SAE-commit timing measurement or hunting-and-pecking
+   password-space partitioning today. Reference tools named on the page:
+   `dragontime.py`/`dragonforce.py`/`dragondrain.py`.
+3. **OWE (Enhanced Open) transition-mode downgrade** — same shape as
+   the WPA3 downgrade but for OWE: clone/strip to force fallback to the
+   paired open SSID, landing in MITM position. Smaller than Dragonblood,
+   similar scaffolding reuse to `downgrade_twin`.
+
+Also noted, not actionable right now: WiFi 6E (6GHz) needs different
+hardware than the project's current mt76x0u/rtw88_8814au pair (page
+recommends Intel AX210 or MediaTek MT7921AU-based adapters, e.g. Alfa
+AWUS036AXML) — a hardware purchase, not a code gap. WPA3-Enterprise
+attacks (rogue RADIUS/`hostapd-wpe`/`eaphammer`) are a whole different
+802.1X/EAP attack surface ATWA-NG doesn't touch anywhere today — flagged
+as likely out of current project scope, not silently assumed in-scope.
+
+Full roadmap (all 5 items) also logged to
+`~/CCM2/ATWA-NG/architecture/pending-investigations.md` — see that file
+for the index; this entry has the full technical detail.
+
+## 2026-08-31: OMNI WEP-target AsyncSniffer crash fixed, chopchop log line removed, scan.py gains manufacturer/rx_quality from source_cherrypick.c
+
+**Root cause found for "almost all WEP options crash in OMNI except chopchop":**
+`attacks/wps.py` had three `AsyncSniffer(iface=..., timeout=X, ...)` call
+sites (`_send_wsc_message`'s fragment-ACK sniffer, `_sniff_until` used by
+`_wait_for`/`_wait_for_dot11`/`_associate`, and `_send_until_m3`) that
+passed `timeout` straight into the `AsyncSniffer` constructor — scapy
+raises `ValueError("'timeout' isn't supported with AsyncSniffer. Use
+join(timeout=1)")` immediately on that constructor call. Since OMNI
+always runs PMKID → WPS stages before ever reaching a target's actual
+WEP-specific stage, this crashed every OMNI run at the WPS
+`_associate()` step regardless of the target's real encryption — WEP
+targets just happened to be where the user noticed it, and `chopchop`
+specifically was unaffected because it now shells out to the vendored
+`aireplay-ng` binary ([wep_client.py](src/atwa/attacks/wep_client.py))
+instead of going through OMNI's staged flow.
+- `_sniff_until`/`_send_until_m3`: both already implement their own
+  polling loop with `stop_event` support and call `sniffer.stop()` in a
+  `finally` — the constructor's `timeout=` kwarg was pure dead weight
+  doing nothing but crashing. Removed it; behavior otherwise unchanged.
+- `_send_wsc_message`'s fragment-ACK wait had no such loop — replaced
+  `sniffer.join()` (previously always crashing on construction, would
+  have blocked forever if it hadn't) with `sniffer.join(timeout=
+  frag_ack_timeout)` plus an explicit `sniffer.stop()` after, matching
+  the error message's own suggested fix.
+
+**Log line removed:** `wep_client.py:chopchop_vendor()`'s
+`progress_fn(f"chopchop: driving vendored aireplay-ng -4 against
+{bssid}")` deleted per user request (named the internal implementation
+tool in user-facing log output).
+
+**`source_cherrypick.c` (vendored `airodump-ng.c`, full source) reviewed
+for genuinely-missing scan capability.** Most of the file doesn't apply
+— multi-format output writers (CSV/kismet/netxml), GPS, ncurses TUI, and
+IV/decloak tracking are either out of scope for a passive Python scanner
+or already covered elsewhere (`wep.py`'s `PTWVoteTable`). Two concrete,
+self-contained pieces were cherry-picked into `scan.py`'s
+`AccessPoint`/`process_packet()`:
+- **Manufacturer lookup** — airodump-ng's `get_manufacturer()`/
+  `load_oui_file()` parses a local OUI text file by hand; scapy already
+  ships the identical capability (`conf.manufdb._get_manuf()`, backed by
+  its own bundled DB with a Wireshark-manuf-file fallback), so this was
+  wired up directly rather than re-implemented — new `AccessPoint.manufacturer`
+  field, resolved once per newly-discovered BSSID.
+- **rx_quality** — adapted from `update_rx_quality()`'s 802.11 SC
+  sequence-number gap accounting (`fcapt`/`fmiss` → percentage). Ported
+  as a cumulative per-AP counter (`_update_rx_quality()`) rather than
+  airodump-ng's periodic reset-and-recompute window, since this scanner
+  has no equivalent periodic-tick callback to drive that reset from —
+  documented as a deliberate adaptation, not a straight port.
+- Both wired into the GUI's target-detail panel
+  ([app.py](src/atwa/gui/app.py) `_on_target_select`) alongside the
+  existing BSSID/Channel/Security/PMF/Signal lines.
+- Declined for this pass, flagged if wanted later: ESSID-regex/netmask/
+  min-power CLI filters, decloak (WEP chaff) detection, "Berlin"
+  stale-AP eviction — each is a separable, scoped port of its own if the
+  user wants it.
+
+**Also reviewed (user-flagged, not applied):** scapy's own performance
+docs page recommends a kernel-level BPF filter on `sniff()`/
+`AsyncSniffer()` calls to drop uninteresting frames before scapy
+dissects them — a much lower-risk alternative to the pypacker swap the
+2026-08-30 session already researched-and-shelved for the same CPU/fan
+complaint (both this and pypacker touch the live monitor-mode receive
+path and need real-hardware verification before landing; not applied
+this session, flagged as the preferred lighter-weight option to try
+first).
+
+**Verification:** `pytest -q` → 147/147 passed (no new tests added — the
+WPS fix is a straightforward argument-shape correction covered by
+existing sniffer-mocking tests; manufacturer/rx_quality were sanity-
+checked with a standalone script, not added as pytest cases). `ruff
+check --select F401,F541` and `mypy --ignore-missing-imports
+--show-error-codes` clean on all four changed files
+(`attacks/wps.py`, `attacks/wep_client.py`, `scan.py`, `gui/app.py`).
+**Not live-tested** — the WPS crash fix in particular should be
+confirmed against a real OMNI run (WEP or otherwise) now that
+`_associate()` can no longer raise on construction.
+
+**Next:** live-test the WPS/OMNI fix against a real AP; decide whether
+to build the BPF-filter scan optimization; pick up any of the declined
+scan.py cherry-picks if wanted.
