@@ -64,6 +64,9 @@
     background:conic-gradient(from 0deg at 50% -20%, transparent 0deg, var(--glow) 8deg, transparent 40deg, transparent 360deg);
     animation:sweep 7s linear infinite}
   @keyframes sweep{to{transform:rotate(360deg)}}
+  .symbol-bg{position:absolute;top:50%;left:50%;transform:translate(-50%,-52%);
+    width:820px;max-width:150%;opacity:.1;pointer-events:none;z-index:0;
+    filter:drop-shadow(0 0 40px var(--glow))}
   header .inner{position:relative;z-index:1}
   header img.wordmark{max-width:min(440px,84%);height:auto;filter:drop-shadow(0 0 34px var(--glow))}
   .kicker-top{margin-top:28px;font-family:var(--font-mono);font-size:.78rem;letter-spacing:.25em;text-transform:uppercase;color:var(--cyan)}
@@ -168,6 +171,7 @@
 
 <header>
   <div class="sweep" aria-hidden="true"></div>
+  <img class="symbol-bg" src="brand/atwa-ng-symbol.png" alt="" aria-hidden="true">
   <div class="wrap inner">
     <img class="wordmark" src="brand/atwa-ng-wordmark.png" alt="ATWA-NG">
     <p class="kicker-top">Airwave Teardown Wireless Auditing</p>
