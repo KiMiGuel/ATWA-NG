@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atwa"
-version = "2.0.0"
+version = "2.1.0"
 description = "ATWA-NG: native WiFi security auditing engine with vendored scanning/cracking binaries, self-contained"
 requires-python = ">=3.10"
 # Self-contained as of 2026-08-25 — no runtime dependency on n2ng2.
