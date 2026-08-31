@@ -30,7 +30,7 @@
   }
   *{margin:0;padding:0;box-sizing:border-box}
   html{background:var(--bg)}
-  body{background:var(--bg);color:var(--ink);font-family:var(--font-body);line-height:1.6;font-size:16px}
+  body{background:var(--bg);color:var(--ink);font-family:var(--font-body);line-height:1.6;font-size:16px;overflow-x:hidden}
   a{color:var(--cyan);text-decoration:none}
   a:hover{text-decoration:underline}
   .wrap{max-width:1100px;margin:0 auto;padding:0 24px}
@@ -64,8 +64,8 @@
     background:conic-gradient(from 0deg at 50% -20%, transparent 0deg, var(--glow) 8deg, transparent 40deg, transparent 360deg);
     animation:sweep 7s linear infinite}
   @keyframes sweep{to{transform:rotate(360deg)}}
-  .symbol-bg{position:absolute;top:50%;left:50%;transform:translate(-50%,-52%);
-    width:820px;max-width:150%;opacity:.1;pointer-events:none;z-index:0;
+  .symbol-bg{position:absolute;top:40px;left:50%;transform:translateX(-50%);
+    width:1600px;max-width:260%;opacity:.09;pointer-events:none;z-index:0;
     filter:drop-shadow(0 0 40px var(--glow))}
   header .inner{position:relative;z-index:1}
   header img.wordmark{max-width:min(440px,84%);height:auto;filter:drop-shadow(0 0 34px var(--glow))}
@@ -169,9 +169,10 @@
   </div>
 </nav>
 
+<img class="symbol-bg" src="brand/atwa-ng-symbol.png" alt="" aria-hidden="true">
+
 <header>
   <div class="sweep" aria-hidden="true"></div>
-  <img class="symbol-bg" src="brand/atwa-ng-symbol.png" alt="" aria-hidden="true">
   <div class="wrap inner">
     <img class="wordmark" src="brand/atwa-ng-wordmark.png" alt="ATWA-NG">
     <p class="kicker-top">Airwave Teardown Wireless Auditing</p>
