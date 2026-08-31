@@ -14,6 +14,7 @@ unlikely to overflow even on its own.
 
 from __future__ import annotations
 
+import functools
 import queue
 import threading
 import tkinter as tk
@@ -2215,7 +2216,7 @@ class App:
             parts.append("no PMKID/handshake material found")
         return ", ".join(parts)
 
-    def _show_scroll_dialog(self, title: str, text: str, *, buttons=("OK",)) -> str | None:
+    def _show_scroll_dialog(self, title: str, text: str, *, buttons: tuple[str, ...] = ("OK",)) -> str | None:
         """Fixed-size, word-wrapped, scrollable dialog -- messagebox.showinfo
         grows unbounded-tall with one line per file, unreadable past a
         handful of results (2026-08-28 user report)."""
@@ -2228,7 +2229,7 @@ class App:
 
         result: dict[str, str | None] = {"choice": None}
 
-        def choose(label):
+        def choose(label: str | None) -> None:
             result["choice"] = label
             dlg.destroy()
 
@@ -2242,7 +2243,7 @@ class App:
         btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
         for label in buttons:
             style = "Accent.TButton" if label in ("OK", "Yes") else "TButton"
-            ttk.Button(btn_row, text=label, command=lambda l=label: choose(l), style=style).pack(
+            ttk.Button(btn_row, text=label, command=functools.partial(choose, label), style=style).pack(
                 side=tk.RIGHT, padx=4)
 
         text_frame = ttk.Frame(dlg)
