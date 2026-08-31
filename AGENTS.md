@@ -35,8 +35,10 @@ PMKID-less attack logic intact.
   what "NG" stands for in user-facing text.
 
 ## Rules
-- TOP SECRET for now: no GitHub push, no mixing into `~/CCM`. Local +
-  `~/CCM2` only.
+- `github.com/KiMiGuel/ATWA-NG` is live (has been since ~2026-08-28) —
+  pushes/tags are fine. The old "TOP SECRET, no GitHub push" note is
+  retired; the still-active boundary is just no mixing into `~/CCM`
+  (the other vault) — `~/CCM2` stays the only vault this project uses.
 - Do NOT touch `~/CCM` (the other vault), `~/n2-ng` (original v1 repo),
   or `~/N2-NG_v2` (now just the older, unrelated `n2ng2` codebase — not
   part of this project)
