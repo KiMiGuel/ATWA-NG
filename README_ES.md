@@ -68,7 +68,7 @@ Ningún radio pausa, salta de canal, ni comparte tiempo para hacer el trabajo de
 | **WEP** | Fake-auth + replay de ARP + recuperación de clave PTW nativa, más Caffe Latte para ataques solo-cliente |
 | **Evil Twin** | AP falso real + portal cautivo, deauth automático a clientes reales hacia él |
 | **Adivinanza de Contraseña en Línea** | Intentos reales de handshake de 4 vías, contraseña por contraseña, directo contra el AP |
-| **Crackeo** | Miguel y aircrack-ng, ambos integrados — crackeo con un clic, o apúntalo a toda una carpeta de capturas y deja que las fusione, convierta, y crackee todo |
+| **Crackeo** | Miguel the Ripper (John the Ripper jumbo) y aircrack-ng, ambos integrados — crackeo con un clic, o apúntalo a toda una carpeta de capturas y deja que las fusione, convierta, y crackee todo |
 | **Desenmascarado de SSID oculto** | Automático, en cuanto una respuesta a un probe lo revele |
 
 Cada uno de estos es un ataque real, nativo — no una apuesta con `subprocess.run()`.

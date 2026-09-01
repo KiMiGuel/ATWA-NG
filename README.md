@@ -68,7 +68,7 @@ Neither radio ever pauses, hops, or time-shares to do the other one's job. That'
 | **WEP** | Fake-auth + ARP replay + native PTW key recovery, plus Caffe Latte for client-only attacks |
 | **Evil Twin** | Real rogue AP + captive portal, auto-deauths real clients toward it |
 | **Online Password Guess** | Live, real per-password 4-way handshake attempts straight against the AP |
-| **Cracking** | Miguel the Ripper and aircrack-ng, both wired in — one-click crack, or point it at a whole folder of captures and let it merge, convert, and crack the lot |
+| **Cracking** | Miguel the Ripper (John the Ripper jumbo) and aircrack-ng, both wired in — one-click crack, or point it at a whole folder of captures and let it merge, convert, and crack the lot |
 | **Hidden SSID de-cloaking** | Automatic, as soon as a probe response reveals it |
 
 Every one of these is a real, native attack — not a `subprocess.run()` gamble.
