@@ -9,7 +9,7 @@ import time
 
 from ..injection_test import injection_test
 from ..scan import channels_for_band, scan
-from . import EAPOLHUNTER_BIN, WPSRECON_BIN, _python_for_scripts
+from . import EAPOLHUNTER_BIN, _python_for_scripts
 
 
 def _cmd_scan(args) -> int:
@@ -40,28 +40,22 @@ def _cmd_injection_test(args) -> int:
 
 
 def _cmd_wps_recon(args) -> int:
-    """WPS-enabled AP reconnaissance via a locally-compiled recon
-    engine. Runs continuously, no natural exit — launch, let it run for
-    `duration`, then SIGINT and collect what it printed
-    (subprocess.run(timeout=) raises instead of doing this cleanly)."""
-    if not WPSRECON_BIN.exists():
-        print(f"error: {WPSRECON_BIN} not built — see ATWA-NG/STATUS.md", file=sys.stderr)
-        return 1
-    cmd = [str(WPSRECON_BIN), "-i", args.iface]
-    if args.channel:
-        cmd += ["-c", str(args.channel)]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, text=True)
-    try:
-        time.sleep(args.duration)
-    finally:
-        proc.send_signal(signal.SIGINT)
-        try:
-            out, _ = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, _ = proc.communicate()
-    print(out)
+    """WPS-enabled AP reconnaissance — native passive scan filtered to
+    WPS-advertising APs, replacing the vendored `wash` binary. The data
+    (lock state, manufacturer, model, device name) already comes from
+    scan.py/secure.wps_profile()'s native beacon parsing (2026-08-27
+    "wash parity" pass); this command just surfaces it standalone
+    instead of requiring a full GUI/`atwa scan` session to see it."""
+    channels = [args.channel] if args.channel else None
+    result = scan(args.iface, duration=args.duration, channels=channels)
+    wps_aps = sorted((ap for ap in result.aps.values() if ap.wps is not None), key=lambda a: a.bssid)
+    if not wps_aps:
+        print("no WPS-enabled APs seen")
+        return 0
+    for ap in wps_aps:
+        print(f"{ap.bssid}  ch={ap.channel}  wps={ap.wps}  "
+              f"manuf={ap.wps_manufacturer!r}  model={ap.wps_model_name!r}  "
+              f"device={ap.wps_device_name!r}  ssid={ap.ssid!r}")
     return 0
 
 

@@ -1,19 +1,21 @@
 """Tests for cli.py / cli_commands/ — argument parsing for all subcommands,
-and the subprocess-handling logic (_run_bounded, the SIGINT-and-collect
-helper in wps-recon) with subprocess mocked out. No hardware, no vendored
-binaries required to run this file. `injection-test` is native (see
-test_injection_test.py) and no longer touches a vendored binary."""
+and the subprocess-handling logic (_run_bounded) with subprocess mocked
+out. No hardware, no vendored binaries required to run this file.
+`injection-test` and `wps-recon` are both native (see
+test_injection_test.py for the former) and no longer touch a vendored
+binary."""
 
 import subprocess
 
 import pytest
 
 from atwa.cli import build_parser
-from atwa.cli_commands import CAPCRACK_BIN, WPSRECON_BIN, _run_bounded
+from atwa.cli_commands import _run_bounded
 from atwa.cli_commands import attacks as attacks_cmds
 from atwa.cli_commands import crack as crack_cmds
 from atwa.cli_commands import misc as misc_cmds
 from atwa.cli_commands import scan as scan_cmds
+from atwa.scan import AccessPoint, ScanResult
 
 
 # --- argument parsing: every subcommand parses its documented shape --------
@@ -123,7 +125,7 @@ def test_run_bounded_nonzero_exit_is_reported(monkeypatch):
     assert err == "boom"
 
 
-# --- _cmd_crack_cap / _cmd_wps_recon: missing-binary guard -------
+# --- _cmd_crack_cap: missing-binary guard -------
 
 
 def test_crack_aircrack_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
@@ -135,61 +137,44 @@ def test_crack_aircrack_reports_missing_binary_cleanly(monkeypatch, tmp_path, ca
     assert "not built" in capsys.readouterr().err
 
 
-def test_wash_reports_missing_binary_cleanly(monkeypatch, tmp_path, capsys):
-    missing = tmp_path / "wash"
-    monkeypatch.setattr("atwa.cli_commands.scan.WPSRECON_BIN", missing)
+# --- _cmd_wps_recon: native scan, no subprocess/binary involved -------
+
+
+def test_wps_recon_prints_only_wps_enabled_aps(monkeypatch, capsys):
+    result = ScanResult(aps={
+        "aa:aa:aa:aa:aa:aa": AccessPoint(
+            bssid="aa:aa:aa:aa:aa:aa", ssid="OpenNet", channel=6,
+            wps="locked", wps_manufacturer="Acme", wps_model_name="Router9000",
+        ),
+        "bb:bb:bb:bb:bb:bb": AccessPoint(bssid="bb:bb:bb:bb:bb:bb", ssid="NoWPS", channel=1),
+    })
+    monkeypatch.setattr(scan_cmds, "scan", lambda iface, duration, channels: result)
+
     args = build_parser().parse_args(["wps-recon", "wlan0"])
     rc = scan_cmds._cmd_wps_recon(args)
-    assert rc == 1
-    assert "not built" in capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "aa:aa:aa:aa:aa:aa" in out
+    assert "bb:bb:bb:bb:bb:bb" not in out
+    assert "Acme" in out
 
 
-# --- wash: SIGINT-and-collect pattern (Popen mocked) ------
-
-
-class FakeLongRunningProc:
-    """Stands in for a process like `wash` that runs until signaled —
-    never exits on its own, only on send_signal + communicate."""
-
-    def __init__(self, cmd, **kwargs):
-        self.cmd = cmd
-        self.kwargs = kwargs
-        self.signaled_with = None
-
-    def send_signal(self, sig):
-        self.signaled_with = sig
-
-    def communicate(self, timeout=None):
-        return "some output\n", None
-
-
-def test_wash_sends_sigint_and_collects_output(monkeypatch, tmp_path):
-    fake_bin = tmp_path / "wash"
-    fake_bin.write_text("")
-    monkeypatch.setattr("atwa.cli_commands.scan.WPSRECON_BIN", fake_bin)
-    monkeypatch.setattr(subprocess, "Popen", FakeLongRunningProc)
-    monkeypatch.setattr(scan_cmds.time, "sleep", lambda _s: None)
-
-    args = build_parser().parse_args(["wps-recon", "wlan0", "--duration", "1"])
+def test_wps_recon_reports_none_found(monkeypatch, capsys):
+    monkeypatch.setattr(scan_cmds, "scan", lambda iface, duration, channels: ScanResult())
+    args = build_parser().parse_args(["wps-recon", "wlan0"])
     rc = scan_cmds._cmd_wps_recon(args)
     assert rc == 0
+    assert "no WPS-enabled APs" in capsys.readouterr().out
 
 
-def test_wash_closes_stdin_on_popen(monkeypatch, tmp_path):
-    """Regression test: the stdin-inheritance hang class of bug found
-    live for the (now-removed) deauth-inject path must not recur here."""
-    fake_bin = tmp_path / "wash"
-    fake_bin.write_text("")
-    monkeypatch.setattr("atwa.cli_commands.scan.WPSRECON_BIN", fake_bin)
+def test_wps_recon_single_channel_arg_scoped_to_that_channel(monkeypatch):
     captured = {}
 
-    def fake_popen(cmd, **kwargs):
-        captured.update(kwargs)
-        return FakeLongRunningProc(cmd, **kwargs)
+    def fake_scan(iface, duration, channels):
+        captured["channels"] = channels
+        return ScanResult()
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(scan_cmds.time, "sleep", lambda _s: None)
-
-    args = build_parser().parse_args(["wps-recon", "wlan0", "--duration", "1"])
+    monkeypatch.setattr(scan_cmds, "scan", fake_scan)
+    args = build_parser().parse_args(["wps-recon", "wlan0", "--channel", "6"])
     scan_cmds._cmd_wps_recon(args)
-    assert captured.get("stdin") == subprocess.DEVNULL
+    assert captured["channels"] == [6]
