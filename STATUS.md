@@ -215,3 +215,25 @@ open:
       `AsyncSniffer` socket needs more than just re-entering monitor
       mode (the GUI's own scan loop already has a simpler
       restart-if-dead pattern for this).
+
+## Today's 6-point closeout list (2026-09-01 session, user-tracked)
+
+Goal: finish all 6 today; final commit once all 6 are `[x]` gets tagged
+and pushed as **v2.3** (accumulate locally until then, per user
+direction — no per-item pushes).
+
+1. [x] **Cracking description + how-to docs** — `README.md`/`README_ES.md`
+       gained a full "Cracking, how-to" section (GUI + 3 CLI shapes +
+       where captures live) and real John Jumbo install instructions in
+       both languages, verified against the actual `~/john` build layout
+       on this machine (not just assumed). "Miguel the Ripper" stays a
+       pure unexplained cosmetic name in the feature table/prose per
+       explicit direction — the Install section is where a reader
+       actually learns what to install, not a parenthetical gloss.
+2. [ ] dpkt vs. pypacker swap in scan.py — the CPU/fan fix candidate.
+3. [ ] OWE transition-mode downgrade (the actual attack — IE parsing +
+       rogue-open-twin; the misclassification bug is already fixed,
+       separately, see the WPA3/PMF-bypass list above).
+4. [ ] CSA spoofing — exploratory, no PoC exists anywhere found.
+5. [ ] Dragonblood SAE side-channel — bigger, novel build.
+6. [ ] Self-healing monitor-mode/channel drift check.
