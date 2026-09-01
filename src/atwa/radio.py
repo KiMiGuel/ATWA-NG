@@ -249,6 +249,21 @@ def check_kill_interfering_processes() -> list[str]:
     return killed
 
 
+def disable_power_save(iface: str) -> bool:
+    """Turn off the adapter's power-save mode (`iw dev <iface> set
+    power_save off`). Aggressive power-save on Realtek/MediaTek chipsets
+    is a documented source of erratic RX latency and dropped frames in
+    monitor mode -- there's no legitimate reason to conserve power on an
+    adapter that's actively doing packet-capture/injection work. Returns
+    True if the command succeeded, False if the driver doesn't support
+    the setting (non-fatal -- caller just proceeds without it)."""
+    try:
+        _run(["iw", "dev", iface, "set", "power_save", "off"])
+        return True
+    except RadioError:
+        return False  # not every driver exposes power_save control
+
+
 def set_monitor_mode(
     iface: str,
     randomize_mac: bool = False,
@@ -274,6 +289,7 @@ def set_monitor_mode(
     if patch_txpower:
         apply_achm_txpower_patch(iface)
     fix_antenna_mask(iface)
+    disable_power_save(iface)
     return iface, permanent_mac
 
 

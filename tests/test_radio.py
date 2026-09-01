@@ -125,3 +125,18 @@ def test_clear_channel_cache_all():
     radio._last_channel["wlan0"] = 6
     radio.clear_channel_cache()
     assert radio._last_channel == {}
+
+
+def test_disable_power_save_runs_iw_command(monkeypatch):
+    calls = []
+    monkeypatch.setattr(radio, "_run", lambda cmd: calls.append(cmd) or "")
+    assert radio.disable_power_save("wlan1") is True
+    assert calls == [["iw", "dev", "wlan1", "set", "power_save", "off"]]
+
+
+def test_disable_power_save_non_fatal_when_unsupported(monkeypatch):
+    def boom(cmd):
+        raise radio.RadioError("power_save not supported by this driver")
+
+    monkeypatch.setattr(radio, "_run", boom)
+    assert radio.disable_power_save("wlan1") is False

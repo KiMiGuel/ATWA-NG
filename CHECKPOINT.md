@@ -194,3 +194,100 @@ syntactically valid.
 (confirm no unexpected frame loss on a real busy channel) before
 trusting it fully; everything else in this entry is either already
 proven safe by the existing test suite or was correctly left alone.
+
+## 2026-08-31 (same day, later): second AsyncSniffer-timeout bug found in online.py, wps-recon native port, PINCER stale-claim correction, power_save off, CPU research dive
+
+**Second instance of the WPS AsyncSniffer bug, found from a user memory
+fragment.** User recalled "a timeout error across all attacks except
+deauth/chopchop" without remembering which file. Re-grepped every
+`AsyncSniffer(` call site project-wide and found `attacks/online.py`
+(the WPA online dictionary-guess attack) had the identical broken
+pattern — three separate `AsyncSniffer(iface=..., timeout=X, ...)`
+constructor calls (`_wait_for_dot11`, `_wait_for_m1`,
+`_wait_for_m3_or_reject`) that would crash immediately the same way
+`wps.py`'s did before its earlier fix this session. None of these three
+functions take a `stop_event` (unlike the wps.py ones), so the fix is
+simpler: drop `timeout=` from the constructor, use
+`sniffer.join(timeout=timeout)` instead, plus an explicit
+`sniffer.stop()` for cleanup. `handshake.py`/`pmkid.py`/`scan.py`/
+`lock_capture.py` confirmed clean (grepped, no `timeout=` on any
+`AsyncSniffer` construction).
+
+**`wps-recon` CLI ported off the vendored `wash` binary.**
+`cli_commands/scan.py:_cmd_wps_recon` previously shelled out to
+`WPSRECON_BIN` (`vendor/reaver/src/wash`) — the last non-cracking-backend
+wrapper in the whole project. Replaced with a native `scan.scan()` call
+filtered to APs where `.wps is not None`, since `secure.wps_profile()`
+already extracts the same manufacturer/model/device-name/lock-state
+data from beacon frames natively (added 2026-08-27, "wash parity" pass)
+— this was a wiring gap, not a missing capability. Removed
+`WPSRECON_BIN`/`_WPSRECON_ROOT` from `cli_commands/__init__.py`,
+updated `cli.py`'s stale module docstring, rewrote the 3 wash-specific
+tests in `test_cli.py` (missing-binary guard, SIGINT-and-collect Popen
+mocking) to mock `scan_cmds.scan` instead. Also corrected
+`docs/vendor_inventory.md`, which was *also* stale in the same way
+`AGENTS.md` was — it described WPS attack logic as not-yet-native
+("port the WPS state machine... into wps_native.py") when
+`attacks/wps.py` has had full native pixie-dust/bruteforce/M2→M3 logic
+since 2026-08-27. Corrected to describe reality: WPS (attack + recon)
+is fully done, `vendor/reaver` is now reference-only.
+
+**Corrected a stale claim this session itself had written into
+`STATUS.md` a few hours earlier.** While investigating "Dual-Alfa/PINCER"
+as a possible roadmap pick, discovered `attack_runner.py`'s `pincer()`
+is a complete, real, native implementation — not "still the old v1
+prototype" as `AGENTS.md`'s Roadmap (and this session's own STATUS.md
+rewrite, which trusted that wording without checking) claimed. Checked
+`vendor/n2-ng-v1-src` directly: no pincer/dual-adapter code exists there
+at all. What's actually missing is test coverage (zero, no file exists
+for `attack_runner.py`) and live-hardware verification with two real
+adapters — a much smaller gap than "reimplement natively" implied.
+Lesson: even this session's own freshly-written docs need the same
+check-against-code discipline as the ones being audited, not blind
+trust just because they're new.
+
+**`radio.py` `set_monitor_mode()` now disables power-save.** New
+`disable_power_save()` (`iw dev <iface> set power_save off`), called
+right after bringing the interface up, alongside the existing txpower
+patch and antenna-mask fix. Sourced from a user-provided research doc
+on 802.11 USB optimization — independently verified as a real, standard
+technique (not fabricated), and the single most immediately-actionable
+item in that doc: aggressive driver power-save on Realtek/MediaTek
+chipsets is a documented cause of erratic RX latency and dropped
+frames, which plausibly explains some of this project's own
+already-logged adapter flakiness. Non-fatal if a driver doesn't expose
+the setting (same pattern as `fix_antenna_mask()`). 2 new tests in
+`tests/test_radio.py`.
+
+**CPU/fan research dive (user-requested), findings folded into
+STATUS.md's Performance section:** a second viable scapy-replacement
+candidate (`dpkt`, natively supports Radiotap/802.11, benchmarked
+competitive with or faster than pypacker), TPACKET_V3 mmap ring
+buffers as a genuinely new lever, AF_XDP as the honest "actual C"
+answer if ever needed (judged unlikely — 802.11 monitor-mode capture is
+RF-bandwidth-bottlenecked, not socket-throughput-bottlenecked at the
+scale AF_XDP solves), and a full re-confirmation of why PyRIC/pyroute2
+remain not-recommended for `radio.py` (PyRIC was actually tried on
+2026-08-29, broke real 5GHz scanning on the exact hardware in use,
+root cause never confirmed — see vault log
+`2026-08-29-pyric-migration-reverted-broke-live-scanning.md` for the
+full account). A user-provided research doc's specific technical claims
+(3 CVE numbers, 2 pip package names) were independently verified rather
+than trusted at face value — all 3 CVEs turned out to be real (initial
+suspicion of fabrication was wrong and said so directly), one package
+(`pylibpcap`) confirmed real but unmaintained since 2021, one
+(`pywifi-controls`) confirmed real but a wrong architectural fit
+(managed-mode client control, not monitor-mode).
+
+**Verification:** `pytest -q` → 154/154 passed (2 new tests for
+`disable_power_save`; net zero from the wps-recon test rewrite — 3
+removed, 3 added). `ruff check --select F401,F541` and `mypy
+--ignore-missing-imports --show-error-codes` clean on every changed
+file (`attacks/online.py`, `cli_commands/scan.py`,
+`cli_commands/__init__.py`, `cli.py`, `radio.py`, `tests/test_cli.py`,
+`tests/test_radio.py`).
+
+**Not done:** dpkt/pypacker swap itself (still just researched, real
+scope, needs live-hardware verification); TPACKET_V3 ring buffers (not
+attempted); PINCER test coverage / live dual-adapter test (flagged, not
+built this session).
