@@ -68,7 +68,7 @@ Neither radio ever pauses, hops, or time-shares to do the other one's job. That'
 | **WEP** | Fake-auth + ARP replay + native PTW key recovery, plus Caffe Latte for client-only attacks |
 | **Evil Twin** | Real rogue AP + captive portal, auto-deauths real clients toward it |
 | **Online Password Guess** | Live, real per-password 4-way handshake attempts straight against the AP |
-| **Cracking** | Miguel the Ripper (John the Ripper jumbo) and aircrack-ng, both wired in — one-click crack, or point it at a whole folder of captures and let it merge, convert, and crack the lot |
+| **Cracking** | Miguel the Ripper and aircrack-ng, both wired in — one-click crack, or point it at a whole folder of captures and let it merge, convert, and crack the lot |
 | **Hidden SSID de-cloaking** | Automatic, as soon as a probe response reveals it |
 
 Every one of these is a real, native attack — not a `subprocess.run()` gamble.
@@ -77,7 +77,7 @@ Every one of these is a real, native attack — not a `subprocess.run()` gamble.
 
 ## Cracking, how-to
 
-Two backends, pick either — **Miguel the Ripper** (John the Ripper jumbo under the hood) is the default; **aircrack-ng** is wired in as an alternate.
+Two backends, pick either — **Miguel the Ripper** is the default; **aircrack-ng** is wired in as an alternate.
 
 **GUI — the easy way.** Captures menu → Crack Handshakes. Point it at a *folder*, not a single file: it merges every `.cap`/`.pcap`/`.pcapng` and `.22000` it finds in there, converts formats as needed, and cracks the combined result. Pick a backend (radio button) and a wordlist, hit Run. A folder named `<SSID>_<BSSID>` (what every attack writes to under `~/atwa-hs` by default) auto-fills the BSSID field for aircrack-ng.
 
@@ -109,6 +109,19 @@ atwa verify-handshake capture.cap
 git clone https://github.com/KiMiGuel/ATWA-NG.git
 cd ATWA-NG
 pip install -e .
+```
+
+**Cracking needs John the Ripper (jumbo build specifically — the `wpapsk` format isn't in the plain community edition).** On Kali it's one line and you're done:
+
+```bash
+sudo apt install john
+```
+
+Not on Kali, or your distro's `john` package isn't the jumbo build? Check first (`john --list=formats | grep -i wpapsk`), and if it's missing, build jumbo from source into `~/john` — the tool looks there automatically if `john` isn't on `PATH`:
+
+```bash
+git clone https://github.com/openwall/john -b bleeding-jumbo ~/john
+cd ~/john/src && ./configure && make -s clean && make -sj$(nproc)
 ```
 
 ## Use it
