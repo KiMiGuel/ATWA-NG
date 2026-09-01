@@ -111,6 +111,19 @@ cd ATWA-NG
 pip install -e .
 ```
 
+**El crackeo necesita John the Ripper (la compilación jumbo específicamente — el formato `wpapsk` no está en la edición comunitaria normal).** En Kali es una sola línea:
+
+```bash
+sudo apt install john
+```
+
+¿No estás en Kali, o el paquete `john` de tu distro no es la compilación jumbo? Revisa primero (`john --list=formats | grep -i wpapsk`), y si falta, compila jumbo desde el código fuente en `~/john` — la herramienta busca ahí automáticamente si `john` no está en el `PATH`:
+
+```bash
+git clone https://github.com/openwall/john -b bleeding-jumbo ~/john
+cd ~/john/src && ./configure && make -s clean && make -sj$(nproc)
+```
+
 ## Cómo usarlo
 
 ```bash
