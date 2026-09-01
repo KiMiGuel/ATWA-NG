@@ -23,8 +23,14 @@ changes.
 
 ## Objective
 Native Python implementations of WiFi attack concepts (scan, monitor,
-deauth, handshake capture, PMKID, cracking) plus the vendored v1
-scanning engine (aircrack-ng/reaver source), unified. Keep OMNI/Smart/
+deauth, handshake capture, PMKID, WPS, WEP, evil twin, online guess,
+cracking). Scanning and injection are **fully native, zero
+vendored-engine fallback** — `airodump-ng`/`aireplay-ng` code paths were
+deliberately, completely removed (Phase 6b/6c, 2026-08-27), not flagged
+off. The only permanent vendored/wrapped components are cracking
+backends (John the Ripper jumbo, `aircrack-ng` as an optional alternate)
+and cap/pcap-format tools (`hcxpcapngtool`, `wpapcap2john`) — never
+scanning, injection, WPS, or monitor control. Keep OMNI/Smart/
 PMKID-less attack logic intact.
 
 ## Decisions
@@ -51,15 +57,22 @@ PMKID-less attack logic intact.
   `=`, so naive redaction patterns fail open and print it raw. Source it
   only via command substitution so the value stays in a subprocess
   environment and never appears in tool output.**
-- The `~/hs/n2-ng` capture directory path is intentionally unchanged by
-  the rename — see `storage.py`'s own "do not change it" comment.
-- No image/logo/color-theme work without being explicitly asked — brand
-  assets are still in draft (see vault decisions.md).
+- The fixed capture directory is `~/atwa-hs` — see `storage.py`'s
+  `capture_root()` (its own "do not change it" comment applies to this
+  path). A `~/hs/n2-ng` directory may still exist on machines used
+  before the 2026-08-25 rename — that's leftover pre-rename data, not
+  a path any current atwa code writes to.
+- No image/logo/color-theme work without being explicitly asked — see
+  Roadmap below for current branding status.
 
 ## Roadmap
 - [x] Rename sweep (n2ngv2 → atwa/ATWA-NG), relocate to own home
-- [ ] Publish decision (new repo vs. replacing `n2-ng` on GitHub) —
-      explicitly deferred, not to be decided autonomously
+- [x] Publish decision — resolved: dedicated new repo (not a
+      replacement of `n2-ng`), live at `github.com/KiMiGuel/ATWA-NG`
+      since 2026-08-28. Pushes/tags/releases are routine now.
 - [ ] Dual-Alfa mode (two Alfa adapters in parallel; was prototyped in
       the old v1 repo, buggy — reimplement natively)
-- [ ] Color-theme/logo integration, once real brand assets are ready
+- [x] Color-theme/logo integration — substantially complete as of
+      2026-08-27 (see vault `decisions.md`'s Branding section): palette,
+      icons, toolbar logo, About dialog all done. Re-open only if new
+      brand-asset work is explicitly requested.
