@@ -68,7 +68,7 @@ Ningún radio pausa, salta de canal, ni comparte tiempo para hacer el trabajo de
 | **WEP** | Fake-auth + replay de ARP + recuperación de clave PTW nativa, más Caffe Latte para ataques solo-cliente |
 | **Evil Twin** | AP falso real + portal cautivo, deauth automático a clientes reales hacia él |
 | **Adivinanza de Contraseña en Línea** | Intentos reales de handshake de 4 vías, contraseña por contraseña, directo contra el AP |
-| **Crackeo** | Miguel the Ripper (John the Ripper jumbo) y aircrack-ng, ambos integrados — crackeo con un clic, o apúntalo a toda una carpeta de capturas y deja que las fusione, convierta, y crackee todo |
+| **Crackeo** | Miguel the Ripper y aircrack-ng, ambos integrados — crackeo con un clic, o apúntalo a toda una carpeta de capturas y deja que las fusione, convierta, y crackee todo |
 | **Desenmascarado de SSID oculto** | Automático, en cuanto una respuesta a un probe lo revele |
 
 Cada uno de estos es un ataque real, nativo — no una apuesta con `subprocess.run()`.
@@ -77,7 +77,7 @@ Cada uno de estos es un ataque real, nativo — no una apuesta con `subprocess.r
 
 ## Crackeo, cómo hacerlo
 
-Dos motores, elige el que quieras — **Miguel the Ripper** (John the Ripper jumbo por debajo) es el que se usa por defecto; **aircrack-ng** está integrado como alternativa.
+Dos motores, elige el que quieras — **Miguel the Ripper** es el que se usa por defecto; **aircrack-ng** está integrado como alternativa.
 
 **GUI — la forma fácil.** Menú Captures → Crack Handshakes. Apúntalo a una *carpeta*, no a un solo archivo: fusiona cada `.cap`/`.pcap`/`.pcapng` y `.22000` que encuentre ahí, convierte formatos según haga falta, y crackea el resultado combinado. Elige un motor (botón de radio) y un wordlist, presiona Run. Una carpeta llamada `<SSID>_<BSSID>` (donde cada ataque escribe por defecto, dentro de `~/atwa-hs`) auto-completa el campo BSSID para aircrack-ng.
 
