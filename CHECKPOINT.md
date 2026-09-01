@@ -291,3 +291,89 @@ file (`attacks/online.py`, `cli_commands/scan.py`,
 scope, needs live-hardware verification); TPACKET_V3 ring buffers (not
 attempted); PINCER test coverage / live dual-adapter test (flagged, not
 built this session).
+
+## 2026-09-01: roadmap closeout push begins — PINCER tests, downgrade_twin built, OWE bug fixed, cracking docs written; 1/6 done
+
+User set today's goal as finishing the 6-item roadmap left over from
+2026-08-31 (dpkt/pypacker swap, OWE downgrade, CSA spoofing, Dragonblood
+SAE, self-healing monitor check, cracking how-to docs), explicitly asking
+for minimal redundant re-verification along the way.
+
+**Landed, each individually committed + merged to local `main` (not
+pushed — user direction: accumulate locally, tag/push the whole batch as
+v2.3 once all 6 items are done):**
+
+- **PINCER test coverage** — `tests/test_attack_runner.py`, 5 tests.
+  Confirmed in passing that `pincer()` was never the "old v1 prototype"
+  the roadmap claimed (no such code exists in `vendor/n2-ng-v1-src`) —
+  real native logic, just untested until now.
+- **Second `AsyncSniffer` timeout-crash instance found**, from a vague
+  user memory fragment ("timeout error except deauth/chopchop") rather
+  than a file reference — re-grepped every `AsyncSniffer(` call site and
+  found `attacks/online.py` had the identical broken `timeout=` pattern
+  already fixed in `wps.py` earlier. Fixed the same way (3 call sites).
+- **Active probe-request injection** (`scan()`'s `active_probe_interval`
+  + `atwa scan --active-probe`), **channel-range CLI syntax**
+  (`scan.parse_channel_range()`, `"1,3-7,11"`), and **passive PMKID
+  sniffing** from ambient EAPOL M1 traffic in `process_packet()` — all
+  three surfaced from the completed `source_cherrypick.c` read, not
+  previously on any roadmap.
+- **`attacks/pmf_bypass.py`** — the rogue-AP EAPOL-corruption PMF bypass
+  (CVE-2025-27558-class), ported byte-for-byte from the published PoC
+  (fetched via `gh api` from domienschepers/wifi-deauthentication) rather
+  than reconstructed from the paper's prose. Caught the exact `FCfield`
+  hyphen-vs-underscore gotcha this project already hit once before
+  (2026-08-27, `frames.py`'s `craft_probe_req()`) — same mistake,
+  recognized and fixed immediately this time. Standalone primitive, not
+  yet wired into a live attack flow.
+- **`attacks/eviltwin.py run_downgrade_twin()`** — `secure.py`'s
+  `downgrade_twin` recommendation was a confirmed dead stub; now a real
+  WPA2-only rogue-twin attack reusing `run_eviltwin()`'s hostapd
+  scaffolding (no DHCP/portal needed — the 4-way handshake completes
+  before any IP is assigned) + the existing `capture_handshake()`.
+  New CLI subcommand `downgrade-twin`. Caught and fixed a real bug in my
+  own first draft (dead code left over from iterating on the design —
+  a `cap.status(rogue_bssid, "")` call that did nothing) before it ever
+  ran, not after.
+- **OWE misclassification bug** — found while scoping the OWE-downgrade
+  item, not looking for it: `secure.py`'s `security_profile()` never
+  checked AKM suite 18 (OWE/Enhanced Open) at all, so every real OWE
+  beacon was silently reported as `"WPA2"` — a network with literally no
+  password being flagged as PSK-crackable. Fixed + gave `security_profile()`
+  its first test coverage ever (it had none). The actual OWE-downgrade
+  *attack* (parse the Transition Mode IE, spoof the paired open SSID)
+  is still open — deliberately not rushed without a real OWE capture to
+  verify IE byte offsets against.
+- **`power_save off`** landed on `set_monitor_mode()`, sourced from a
+  user-provided `80211_Optimization_and_Capture_Guide.md` research doc —
+  independently verified as real technique (unlike a second doc,
+  `research_09-01-26.md`, rejected outright: it contradicts itself on
+  which RSN bit is MFPC vs MFPR three different ways in the same file,
+  cites an MLO-replay CVE that doesn't exist on search, and contains a
+  broken self-referential Python script that writes a duplicate of its
+  own content to a file named after the *other* doc).
+- **Cracking how-to docs** (item 1/6, done) — `README.md`/`README_ES.md`
+  gained a full how-to section (GUI + 3 CLI shapes + capture location)
+  and real John Jumbo install instructions, verified against this
+  machine's actual `~/john` build layout (first draft cloned to the
+  wrong path, `~/john/src` instead of `~/john`, which would have broken
+  the code's own `~/john/run/john` fallback resolution — caught before
+  publishing, not after). "Miguel the Ripper" (a deliberate, pre-existing
+  user branding choice — not a typo, confirmed after an initial wrong
+  guess that it was) stays unexplained in the feature table/prose per
+  explicit direction; the Install section, not a parenthetical, is where
+  a reader learns it's really John the Ripper underneath.
+
+**Verification:** `pytest -q` → 187 passed across all of the above
+(net new: PINCER 5, pmf_bypass 5, downgrade_twin 8, security_profile 6).
+`ruff check --select F401,F541` and `mypy --ignore-missing-imports
+--show-error-codes` clean on every changed file after each batch.
+README changes have no test suite (markdown) — verified by matching
+fence-count parity and, for the install instructions specifically,
+against the real `~/john` folder already on this machine rather than
+assumed from general knowledge of John's build layout.
+
+**Status: 1/6 roadmap items done** (cracking docs). Remaining: dpkt/
+pypacker swap, OWE downgrade attack itself, CSA spoofing, Dragonblood
+SAE, self-healing monitor-mode check. See STATUS.md's "Today's 6-point
+closeout list" for the live-tracked version of this list.
