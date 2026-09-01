@@ -9,8 +9,10 @@ Python. It is the starting point for Phase 6 of the refactor plan.
 wrappers in ATWA-NG are cracking backends (John, `aircrack-ng`) and
 cap/pcap-format tools (`hcxpcapngtool`, `hcxhashtool`, `pcapfix`,
 `mergecap`) — everything else (scanning, injection, WPS, monitor-mode
-control) must be native Python, with no legacy-fallback flags. Scanning
-and injection are done; WPS is the remaining sub-part.
+control) must be native Python, with no legacy-fallback flags. **Scanning,
+injection, and WPS (both attack and recon) are all done** — the last
+wrapper outside the cracking-backend exception (`wash`, for `wps-recon`)
+was closed out 2026-08-31.
 
 ## Vendor roles
 
@@ -19,7 +21,7 @@ and injection are done; WPS is the remaining sub-part.
 | `vendor/aircrack-ng` | `aircrack-ng` (WPA/WEP cracking) only — `airodump-ng` (removed 2026-08-27) and `aireplay-ng` (removed 2026-08-27) are **no longer used anywhere** | Keep `aircrack-ng` as an **optional cracking backend** alongside John — the one permanent exception to the native-only policy. |
 | `vendor/n2-ng-v1-research` | Research notes only (WPA3, PMKID, WPS, evil-twin, password-cracking papers) | No code to port; use as design reference. Remove/update any docs that still say "n2-ng". |
 | `vendor/n2-ng-v1-src` | Legacy v1 Python source (`main.py`, `scanner.py`, `omni.py`, `capture.py`, `display.py`, `utils.py`) | Mine for reusable helpers (CSV parsing, capture-path helpers, security profiling), rewrite into `src/atwa/` modules, ignore duplicates. |
-| `vendor/reaver` | `wash` / `reaver` binaries for WPS recon and attack | Do not wrap. Port the WPS state machine + PIN exchange from C source into native Python (`src/atwa/attacks/wps_native.py`). Full cutover once ported, no legacy flag — matching the scanning/injection precedent. |
+| `vendor/reaver` | Historical reference only now — `reaver`'s WPS state machine/PIN exchange was ported into native Python (`src/atwa/attacks/wps.py`, pixie-dust/bruteforce/M2→M3 fix, developed 2026-08-27 onward) and `wash`'s recon role was closed out 2026-08-31 (`wps-recon` now uses `scan.py`/`secure.wps_profile()`). No remaining call sites spawn anything from this directory. | Kept vendored for reference/comparison only; not a build dependency for anything atwa currently runs. |
 
 ## Status: scanning is fully native (2026-08-27)
 
@@ -78,7 +80,7 @@ as `airodump-ng`, no legacy flag.
 |---|---|---|---|---|---|
 | `aircrack-ng` | `src/atwa/cli_commands/crack.py:23` | Crack `.cap` directly (`crack-cap`) | Return code + stdout | Keep as option | N/A — stays optional backend |
 | `aircrack-ng` | `src/atwa/crack/aircrack.py:67,80` | GUI cracking backend (`AirCracker`) | stdout parsed for key | Keep as option | N/A — stays optional backend |
-| `wash` | `src/atwa/cli_commands/scan.py` | WPS recon (`wps-recon`) | Prints AP table text | Medium | Next up (Phase 6e) |
+| ~~`wash`~~ | ~~`src/atwa/cli_commands/scan.py`~~ | ~~WPS recon (`wps-recon`)~~ | — | Done (2026-08-31) | Closed — `wps-recon` now native |
 
 ### System / third-party binaries
 
@@ -107,11 +109,12 @@ are listed for completeness; the Phase-6 mandate focuses on the vendored ones.
    none in source) with direct `iw`/`ip` sequences in `radio.py`. Already
    mostly native.
 
-4. **WPS (`wash` / `reaver`)** — hardest, and the only remaining wrapper
-   outside the cracking-backend exception. Port the minimal WPS state
-   machine from `vendor/reaver/src/wps/` and `exchange.c` into
-   `src/atwa/attacks/wps_native.py`. Full cutover once ported — no legacy
-   flag, matching the scanning/injection precedent.
+4. **WPS (`wash` / `reaver`)** — ✅ **done.** Attack logic (pixie-dust,
+   PIN bruteforce, M2→M3 exchange) was native from 2026-08-27 onward in
+   `src/atwa/attacks/wps.py`; the recon half (`wash`) was closed out
+   2026-08-31 by routing `wps-recon` through `scan.py`/
+   `secure.wps_profile()`'s existing native beacon parsing instead of
+   spawning the binary.
 
 5. **Cracking backend** — `aircrack-ng` remains an optional backend alongside
    John; no replacement needed. This is the one deliberate, permanent

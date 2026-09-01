@@ -1,12 +1,11 @@
 """ATWA-NG Airwave Teardown Wireless Auditing-Next Gen
 	System's Down.
 
-  - scan, injection-test: native scapy scanning and injection self-test
-    (scan.py, injection_test.py) — no vendored binary involved.
-  - wps-recon, crack-cap: the two remaining wrapper paths. crack-cap is a
-    permitted exception (cap/pcap-format cracking backend, alongside
-    John); wps-recon still shells out to the vendored `wash` pending its
-    own native port (see docs/vendor_inventory.md).
+  - scan, injection-test, wps-recon: native scapy scanning, injection
+    self-test, and WPS reconnaissance (scan.py, injection_test.py,
+    secure.wps_profile()) — no vendored binary involved.
+  - crack-cap: the one remaining wrapper path, a permitted exception
+    (cap/pcap-format cracking backend, alongside John).
   - deauth, pmkid, handshake, omni, smart, wep, wps-pixie, wps-oneshot,
     crack: native-Python attack implementations (attacks/, wep/, wps/,
     crack/), imported here with plain relative imports (`.`/`..`) —
