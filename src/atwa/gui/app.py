@@ -1441,6 +1441,7 @@ class App:
             f"Signal: {ap.signal if ap.signal is not None else '-'} dBm\n"
             f"RX quality: {ap.rx_quality}%\n"
             f"Clients seen: {len(ap.clients)}"
+            + (f"\nPMKID (passively sniffed): {ap.pmkid}" if ap.pmkid else "")
         )
         # _on_target_select refires on every scan-tick redraw (see docstring
         # above), not just on a real click. Blindly delete()+insert()ing the

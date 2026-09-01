@@ -8,16 +8,19 @@ import sys
 import time
 
 from ..injection_test import injection_test
-from ..scan import channels_for_band, scan
+from ..scan import channels_for_band, parse_channel_range, scan
 from . import EAPOLHUNTER_BIN, _python_for_scripts
 
 
 def _cmd_scan(args) -> int:
     """Native scapy channel-hopping scan (scan.py) — no external engine."""
-    result = scan(args.iface, duration=args.duration, channels=channels_for_band(args.band))
+    channels = parse_channel_range(args.channels) if args.channels else channels_for_band(args.band)
+    result = scan(args.iface, duration=args.duration, channels=channels, active_probe_interval=args.active_probe)
     for ap in sorted(result.aps.values(), key=lambda a: a.bssid):
         print(f"{ap.bssid}  ch={ap.channel}  {ap.security}  "
               f"pwr={ap.signal}  beacons={ap.beacon_count}  ssid={ap.ssid!r}")
+        if ap.pmkid:
+            print(f"  PMKID (passively sniffed): {ap.pmkid}")
         if args.clients:
             for client in sorted(ap.clients):
                 print(f"  client {client}  pwr={ap.client_signal.get(client)}")
@@ -46,7 +49,7 @@ def _cmd_wps_recon(args) -> int:
     scan.py/secure.wps_profile()'s native beacon parsing (2026-08-27
     "wash parity" pass); this command just surfaces it standalone
     instead of requiring a full GUI/`atwa scan` session to see it."""
-    channels = [args.channel] if args.channel else None
+    channels = parse_channel_range(args.channels) if args.channels else ([args.channel] if args.channel else None)
     result = scan(args.iface, duration=args.duration, channels=channels)
     wps_aps = sorted((ap for ap in result.aps.values() if ap.wps is not None), key=lambda a: a.bssid)
     if not wps_aps:

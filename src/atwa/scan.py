@@ -7,10 +7,11 @@ from dataclasses import dataclass, field
 
 from scapy.config import conf
 from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeResp, RadioTap
-from scapy.sendrecv import AsyncSniffer
+from scapy.sendrecv import AsyncSniffer, sendp
 
-from .frames import bssid_of, channel_of, ssid_of
-from .radio import ALL_CHANNELS, CHANNELS_5GHZ, CHANNELS_24GHZ, ChannelHopper
+from .attacks.pmkid import extract_pmkid, to_22000
+from .frames import bssid_of, channel_of, craft_probe_req, eapol_key_info, is_eapol, ssid_of
+from .radio import ALL_CHANNELS, CHANNELS_5GHZ, CHANNELS_24GHZ, ChannelHopper, random_locally_administered_mac
 from .secure import security_profile, wps_profile
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
@@ -29,6 +30,30 @@ def channels_for_band(band: str) -> list[int]:
     """Return the channel list for a band label, defaulting to ALL_CHANNELS
     for 'Both' or any unrecognized value (matches the old --band abg default)."""
     return list(BAND_CHANNELS.get(band, ALL_CHANNELS))
+
+
+def parse_channel_range(spec: str) -> list[int]:
+    """Parse a comma-separated channel spec with optional ranges, e.g.
+    "1,6,11" or "1,3-7,11" -- same syntax as airodump-ng's -c/--channel.
+    Raises ValueError on malformed input. Order is preserved as given,
+    duplicates are dropped."""
+    seen: dict[int, None] = {}
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_s, _, end_s = token.partition("-")
+            start, end = int(start_s), int(end_s)
+            if start > end:
+                raise ValueError(f"invalid channel range {token!r}: start > end")
+            for ch in range(start, end + 1):
+                seen[ch] = None
+        else:
+            seen[int(token)] = None
+    if not seen:
+        raise ValueError(f"no channels parsed from {spec!r}")
+    return list(seen)
 
 
 @dataclass
@@ -52,6 +77,7 @@ class AccessPoint:
     last_seen: float | None = None  # time.time() of most recent frame seen for this bssid
     manufacturer: str | None = None  # OUI vendor name resolved from the BSSID
     rx_quality: int = 0  # 0-100, fraction of the AP's own beacon sequence numbers we didn't miss
+    pmkid: str | None = None  # 22000-format line, opportunistically sniffed from ambient EAPOL M1 traffic
     clients: set[str] = field(default_factory=set)
     client_signal: dict[str, int] = field(default_factory=dict)  # best dBm seen per client MAC
     _last_seq: int | None = field(default=None, repr=False, compare=False)
@@ -160,10 +186,34 @@ def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
                 ap.clients.add(addr)
                 if dbm is not None and (addr not in ap.client_signal or dbm > ap.client_signal[addr]):
                     ap.client_signal[addr] = dbm
+        # Opportunistic passive PMKID capture: airodump-ng extracts a PMKID
+        # from ANY observed EAPOL Message 1, not just frames triggered by
+        # our own active association (that's attacks/pmkid.py's job). A
+        # client naturally reconnecting to this AP during a routine scan
+        # is a "free" capture we were previously just discarding.
+        if ap.pmkid is None and is_eapol(pkt):
+            info = eapol_key_info(pkt)
+            if info is not None and info[1] and not info[0]:  # M1: ack set, mic not set
+                found = extract_pmkid(bytes(pkt))
+                if found:
+                    client = dot11.addr1 if dot11.addr2 == bssid else dot11.addr2
+                    ap.pmkid = to_22000(found, bssid, client, ap.ssid)
 
 
-def scan(iface: str, duration: float = 10.0, channels: list[int] | None = None) -> ScanResult:
+def scan(
+    iface: str,
+    duration: float = 10.0,
+    channels: list[int] | None = None,
+    active_probe_interval: float | None = None,
+) -> ScanResult:
     """Passively scan iface for duration seconds, hopping channels.
+
+    active_probe_interval (optional): if set, broadcast a wildcard probe
+    request (empty SSID, random source MAC) roughly every N seconds --
+    ported from airodump-ng's --active-scan-sim (-x). Provokes faster AP
+    responses and can reveal hidden SSIDs sooner than waiting passively
+    for a client to probe first. Off by default since it's active
+    (transmits), unlike the rest of this function.
 
     Keeps ONE capture socket open for the whole scan instead of opening
     a fresh sniff() per channel hop. The old per-hop sniff() approach
@@ -195,8 +245,14 @@ def scan(iface: str, duration: float = 10.0, channels: list[int] | None = None) 
     sniffer.start()
     try:
         deadline = time.monotonic() + duration
+        probe_interval: float = active_probe_interval or 0.0
+        next_probe = time.monotonic() + probe_interval if probe_interval else None
         while time.monotonic() < deadline:
             hopper.hop()
+            if next_probe is not None and time.monotonic() >= next_probe:
+                probe = craft_probe_req(BROADCAST, random_locally_administered_mac())
+                sendp(probe, iface=iface, verbose=False)
+                next_probe = time.monotonic() + probe_interval
     finally:
         sniffer.stop()
     return result
