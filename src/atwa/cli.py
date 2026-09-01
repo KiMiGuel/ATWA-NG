@@ -21,6 +21,7 @@ import argparse
 
 from .cli_commands.attacks import (
     _cmd_deauth,
+    _cmd_downgrade_twin,
     _cmd_eviltwin,
     _cmd_handshake,
     _cmd_omni,
@@ -180,6 +181,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("channel", type=int)
     p.add_argument("--timeout", type=float, default=120.0)
     p.set_defaults(func=_cmd_eviltwin)
+
+    p = sub.add_parser("downgrade-twin", help="WPA3-transition rogue WPA2-only twin (secure.py downgrade_twin recommendation)")
+    p.add_argument("iface_ap")
+    p.add_argument("iface_mon")
+    p.add_argument("bssid")
+    p.add_argument("ssid")
+    p.add_argument("channel", type=int)
+    p.add_argument("outfile")
+    p.add_argument("--timeout", type=float, default=120.0)
+    p.set_defaults(func=_cmd_downgrade_twin)
 
     return parser
 
