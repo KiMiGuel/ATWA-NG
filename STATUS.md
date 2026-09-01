@@ -148,30 +148,47 @@ open:
 
 ## Roadmap (open items, priority order)
 
-- [ ] **Dual-Alfa / PINCER — verify + harden, NOT a from-scratch
-      build.** Correction from an earlier stale claim in this same
-      section: the native two-adapter attack logic (`attack_runner.py
-      pincer()`) already fully exists — monitor-mode setup on both
-      radios, channel-parking, a continuous EAPOL listener thread on
-      the scan radio while looping real deauth rounds on the attack
-      radio, PMF-aware, per-round client-targeting, proper teardown —
-      and is wired end-to-end into a real GUI button. Checked the
-      vendored v1 source directly: no pincer/dual-adapter code exists
-      there at all, so "reimplement from the old v1 prototype" was
-      never accurate. What's actually missing: zero automated test
-      coverage (no file exists for `attack_runner.py`; a DI-mocking
-      harness was explicitly deferred once already as disproportionate)
-      and it has never been live-tested with two real Alfa adapters
-      connected simultaneously.
+- [x] **PINCER test coverage** (2026-08-31) — `tests/test_attack_runner.py`
+      added (5 tests: PMF-required skip, AUTHORIZED-handshake early stop,
+      stop_event mid-loop, zero-frames-sent logging, both-radios-restored
+      teardown). `pincer()` itself was already real native code, not the
+      old v1 prototype the roadmap previously (wrongly) said it was.
+      **Still open:** live-tested with two real Alfa adapters connected
+      simultaneously — never done.
 - [ ] **dpkt vs. pypacker swap in scan.py** — the actual fix candidate
       for the CPU/fan complaint; see Performance section above for both
-      options and the TPACKET_V3/AF_XDP alternatives.
-- [ ] **5 queued WPA3/PMF-bypass research items** (from
+      options and the TPACKET_V3/AF_XDP alternatives. Not started.
+- **5 queued WPA3/PMF-bypass research items** (from
       `research-2026-08-30.md` / vault `pending-investigations.md`):
-      rogue-AP EAPOL corruption (higher confidence, PoC bytes exist),
-      CSA spoofing (exploratory, no PoC), `downgrade_twin` (confirmed
-      dead stub in `secure.py`), Dragonblood SAE side-channel (bigger,
-      novel build), OWE transition-mode downgrade.
+  - [x] Rogue-AP EAPOL corruption (2026-08-31) — malformed 4-way-handshake
+        Message 1/4 (CVE-2025-27558-class PMKID-tag-length underflow)
+        ported byte-for-byte from the published PoC into
+        `attacks/pmf_bypass.py`, tested. Standalone frame-construction
+        primitive; not yet wired into a live attack flow (needs a client
+        already associated to an AP we control to have any effect).
+  - [x] `downgrade_twin` (2026-08-31) — was a confirmed dead stub, now a
+        real `run_downgrade_twin()` in `attacks/eviltwin.py` + CLI
+        subcommand `downgrade-twin`: WPA2-only rogue twin of a
+        WPA3-transition target, deauths clients toward it, passively
+        captures whatever handshake attempt results (real password,
+        CHALLENGE-status, crackable) via the existing
+        `capture_handshake()`. Tested with mocks; not live-hardware
+        tested (same hostapd/ACHM kernel-freeze risk class as
+        `run_eviltwin()` already carries).
+  - [x] OWE misclassification bug fixed (2026-08-31, found while scoping
+        the OWE-downgrade item) — `security_profile()` never checked AKM
+        suite 18 at all, so every real OWE (Enhanced Open) beacon was
+        silently reported as PSK-crackable `"WPA2"`. Fixed + tested.
+  - [ ] OWE transition-mode downgrade (the actual attack: parse the OWE
+        Transition Mode vendor IE for the paired open SSID/BSSID, spoof
+        it) — **not built.** Only the misclassification bug above is
+        fixed; the IE-parsing + downgrade-attack piece is still open,
+        deliberately not rushed without a real OWE capture to verify
+        byte offsets against.
+  - [ ] CSA spoofing — exploratory, no published PoC bytes exist. Not
+        started.
+  - [ ] Dragonblood SAE side-channel — bigger, novel build (timing/cache
+        measurement, no existing scaffolding to reuse). Not started.
 - [x] Color-theme/logo integration — substantially complete as of
       2026-08-27 (see vault `decisions.md`). Re-open only if new
       brand-asset work is explicitly requested.
@@ -182,3 +199,19 @@ open:
 - [x] `wps-recon` CLI native port (2026-08-31) — done, no longer shells
       out to the vendored `wash` binary; uses `scan.py`/
       `secure.wps_profile()`'s existing native beacon parsing instead.
+- [x] `power_save off` on monitor-mode entry (2026-08-31) — done.
+- [x] Active probe-request injection during scan (2026-08-31) — done,
+      `scan()`'s new `active_probe_interval` param + `atwa scan
+      --active-probe`.
+- [x] Channel-range CLI syntax, `"1,3-7,11"` (2026-08-31) — done,
+      `scan.parse_channel_range()` + `--channels` on `scan`/`wps-recon`.
+- [x] Passive PMKID sniffing from ambient EAPOL M1 traffic (2026-08-31)
+      — done, `scan.py`'s `process_packet()` now opportunistically
+      captures a PMKID from any observed handshake attempt during a
+      normal scan, not just from active `attacks/pmkid.py` runs.
+- [ ] Self-healing monitor-mode/channel drift check (surfaced from the
+      complete `source_cherrypick.c` read, not originally on this list)
+      — not built; scoped as moderate-risk since recovering a dead
+      `AsyncSniffer` socket needs more than just re-entering monitor
+      mode (the GUI's own scan loop already has a simpler
+      restart-if-dead pattern for this).
