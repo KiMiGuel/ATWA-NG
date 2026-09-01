@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-%2300c8ff?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.2.0-%2300c8ff?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
   <img src="https://img.shields.io/badge/status-active--development-orange?style=flat-square" alt="Status">
@@ -72,6 +72,34 @@ Ningún radio pausa, salta de canal, ni comparte tiempo para hacer el trabajo de
 | **Desenmascarado de SSID oculto** | Automático, en cuanto una respuesta a un probe lo revele |
 
 Cada uno de estos es un ataque real, nativo — no una apuesta con `subprocess.run()`.
+
+---
+
+## Crackeo, cómo hacerlo
+
+Dos motores, elige el que quieras — **Miguel the Ripper** (John the Ripper jumbo por debajo) es el que se usa por defecto; **aircrack-ng** está integrado como alternativa.
+
+**GUI — la forma fácil.** Menú Captures → Crack Handshakes. Apúntalo a una *carpeta*, no a un solo archivo: fusiona cada `.cap`/`.pcap`/`.pcapng` y `.22000` que encuentre ahí, convierte formatos según haga falta, y crackea el resultado combinado. Elige un motor (botón de radio) y un wordlist, presiona Run. Una carpeta llamada `<SSID>_<BSSID>` (donde cada ataque escribe por defecto, dentro de `~/atwa-hs`) auto-completa el campo BSSID para aircrack-ng.
+
+**CLI — tres comandos, según lo que tengas:**
+
+```bash
+# Ya tienes una línea de hash 22000, o un solo .cap/.pcap/.pcapng — motor Miguel the Ripper.
+# .cap/.pcap/.pcapng se convierte automáticamente a 22000 primero (vía hcxpcapngtool), sin pasos extra.
+atwa crack captura.cap rockyou.txt
+atwa crack handshake.22000 rockyou.txt
+
+# El mismo archivo de captura, pero con el motor aircrack-ng (necesita la captura real, no un hash 22000).
+atwa crack-cap captura.cap rockyou.txt --bssid AA:BB:CC:DD:EE:FF
+
+# Verifica que una captura realmente tenga un handshake crackeable antes
+# de gastar tiempo de wordlist en ella (revisa el emparejamiento de mensajes, no si la contraseña es válida).
+atwa verify-handshake captura.cap
+```
+
+**Una carpeta entera desde la CLI** — no hay un subcomando dedicado para esto (el diálogo Crack Handshakes de la GUI es el único lugar donde vive el flujo de fusionar-toda-una-carpeta hoy); usa `crack.convert.merge_captures()`/`merge_22000_files()` directamente desde un script si lo necesitas fuera de la GUI. Nota: `atwa smart`/`atwa omni` ya crackean automáticamente el material capturado de *su propio* objetivo como etapa final — eso es de un solo objetivo, no la fusión de toda la carpeta.
+
+**Dónde viven las capturas:** cada ataque (PMKID, handshake, PINCER, downgrade-twin, evil-twin) escribe en `~/atwa-hs/<SSID>_<BSSID>/`, siempre — ese es el único lugar al que apuntar un crackeo manual sin importar qué ataque produjo la captura.
 
 ---
 
