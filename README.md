@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-%2300c8ff?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.2.0-%2300c8ff?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
   <img src="https://img.shields.io/badge/status-Systems--Down-black?style=flat-square" alt="Status">
@@ -68,10 +68,38 @@ Neither radio ever pauses, hops, or time-shares to do the other one's job. That'
 | **WEP** | Fake-auth + ARP replay + native PTW key recovery, plus Caffe Latte for client-only attacks |
 | **Evil Twin** | Real rogue AP + captive portal, auto-deauths real clients toward it |
 | **Online Password Guess** | Live, real per-password 4-way handshake attempts straight against the AP |
-| **Cracking** | Miguel and aircrack-ng, both wired in — one-click crack, or point it at a whole folder of captures and let it merge, convert, and crack the lot |
+| **Cracking** | Miguel the Ripper and aircrack-ng, both wired in — one-click crack, or point it at a whole folder of captures and let it merge, convert, and crack the lot |
 | **Hidden SSID de-cloaking** | Automatic, as soon as a probe response reveals it |
 
 Every one of these is a real, native attack — not a `subprocess.run()` gamble.
+
+---
+
+## Cracking, how-to
+
+Two backends, pick either — **Miguel the Ripper** (John the Ripper jumbo under the hood) is the default; **aircrack-ng** is wired in as an alternate.
+
+**GUI — the easy way.** Captures menu → Crack Handshakes. Point it at a *folder*, not a single file: it merges every `.cap`/`.pcap`/`.pcapng` and `.22000` it finds in there, converts formats as needed, and cracks the combined result. Pick a backend (radio button) and a wordlist, hit Run. A folder named `<SSID>_<BSSID>` (what every attack writes to under `~/atwa-hs` by default) auto-fills the BSSID field for aircrack-ng.
+
+**CLI — three commands, pick the shape that matches what you have:**
+
+```bash
+# Already have a 22000 hash line, or a single .cap/.pcap/.pcapng — Miguel the Ripper backend.
+# .cap/.pcap/.pcapng gets auto-converted to 22000 first (via hcxpcapngtool), no extra step needed.
+atwa crack capture.cap rockyou.txt
+atwa crack handshake.22000 rockyou.txt
+
+# Same capture file, aircrack-ng backend instead (needs the real capture, not a 22000 hash).
+atwa crack-cap capture.cap rockyou.txt --bssid AA:BB:CC:DD:EE:FF
+
+# Sanity-check a capture actually has a real, crackable handshake before
+# spending wordlist time on it (checks message pairing, not password validity).
+atwa verify-handshake capture.cap
+```
+
+**A whole folder from the CLI** — no dedicated subcommand for this (the GUI's Crack Handshakes dialog is the only place the merge-a-whole-folder flow lives today); drive `crack.convert.merge_captures()`/`merge_22000_files()` directly from a script if you need it outside the GUI. Note `atwa smart`/`atwa omni` already crack their *own* target's captured material automatically as their final stage — that's single-target, not the folder-wide merge.
+
+**Where captures live:** every attack (PMKID, handshake, PINCER, downgrade-twin, evil-twin) writes to `~/atwa-hs/<SSID>_<BSSID>/`, always — that's the one place to point a manual crack run at regardless of which attack produced the capture.
 
 ---
 
