@@ -4,7 +4,8 @@ from __future__ import annotations
 from scapy.layers.dot11 import Dot11, Dot11Beacon, RadioTap
 from scapy.packet import Packet, Raw
 
-from atwa.secure import wps_profile
+from atwa.frames import craft_beacon, craft_rsn_ie
+from atwa.secure import security_profile, wps_profile
 from atwa.wps.tlv import (
     ATTR_AP_SETUP_LOCKED,
     ATTR_DEVICE_NAME,
@@ -72,3 +73,51 @@ def test_wps_profile_ignores_missing_metadata():
     assert profile["model_name"] is None
     assert profile["model_number"] is None
     assert profile["device_name"] is None
+
+
+# --- security_profile(): had zero coverage before this pass -------------------
+
+
+def test_security_profile_open():
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OpenNet", privacy=False)
+    assert security_profile(pkt) == {"security": "open", "pmf": "none"}
+
+
+def test_security_profile_wpa2_psk():
+    rsn = craft_rsn_ie(akms=[2])
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="Home", privacy=True, extra_ies=[rsn])
+    profile = security_profile(pkt)
+    assert profile["security"] == "WPA2"
+
+
+def test_security_profile_wpa3_sae():
+    rsn = craft_rsn_ie(akms=[8])
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="Home", privacy=True, extra_ies=[rsn])
+    profile = security_profile(pkt)
+    assert profile["security"] == "WPA3"
+
+
+def test_security_profile_wpa3_transition():
+    rsn = craft_rsn_ie(akms=[2, 8])
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="Home", privacy=True, extra_ies=[rsn])
+    profile = security_profile(pkt)
+    assert profile["security"] == "transition"
+
+
+def test_security_profile_owe_is_not_misclassified_as_wpa2():
+    """Regression test: AKM 18 (OWE / Enhanced Open) was never checked at
+    all, so every OWE beacon silently fell through to "WPA2" -- a real
+    network with no PSK at all being reported as PSK-crackable."""
+    rsn = craft_rsn_ie(akms=[18])
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OWENet", privacy=True, extra_ies=[rsn])
+    profile = security_profile(pkt)
+    assert profile["security"] == "OWE"
+    assert profile["security"] != "WPA2"
+
+
+def test_security_profile_owe_with_pmf_required():
+    rsn = craft_rsn_ie(akms=[18], mfpr=True)
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OWENet", privacy=True, extra_ies=[rsn])
+    profile = security_profile(pkt)
+    assert profile["security"] == "OWE"
+    assert profile["pmf"] == "required"
