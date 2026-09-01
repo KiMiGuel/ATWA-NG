@@ -5,11 +5,12 @@ Conflating the two made the GUI's signal graph plateau after the first
 strong reading instead of tracking live RSSI."""
 from __future__ import annotations
 
+import pytest
 from scapy.layers.dot11 import Dot11, RadioTap
 
 from atwa.frames import craft_beacon, craft_probe_resp
 from atwa.radio import ALL_CHANNELS, CHANNELS_24GHZ, CHANNELS_5GHZ
-from atwa.scan import ScanResult, channels_for_band, process_packet
+from atwa.scan import ScanResult, channels_for_band, parse_channel_range, process_packet
 
 
 def _data_frame(bssid: str, addr1: str, addr2: str):
@@ -158,3 +159,78 @@ def test_own_mac_none_keeps_old_behavior():
     )
 
     assert result.aps["aa:bb:cc:dd:ee:ff"].clients == {"11:22:33:44:55:66"}
+
+
+def _eapol_m1_with_pmkid(bssid: str, client: str, pmkid: bytes):
+    """A data frame carrying an EAPOL Message 1 with a PMKID KDE, matching
+    what attacks/pmkid.py's extract_pmkid() scans for: `dd <len> 00 0f ac
+    04 <pmkid16>`. eapol_key_info() reads mic/ack straight from raw bytes,
+    not scapy's named EAPOL_KEY fields, so a hand-built Raw payload is
+    the simplest faithful test frame."""
+    from scapy.layers.eap import EAPOL
+    from scapy.packet import Raw
+
+    key_info = (0x0080).to_bytes(2, "big")  # ack set, mic not set = M1
+    kde = b"\xdd\x14\x00\x0f\xac\x04" + pmkid
+    key_frame = bytes([2]) + key_info + b"\x00" * 92 + kde
+    dot11 = _data_frame(bssid, addr1=client, addr2=bssid)
+    return dot11 / EAPOL(version=1, type=3) / Raw(load=key_frame)
+
+
+def test_process_packet_passively_captures_pmkid_from_ambient_m1():
+    result = ScanResult()
+    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+
+    pmkid_bytes = bytes(range(16))
+    process_packet(_eapol_m1_with_pmkid("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", pmkid_bytes), result)
+
+    ap = result.aps["aa:bb:cc:dd:ee:ff"]
+    assert ap.pmkid is not None
+    assert pmkid_bytes.hex() in ap.pmkid
+    assert "aabbccddeeff" in ap.pmkid
+    assert "112233445566" in ap.pmkid
+
+
+def test_process_packet_ignores_non_m1_eapol_for_pmkid():
+    """M2/M3/M4 have mic_set -- extract_pmkid should never even run for them
+    (M1 is the only handshake message carrying the PMKID KDE in practice)."""
+    from scapy.layers.eap import EAPOL
+    from scapy.packet import Raw
+
+    result = ScanResult()
+    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+
+    key_info = (0x0180).to_bytes(2, "big")  # ack set AND mic set = M3, not M1
+    kde = b"\xdd\x14\x00\x0f\xac\x04" + bytes(range(16))
+    key_frame = bytes([2]) + key_info + b"\x00" * 92 + kde
+    frame = _data_frame("aa:bb:cc:dd:ee:ff", addr1="11:22:33:44:55:66", addr2="aa:bb:cc:dd:ee:ff")
+    process_packet(frame / EAPOL(version=1, type=3) / Raw(load=key_frame), result)
+
+    assert result.aps["aa:bb:cc:dd:ee:ff"].pmkid is None
+
+
+def test_parse_channel_range_single_values():
+    assert parse_channel_range("1,6,11") == [1, 6, 11]
+
+
+def test_parse_channel_range_with_ranges():
+    assert parse_channel_range("1,3-7,11") == [1, 3, 4, 5, 6, 7, 11]
+
+
+def test_parse_channel_range_drops_duplicates_preserves_order():
+    assert parse_channel_range("6,1,6,11,1") == [6, 1, 11]
+
+
+def test_parse_channel_range_rejects_backwards_range():
+    with pytest.raises(ValueError):
+        parse_channel_range("7-3")
+
+
+def test_parse_channel_range_rejects_empty():
+    with pytest.raises(ValueError):
+        parse_channel_range("")
+
+
+def test_parse_channel_range_rejects_garbage():
+    with pytest.raises(ValueError):
+        parse_channel_range("not-a-channel")

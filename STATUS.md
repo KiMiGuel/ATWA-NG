@@ -110,8 +110,10 @@ open:
   plan exists anywhere in this project's history to rewrite any
   existing module in C** — this would be new, narrowly-scoped code, not
   a rewrite, and is a low-priority "if all else fails" option.
-- **`iw`/nl80211-netlink for radio.py (PyRIC/pyroute2)** — checked again
-  2026-08-31, still not recommended. **PyRIC was actually tried in this
+- **`iw`/nl80211-netlink for radio.py (PyRIC/pyroute2)** — parked as an
+  optional side-quest, not active roadmap work (2026-08-31 user
+  decision: skip for now). Checked again 2026-08-31, still not
+  recommended as-is. **PyRIC was actually tried in this
   exact project on 2026-08-29** (migrated `radio.py`'s channel/mode/MAC
   ops off `iw`/`ip` subprocess calls) and broke real 5GHz scanning on
   the actual hardware in use (mt76x0u/AWUS036ACHM): 60-70 networks found

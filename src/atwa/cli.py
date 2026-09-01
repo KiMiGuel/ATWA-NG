@@ -53,6 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("iface")
     p.add_argument("--duration", type=float, default=10.0)
     p.add_argument("--band", choices=("2.4GHz", "5GHz", "Both"), default="Both")
+    p.add_argument("--channels", help="explicit channel spec, e.g. '1,6,11' or '1,3-7,11' -- overrides --band")
+    p.add_argument("--active-probe", type=float, default=None, metavar="SECONDS",
+                    help="broadcast a wildcard probe request roughly every N seconds (reveals hidden SSIDs faster)")
     p.add_argument("--clients", action="store_true", help="also print associated clients")
     p.set_defaults(func=_cmd_scan)
 
@@ -65,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("wps-recon", help="WPS-enabled AP reconnaissance")
     p.add_argument("iface")
     p.add_argument("--channel", type=int)
+    p.add_argument("--channels", help="explicit channel spec, e.g. '1,6,11' or '1,3-7,11' -- overrides --channel")
     p.add_argument("--duration", type=int, default=15)
     p.set_defaults(func=_cmd_wps_recon)
 
