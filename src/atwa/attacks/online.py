@@ -88,14 +88,18 @@ def _wait_for_dot11(iface: str, bssid: str, layer, timeout: float, send_fn=None)
         if pkt.haslayer(layer):
             found.append(pkt)
 
-    sniffer = AsyncSniffer(iface=iface, timeout=timeout, prn=handler, stop_filter=lambda p: bool(found), store=False)
+    sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
     sniffer.start()
     try:
         if send_fn is not None:
             time.sleep(0.05)
             send_fn()
     finally:
-        sniffer.join()
+        sniffer.join(timeout=timeout)
+        try:
+            sniffer.stop()
+        except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
+            pass
     return found[0] if found else None
 
 
@@ -138,9 +142,13 @@ def _wait_for_m1(iface: str, bssid: str, timeout: float):
         if key.key_ack and not key.has_key_mic:
             found.append(pkt)
 
-    sniffer = AsyncSniffer(iface=iface, timeout=timeout, prn=handler, stop_filter=lambda p: bool(found), store=False)
+    sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
     sniffer.start()
-    sniffer.join()
+    sniffer.join(timeout=timeout)
+    try:
+        sniffer.stop()
+    except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
+        pass
     return found[0] if found else None
 
 
@@ -161,13 +169,17 @@ def _wait_for_m3_or_reject(iface: str, bssid: str, timeout: float, send_fn):
         if key is not None and key.key_ack and key.has_key_mic:
             found.append(("m3", pkt))
 
-    sniffer = AsyncSniffer(iface=iface, timeout=timeout, prn=handler, stop_filter=lambda p: bool(found), store=False)
+    sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
     sniffer.start()
     try:
         time.sleep(0.05)
         send_fn()
     finally:
-        sniffer.join()
+        sniffer.join(timeout=timeout)
+        try:
+            sniffer.stop()
+        except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
+            pass
     if not found:
         return None, None
     return found[0]
