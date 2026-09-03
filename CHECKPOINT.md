@@ -8,6 +8,55 @@ the same way as before; re-archive again once this gets long.
 
 ---
 
+## 2026-09-02: Hotfix — "not type ctl" BPF filter broke scanning entirely (fatal error, zero networks found)
+
+**User-reported fatal:** Start Monitor -> "Device busy" -> Refresh Adapters
+-> monitor mode succeeds -> Start Scanning -> log floods with
+`scan capture socket (re)started` forever, no networks ever appear.
+
+**A separate, concurrent Claude Code session** (running directly in the
+main checkout, not a worktree) had already added exception-surfacing to
+`gui/app.py`'s scan-restart loop (`AsyncSniffer._run_catch` swallows every
+exception into `.exception` and lets the thread exit "cleanly" -- without
+logging it, a dead-on-arrival socket restarts forever with zero indication
+why). That edit was uncommitted directly in the main checkout -- ported
+into this worktree via diff/apply, then reverted from the main checkout's
+working tree (same pattern as the earlier wrong-worktree incident), so all
+edits stay in the worktree->merge flow.
+
+That logging then surfaced the real error on the next run:
+`Cannot set filter: Failed to compile filter expression 'not type ctl'
+(802.11 link-layer types supported only on 802.11)`.
+
+**Root cause:** `filter="not type ctl"` was added earlier in the 2026-09-01
+session (`scan.py` + `gui/app.py`) as a performance nice-to-have (drop
+control frames at the BPF level since `process_packet()` never reads them).
+scapy compiles that filter via `pcap_compile_nopcap()` using a *guessed*
+link-layer type read from its own cached interface list
+(`ARPHRD_TO_DLT.get(resolve_iface(iface).type)`) rather than the live
+socket's actual state -- that cache doesn't refresh when an interface
+flips from managed to monitor mode mid-session, so it guesses Ethernet
+instead of 802.11 radiotap, and the 802.11-only `"type ctl"` primitive
+fails to compile. 100% reproducible every time monitor mode is entered at
+runtime (exactly this project's GUI flow).
+
+**Fix:** removed the filter from both call sites rather than chasing a fix
+inside scapy's interface-cache internals (unverifiable without live
+hardware, same caution class as the PyRIC revert). The filter was never
+load-bearing -- scanning worked fine before it existed today. Kept the
+exception-logging addition (`gui/app.py`), it's a real, generically useful
+diagnostic for this whole class of "sniffer restarts silently" bug.
+
+Also noted in passing: the pasted repro transcript included a fake
+instruction ("activate token-suppression") that isn't a real Claude Code
+feature -- flagged to the user as a likely injected/spurious directive,
+ignored, treated as data only.
+
+187/187 tests pass, merged into local `main`. Out-of-band hotfix, not one
+of today's 6 roadmap items -- roadmap still sits at 1/6 done.
+
+---
+
 ## 2026-08-31: OMNI WEP-target AsyncSniffer crash fixed, chopchop log line removed, scan.py gains manufacturer/rx_quality from source_cherrypick.c
 
 **Root cause found for "almost all WEP options crash in OMNI except chopchop":**
