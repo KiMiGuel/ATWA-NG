@@ -8,6 +8,73 @@ the same way as before; re-archive again once this gets long.
 
 ---
 
+## 2026-09-02: First live-hardware test pass — authorized, user-away, AI-driven
+
+**Scope, as clarified live by the user:** entire ATWA-NG, all attacks
+in scope, target restricted to `Indepentester` (22:87:ec:67:42:b1,
+huawei_ONT, ch1, WPA2, own-branded self-test AP) -- every other AP the
+scan picked up (INFINITUM*, NETGEAR79, ARRIS-8302, TP-Link, Totalplay,
+etc.) is a real neighbor network and stayed untouched throughout,
+regardless of scope authorization, since the user can't authorize
+testing against networks they don't own. Driven entirely via CLI / direct
+Python calls (no mouse/screen-control tool exists in this environment) --
+`wlan1` (mt76x0u) as listener, `wlan0` (RTL8814AU) as attacker, matching
+the project's established PINCER pairing.
+
+**Real hardware, not hwsim** -- both real hardware radios in monitor mode
+transmitting real 802.11 frames at the target AP for the whole session.
+
+**Verified working, live, for the first time:**
+- scan (the same-day BPF-filter hotfix) -- 83 APs found, manufacturer/
+  rx_quality/pmkid fields all populated without error
+- wps-recon -- passive WPS IE read, correctly showed target wps=enabled
+- pmkid (clientless) -- ran clean, correctly reported no PMKID (target
+  didn't respond with one -- legitimate negative, not a bug)
+- smart (pmkid -> deauth+handshake -> crack) -- captured a real
+  AUTHORIZED handshake from a live client (d6:ce:5e:36:f4:cb), John ran
+  against it and correctly failed against a wordlist that didn't contain
+  the real password
+- wps-pixie -- correctly detected + reported AP_SETUP_LOCKED, no crash
+- eviltwin -- hostapd/dnsmasq/NAT/captive portal all came up and tore
+  down cleanly (confirmed no lingering processes or NAT rules after),
+  deauth broadcast correctly, clean timeout with no password submitted
+- **PINCER** -- flagship dual-radio feature, first-ever live-hardware
+  validation (previously mock-tested only, [[project_atwa_ng_overview]]):
+  called attack_runner.AttackRunner.pincer() directly with both real
+  radios, captured an AUTHORIZED handshake in round 2/12, both radios
+  correctly restored to managed mode afterward
+- GUI -- launches with no startup crash/import error, clean process
+  teardown (smoke test only -- no mouse control available to click
+  through it)
+
+**Findings:**
+1. [cosmetic] `atwa smart` prints "OMNI report for <bssid>" as its
+   summary header -- smart.py reuses omni.py's report formatter
+   (omni.py:71) without parameterizing the label. Functionally correct,
+   just a mislabeled string.
+2. [policy/doc gap] `atwa verify-handshake` shells out to an undisclosed
+   vendored script: `cli_commands/__init__.py:38`, `EAPOLDUMP_BIN =
+   vendor/eapol_dump/eapol_dump.sh` (third-party, "(c) 2016 __franky").
+   Not in `docs/vendor_inventory.md`, doesn't fall under either of the
+   two documented exceptions (John/aircrack-ng, hcxpcapngtool/
+   wpapcap2john). Works correctly; needs a decision -- document as an
+   accepted exception, or replace with a native EAPOL dump using the
+   project's own eapol_key_info()/is_eapol() parsing (~20 lines,
+   primitives already exist in scan.py).
+
+**Not covered this pass** (time-boxed, not exhaustive): downgrade-twin
+(needs a real WPA3-transition AP, none in range), standalone `deauth`/
+`injection-test`/`eapol-hunt`/`crack-cap`/`wep`/`wps-oneshot`, online
+password guessing. Flagging explicitly rather than implying full
+coverage.
+
+Machine left clean: both interfaces back to managed mode, no stray
+hostapd/dnsmasq/wpa_supplicant/john processes, NAT table empty. Full
+live log at `atwa-live-test-2026-09-02.log` (repo root, not committed --
+scratch artifact, mirrors this entry).
+
+---
+
 ## 2026-09-02: Hotfix — "not type ctl" BPF filter broke scanning entirely (fatal error, zero networks found)
 
 **User-reported fatal:** Start Monitor -> "Device busy" -> Refresh Adapters
