@@ -1207,7 +1207,7 @@ class App:
                 # Same conservative BPF filter as scan.scan() -- drops only
                 # control frames (ACK/RTS/CTS/block-ack), never management/
                 # data, since on_packet()/process_packet() reads both.
-                s = AsyncSniffer(iface=self.mon_iface, filter="not type ctl", prn=on_packet, store=False)
+                s = AsyncSniffer(iface=self.mon_iface, prn=on_packet, store=False)
                 s.start()
                 return s
 
@@ -1236,6 +1236,15 @@ class App:
                         # "[Errno 100] Network is down" seen on some drivers
                         # during a fast band switch) -- restart it rather
                         # than silently scanning with no capture at all.
+                        # AsyncSniffer._run_catch swallows every exception
+                        # from inside the sniffing thread into .exception and
+                        # lets the thread exit "cleanly" -- without reading
+                        # it here, a dead-on-arrival socket (bad iface state,
+                        # permission error, BPF filter rejected because the
+                        # iface isn't actually in monitor mode, ...) restarts
+                        # forever with zero indication of why.
+                        if sniffer is not None and sniffer.exception is not None:
+                            self._log(f"scan capture socket died: {sniffer.exception}")
                         try:
                             sniffer = start_sniffer()
                             self._log("scan capture socket (re)started")
