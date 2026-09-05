@@ -33,11 +33,11 @@ works correctly, low-risk, one-off diagnostic use only.
 
 | Vendor directory | What ATWA-NG uses it for | Long-term plan |
 |---|---|---|
-| `vendor/aircrack-ng` | `aircrack-ng` (WPA/WEP cracking) only — `airodump-ng` (removed 2026-08-27) and `aireplay-ng` (removed 2026-08-27) are **no longer used anywhere** | Keep `aircrack-ng` as an **optional cracking backend** alongside John — the one permanent exception to the native-only policy. |
+| `vendor/aircrack-ng` | `aircrack-ng` (WPA/WEP cracking) only — `airodump-ng` (removed 2026-08-27) and `aireplay-ng` (removed 2026-08-27) are **no longer used anywhere** | Keep `aircrack-ng` as an **optional cracking backend** alongside John — the one permanent exception to the native-only policy. `patches/old/` (87 files, pre-2.6.35 kernel driver patches, unreferenced by the build) removed 2026-09-05. |
 | `vendor/eapol_dump` | `eapol_dump.sh` — per-frame EAPOL nonce/MIC dump for `atwa verify-handshake` | Accepted exception (2026-09-04) — diagnostic/inspection tool, not attack surface. Leave as-is. |
 | `vendor/n2-ng-v1-research` | Research notes only (WPA3, PMKID, WPS, evil-twin, password-cracking papers) | No code to port; use as design reference. Remove/update any docs that still say "n2-ng". |
 | `vendor/n2-ng-v1-src` | Legacy v1 Python source (`main.py`, `scanner.py`, `omni.py`, `capture.py`, `display.py`, `utils.py`) | Mine for reusable helpers (CSV parsing, capture-path helpers, security profiling), rewrite into `src/atwa/` modules, ignore duplicates. |
-| `vendor/reaver` | Historical reference only now — `reaver`'s WPS state machine/PIN exchange was ported into native Python (`src/atwa/attacks/wps.py`, pixie-dust/bruteforce/M2→M3 fix, developed 2026-08-27 onward) and `wash`'s recon role was closed out 2026-08-31 (`wps-recon` now uses `scan.py`/`secure.wps_profile()`). No remaining call sites spawn anything from this directory. | Kept vendored for reference/comparison only; not a build dependency for anything atwa currently runs. |
+| ~~`vendor/reaver`~~ | Historical reference only — `reaver`'s WPS state machine/PIN exchange was ported into native Python (`src/atwa/attacks/wps.py`, pixie-dust/bruteforce/M2→M3 fix, developed 2026-08-27 onward) and `wash`'s recon role was closed out 2026-08-31 (`wps-recon` now uses `scan.py`/`secure.wps_profile()`). No remaining call sites spawn anything from this directory. | Removed 2026-09-05 — was not a build dependency for anything atwa runs; ported logic lives in `src/atwa/attacks/wps.py`. |
 
 ## Status: scanning is fully native (2026-08-27)
 
