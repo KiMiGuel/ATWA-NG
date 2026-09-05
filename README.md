@@ -75,6 +75,24 @@ Every one of these is a real, native attack — not a `subprocess.run()` gamble.
 
 ---
 
+## Using the GUI
+
+<p align="center">
+  <img src="docs/brand/gui-screenshot.png" alt="ATWA-NG GUI — adapter selection, scan list, target panel, attacks and log" width="720">
+</p>
+
+Launch with `atwa gui` (needs root). Here's the flow, start to finish:
+
+- **Adapter** dropdown — pick your WiFi card, then **Start Monitor** puts it into monitor mode. A second adapter in **AP iface** unlocks PINCER or Evil Twin's rogue-AP side.
+- **Start Scanning** — channel-hops and fills the **Scanned Access Points** list live: BSSID, SSID, channel, security, signal.
+- **Click a target row** — locks the adapter to that AP's channel, starts the signal graph, and starts a real capture against just that AP (populates the **Clients** list too).
+- **Attack** menu / button stack — Deauth, PMKID, Handshake Capture, Smart/OMNI, WEP, WPS variants, Evil Twin. **Stop Attack** ends whatever's running.
+- **Captures** tab — Inspect, Convert to 22000, Fix (repair a malformed capture), Merge, Crack Selected, or the folder-wide **Crack Handshakes...** dialog.
+
+Full CLI reference (16 subcommands) and a dependency checklist live in [USAGE.md](./USAGE.md).
+
+---
+
 ## Cracking, how-to
 
 Two backends, pick either — **Miguel the Ripper** is the default; **aircrack-ng** is wired in as an alternate.
