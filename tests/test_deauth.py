@@ -31,6 +31,7 @@ class _FakeSocket:
 
 def test_deauth_returns_zero_when_iface_not_in_monitor_mode(monkeypatch):
     monkeypatch.setattr(deauth_module, "get_mode", lambda iface: "managed")
+    monkeypatch.setattr(deauth_module, "ensure_monitor_mode", lambda iface: None)
     sockets = []
     monkeypatch.setattr(deauth_module.conf, "L2socket", lambda **kw: sockets.append(_FakeSocket()) or sockets[-1])
 
@@ -90,11 +91,38 @@ def test_deauth_logs_every_frame_via_progress_fn(monkeypatch):
 
 def test_deauth_logs_warning_when_not_monitor_mode(monkeypatch):
     monkeypatch.setattr(deauth_module, "get_mode", lambda iface: "managed")
+    monkeypatch.setattr(deauth_module, "ensure_monitor_mode", lambda iface: None)
     messages = []
 
     deauth_module.deauth("wlan0", "aa:bb:cc:dd:ee:ff", progress_fn=messages.append)
 
     assert any("WARNING" in m and "managed" in m for m in messages)
+
+
+def test_deauth_self_heals_monitor_mode_drift(monkeypatch):
+    """If the interface has drifted out of monitor mode (e.g. NetworkManager
+    reasserting control mid-session), deauth() should heal it and proceed
+    instead of just bailing with a warning like it used to."""
+    mode_calls = []
+
+    def fake_get_mode(iface):
+        mode_calls.append(iface)
+        return "managed" if len(mode_calls) == 1 else "monitor"
+
+    healed = []
+    monkeypatch.setattr(deauth_module, "get_mode", fake_get_mode)
+    monkeypatch.setattr(deauth_module, "ensure_monitor_mode", lambda iface: healed.append(iface))
+    sock = _FakeSocket()
+    monkeypatch.setattr(deauth_module.conf, "L2socket", lambda **kw: sock)
+    monkeypatch.setattr(deauth_module, "time", type("T", (), {"sleep": staticmethod(lambda s: None)}))
+    messages = []
+
+    result = deauth_module.deauth("wlan0", "aa:bb:cc:dd:ee:ff", count=4, progress_fn=messages.append)
+
+    assert result == 4
+    assert healed == ["wlan0"]
+    assert any("restored" in m for m in messages)
+    assert not any("WARNING" in m for m in messages)
 
 
 def test_deauth_sets_channel_when_given(monkeypatch):

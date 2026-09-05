@@ -7,7 +7,7 @@ import time
 from scapy.config import conf
 
 from ..frames import BROADCAST, craft_deauth
-from ..radio import ensure_channel, get_mode
+from ..radio import ensure_channel, ensure_monitor_mode, get_mode
 
 
 def deauth(
@@ -65,10 +65,23 @@ def deauth(
     that want throttling.
     """
     log = progress_fn or (lambda msg: None)
+
+    # Self-heal a drifted interface (NetworkManager reasserting control, a
+    # driver reset, ...) instead of just bailing -- this is the exact
+    # class of previously-silent failure PINCER's per-round deauth() calls
+    # hit on a long-running attack: something knocks the radio back to
+    # managed mid-session and every round after that silently sends 0
+    # frames with no recovery.
+    mode = get_mode(iface)
+    if mode != "monitor":
+        ensure_monitor_mode(iface)
+        mode = get_mode(iface)
+        if mode == "monitor":
+            log(f"{iface} had dropped out of monitor mode -- restored")
+
     if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
 
-    mode = get_mode(iface)
     if mode != "monitor":
         log(f"WARNING: {iface} is in '{mode}' mode, not monitor -- deauth frames cannot transmit")
         return 0

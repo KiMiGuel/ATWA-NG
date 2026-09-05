@@ -1178,7 +1178,7 @@ class App:
             from scapy.sendrecv import AsyncSniffer
 
             from ..frames import bssid_of
-            from ..radio import ALL_CHANNELS, ChannelHopper
+            from ..radio import ALL_CHANNELS, ChannelHopper, check_and_heal
             from ..scan import ScanResult, process_packet
 
             # One persistent hopper for the whole scanning session, not a
@@ -1229,8 +1229,34 @@ class App:
                 self._log(f"scan capture failed to start, retrying: {exc}")
                 sniffer = None
 
+            # Periodic self-healing check (2026-09-04, roadmap item):
+            # NetworkManager reasserting control, a driver reset, or
+            # anything else knocking mon_iface back to managed mid-session
+            # doesn't always kill the sniffer thread -- a raw AF_PACKET
+            # socket can sit there "alive" on a managed-mode interface
+            # receiving nothing useful, silently, with no exception and no
+            # crash to trigger the dead-sniffer restart below. Checked on a
+            # timer rather than every hop to avoid an `iw` subprocess call
+            # every 0.3s dwell.
+            last_health_check = 0.0
+            HEALTH_CHECK_INTERVAL = 10.0
+
             try:
                 while self._scanning.is_set():
+                    now = time.monotonic()
+                    if now - last_health_check >= HEALTH_CHECK_INTERVAL:
+                        last_health_check = now
+                        healed = check_and_heal(self.mon_iface)
+                        for action in healed:
+                            self._log(action)
+                        if healed and sniffer is not None:
+                            # Healing cycles the interface down/up -- the
+                            # existing capture socket is no longer valid.
+                            try:
+                                sniffer.stop()
+                            except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
+                                pass
+                            sniffer = None
                     if sniffer is None or not sniffer.thread or not sniffer.thread.is_alive():
                         # The socket died underneath us (e.g. the transient
                         # "[Errno 100] Network is down" seen on some drivers
@@ -1245,6 +1271,8 @@ class App:
                         # forever with zero indication of why.
                         if sniffer is not None and sniffer.exception is not None:
                             self._log(f"scan capture socket died: {sniffer.exception}")
+                        for action in check_and_heal(self.mon_iface):
+                            self._log(action)
                         try:
                             sniffer = start_sniffer()
                             self._log("scan capture socket (re)started")

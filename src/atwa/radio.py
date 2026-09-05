@@ -313,6 +313,34 @@ def get_mode(iface: str) -> str:
     return match.group(1).lower() if match else "unknown"
 
 
+def get_channel(iface: str) -> int | None:
+    """Return iface's actual current channel via a live `iw dev <iface>
+    info` read (not the ensure_channel() cache below) -- None if it isn't
+    tuned to one at all (e.g. still managed and unassociated)."""
+    out = _run(["iw", "dev", iface, "info"])
+    match = re.search(r"channel\s+(\d+)", out)
+    return int(match.group(1)) if match else None
+
+
+def ensure_monitor_mode(iface: str) -> None:
+    """Restore iface to monitor mode after external drift -- NetworkManager
+    reasserting control, a driver reset, or anything else that knocks the
+    interface back to managed underneath code that assumed it would stay
+    exactly as it was left. Caller is expected to have already checked
+    get_mode(iface) != "monitor"; this always performs the restore.
+
+    Re-runs check_kill_interfering_processes() first, same as the initial
+    set_monitor_mode() call, since a process reasserting itself is the
+    actual mechanism that knocks an interface back to managed in the
+    first place. Also clears the channel cache, since re-entering monitor
+    mode resets the radio's tuned channel regardless of what atwa last
+    set it to -- leaving the stale cache in place would make the next
+    ensure_channel() call wrongly think nothing needs to change."""
+    check_kill_interfering_processes()
+    set_monitor_mode(iface)
+    clear_channel_cache(iface)
+
+
 def set_channel(iface: str, channel: int) -> None:
     """Set the radio channel on a monitor-mode interface.
 
@@ -371,6 +399,36 @@ def clear_channel_cache(iface: str | None = None) -> None:
         _last_channel.clear()
     else:
         _last_channel.pop(iface, None)
+
+
+def check_and_heal(iface: str, expected_channel: int | None = None) -> list[str]:
+    """Detect and correct monitor-mode/channel drift on iface -- the same
+    class of failure as the 2026-09-02 BPF-filter hotfix (scan.py/app.py):
+    code that assumes an interface stays exactly as it was left, silently
+    breaking once something external (NetworkManager reasserting control,
+    a driver reset, another process retuning the radio) changes that
+    state mid-session.
+
+    Reads the real hardware state directly (not the ensure_channel()
+    cache, which only reflects what atwa itself last requested and can't
+    see a change made by anything else) -- meant for periodic checks in
+    long-running loops (a persistent scan session, an attack's per-round
+    loop), not every hot-path channel set.
+
+    Returns a list of human-readable actions taken, empty if iface was
+    already healthy, so callers can log exactly what happened rather than
+    silently reacting to it."""
+    actions = []
+    if get_mode(iface) != "monitor":
+        ensure_monitor_mode(iface)
+        actions.append(f"{iface} had dropped out of monitor mode -- restored")
+    if expected_channel is not None:
+        actual = get_channel(iface)
+        if actual != expected_channel:
+            set_channel(iface, expected_channel)
+            _last_channel[iface] = expected_channel
+            actions.append(f"{iface} channel drifted (was {actual}, expected {expected_channel}) -- corrected")
+    return actions
 
 
 # 2.4GHz (1-13) + all 5GHz channels including UNII-2/2e DFS (52-140).

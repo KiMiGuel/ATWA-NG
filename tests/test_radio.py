@@ -140,3 +140,75 @@ def test_disable_power_save_non_fatal_when_unsupported(monkeypatch):
 
     monkeypatch.setattr(radio, "_run", boom)
     assert radio.disable_power_save("wlan1") is False
+
+
+def test_get_channel_parses_iw_output(monkeypatch):
+    monkeypatch.setattr(
+        radio, "_run",
+        lambda cmd: "Interface wlan0\n\ttype monitor\n\tchannel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz\n",
+    )
+    assert radio.get_channel("wlan0") == 6
+
+
+def test_get_channel_returns_none_when_not_tuned(monkeypatch):
+    monkeypatch.setattr(radio, "_run", lambda cmd: "Interface wlan0\n\ttype managed\n")
+    assert radio.get_channel("wlan0") is None
+
+
+def test_ensure_monitor_mode_restores_and_clears_channel_cache(monkeypatch):
+    radio._last_channel["wlan0"] = 6
+    calls = []
+    monkeypatch.setattr(radio, "check_kill_interfering_processes", lambda: calls.append("kill") or [])
+    monkeypatch.setattr(radio, "set_monitor_mode", lambda iface, **kw: calls.append(("set_monitor_mode", iface)) or (iface, None))
+
+    radio.ensure_monitor_mode("wlan0")
+
+    assert calls == ["kill", ("set_monitor_mode", "wlan0")]
+    assert "wlan0" not in radio._last_channel
+
+
+def test_check_and_heal_returns_no_actions_when_healthy(monkeypatch):
+    monkeypatch.setattr(radio, "get_mode", lambda iface: "monitor")
+    monkeypatch.setattr(radio, "get_channel", lambda iface: 6)
+    set_channel_calls = []
+    monkeypatch.setattr(radio, "set_channel", lambda iface, ch: set_channel_calls.append((iface, ch)))
+
+    actions = radio.check_and_heal("wlan0", expected_channel=6)
+
+    assert actions == []
+    assert set_channel_calls == []
+
+
+def test_check_and_heal_restores_dropped_monitor_mode(monkeypatch):
+    monkeypatch.setattr(radio, "get_mode", lambda iface: "managed")
+    healed = []
+    monkeypatch.setattr(radio, "ensure_monitor_mode", lambda iface: healed.append(iface))
+
+    actions = radio.check_and_heal("wlan0")
+
+    assert healed == ["wlan0"]
+    assert actions == ["wlan0 had dropped out of monitor mode -- restored"]
+
+
+def test_check_and_heal_corrects_channel_drift(monkeypatch):
+    monkeypatch.setattr(radio, "get_mode", lambda iface: "monitor")
+    monkeypatch.setattr(radio, "get_channel", lambda iface: 1)
+    set_channel_calls = []
+    monkeypatch.setattr(radio, "set_channel", lambda iface, ch: set_channel_calls.append((iface, ch)))
+
+    actions = radio.check_and_heal("wlan0", expected_channel=6)
+
+    assert set_channel_calls == [("wlan0", 6)]
+    assert radio._last_channel["wlan0"] == 6
+    assert actions == ["wlan0 channel drifted (was 1, expected 6) -- corrected"]
+
+
+def test_check_and_heal_ignores_channel_when_not_expected(monkeypatch):
+    monkeypatch.setattr(radio, "get_mode", lambda iface: "monitor")
+    get_channel_calls = []
+    monkeypatch.setattr(radio, "get_channel", lambda iface: get_channel_calls.append(iface) or 1)
+
+    actions = radio.check_and_heal("wlan0")
+
+    assert actions == []
+    assert get_channel_calls == []  # never checked -- caller didn't ask
