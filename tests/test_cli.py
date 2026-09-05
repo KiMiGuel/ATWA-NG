@@ -38,6 +38,7 @@ from atwa.scan import AccessPoint, ScanResult
     (["gui"], misc_cmds._cmd_gui),
     (["crack", "hash.22000", "words.txt"], crack_cmds._cmd_crack),
     (["eviltwin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6"], attacks_cmds._cmd_eviltwin),
+    (["downgrade-twin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6", "cap.pcap"], attacks_cmds._cmd_downgrade_twin),
 ])
 def test_subcommand_parses_and_wires_correct_handler(argv, expected_func):
     parser = build_parser()

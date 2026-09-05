@@ -29,3 +29,6 @@ Pycharm/
 *.cap
 *.hccapx
 *.22000
+
+# Third-party copyrighted reference material — local only, never pushed
+2007-471.pdf

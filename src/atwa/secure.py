@@ -25,6 +25,8 @@ WPS_VENDOR_OUI = WPS_VENDOR_OUI_TYPE
 # RSN AKM suite types (last byte of 00:0F:AC:<type>)
 AKM_PSK = 2
 AKM_SAE = 8
+AKM_OWE = 18  # Enhanced Open -- authentication-free, PMK from an anonymous
+              # Diffie-Hellman exchange, no PSK/password exists to attack
 
 RSN_CAP_MFPC = 0x40  # management frame protection capable
 RSN_CAP_MFPR = 0x80  # management frame protection required
@@ -50,7 +52,7 @@ def _rsn_info(elt_info: bytes) -> tuple[set[int], int] | None:
 def security_profile(pkt: Packet) -> dict:
     """Derive {security, pmf} from a beacon/probe-response frame.
 
-    security: open | WEP | WPA | WPA2 | WPA3 | transition
+    security: open | WEP | WPA | WPA2 | WPA3 | transition | OWE
     pmf: none | capable | required | unknown (unknown = WPA2 without caps,
     deauth still worth attempting).
     """
@@ -82,10 +84,16 @@ def security_profile(pkt: Packet) -> dict:
     akms, caps = rsn
     sae = AKM_SAE in akms
     psk = AKM_PSK in akms
+    owe = AKM_OWE in akms
     if sae and psk:
         security = "transition"
     elif sae:
         security = "WPA3"
+    elif owe:
+        # Was previously falling through to "WPA2" -- AKM 18 was never
+        # checked at all, so every OWE beacon got misclassified as a
+        # PSK-crackable network it isn't (OWE has no password to attack).
+        security = "OWE"
     else:
         security = "WPA2"
 
@@ -164,6 +172,8 @@ def recommend_attack(ap) -> dict:
     pmf = getattr(ap, "pmf", None)
     if security == "open":
         return {"attack": "none", "reason": "Open network — no handshake to capture (consider evil-twin/portal audit)."}
+    if security == "OWE":
+        return {"attack": "none", "reason": "OWE (Enhanced Open): no PSK exists to attack — PMK comes from an anonymous per-session DH exchange. Only lever is an OWE-transition downgrade to the paired open SSID, if one is advertised (not yet built)."}
     if security == "WEP":
         return {"attack": "wep_replay", "reason": "WEP: ARP-request replay to force IVs, then PTW crack."}
     if pmf == "required":
