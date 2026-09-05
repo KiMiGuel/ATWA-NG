@@ -209,12 +209,20 @@ open:
       — done, `scan.py`'s `process_packet()` now opportunistically
       captures a PMKID from any observed handshake attempt during a
       normal scan, not just from active `attacks/pmkid.py` runs.
-- [ ] Self-healing monitor-mode/channel drift check (surfaced from the
-      complete `source_cherrypick.c` read, not originally on this list)
-      — not built; scoped as moderate-risk since recovering a dead
-      `AsyncSniffer` socket needs more than just re-entering monitor
-      mode (the GUI's own scan loop already has a simpler
-      restart-if-dead pattern for this).
+- [x] Self-healing monitor-mode/channel drift check (2026-09-04) — done.
+      `radio.py` gained `get_channel()`, `ensure_monitor_mode()`, and
+      `check_and_heal()`, a live-hardware-state health check (not the
+      `ensure_channel()` cache, which only reflects what atwa itself
+      last requested and can't see external drift). `deauth()` now
+      heals a dropped monitor-mode interface and proceeds instead of
+      just warning and returning 0 — PINCER's per-round `deauth()` calls
+      inherit the fix with no `attack_runner.py` changes needed. The
+      GUI's persistent scan loop (`app.py` `_start_scan`) runs
+      `check_and_heal()` on a 10s timer independent of sniffer-thread
+      liveness (a raw socket can sit "alive" on a managed-mode interface
+      receiving nothing, with no exception to trigger the old
+      dead-sniffer restart), and also runs it before restarting an
+      already-dead sniffer.
 
 ## Today's 6-point closeout list (2026-09-01 session, user-tracked)
 
@@ -236,4 +244,5 @@ direction — no per-item pushes).
        separately, see the WPA3/PMF-bypass list above).
 4. [ ] CSA spoofing — exploratory, no PoC exists anywhere found.
 5. [ ] Dragonblood SAE side-channel — bigger, novel build.
-6. [ ] Self-healing monitor-mode/channel drift check.
+6. [x] Self-healing monitor-mode/channel drift check (2026-09-04) — done,
+       see the Roadmap section above for the full account.

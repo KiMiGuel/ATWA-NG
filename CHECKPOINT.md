@@ -493,3 +493,68 @@ assumed from general knowledge of John's build layout.
 pypacker swap, OWE downgrade attack itself, CSA spoofing, Dragonblood
 SAE, self-healing monitor-mode check. See STATUS.md's "Today's 6-point
 closeout list" for the live-tracked version of this list.
+
+## 2026-09-04: Self-healing monitor-mode/channel-drift check — roadmap item 2/6 done
+
+Picked up the "self-healing monitor-mode/channel drift check" roadmap
+item. Worked in the `funny-banach-17981b` worktree, which turned out to
+be behind `main` (missing the 2026-09-01 OWE fix/pmf_bypass/
+downgrade_twin/cracking-docs work landed via a different branch) —
+merged `main` into the worktree branch first (clean, no conflicts),
+confirmed 195/195 passing, then fast-forwarded `main` to the merged
+result before adding this session's own work on top.
+
+`radio.py` gained three new pieces: `get_channel()` (live channel read
+via `iw dev <iface> info`, not the `ensure_channel()` cache), the same
+class of gap the 2026-09-02 BPF-filter hotfix already burned a session
+on — code assuming an interface stays exactly as it was left, breaking
+silently once that stops holding); `ensure_monitor_mode()` (restore a
+dropped interface — re-kills interfering processes, re-enters monitor
+mode, clears the channel cache since re-entering monitor mode resets
+the tuned channel); and `check_and_heal()`, the combined periodic-check
+entry point that verifies live mode + (optionally) live channel and
+corrects either, returning the actions taken for logging.
+
+Wired into two concrete spots, not every `ensure_channel()` call site
+(that cache stays untouched — it's still the right fast-path for
+hot-loop channel sets; `check_and_heal()` is for periodic health checks,
+not every single request):
+
+1. `attacks/deauth.py` — previously detected a dropped monitor-mode
+   interface and just logged a warning + returned 0, never fixing it
+   (confirmed via its own docstring). Now heals and proceeds. PINCER's
+   per-round `deauth()` calls inherit this for free, no
+   `attack_runner.py` changes needed — this was the flagged risk from
+   the first live PINCER run three days ago (a 12-round, 2-minute
+   unattended loop is exactly where mid-session drift would have gone
+   unrecovered).
+2. GUI's persistent scan loop (`app.py` `_start_scan`) — added a 10s
+   timer health check independent of sniffer-thread liveness (a raw
+   AF_PACKET socket can sit "alive" on a managed-mode interface
+   receiving nothing useful, with no exception to trigger the existing
+   dead-sniffer restart path), plus a check before restarting an
+   already-dead sniffer. This is the same loop the BPF-filter bug lived
+   in — same class of "silently stuck" failure, different root cause.
+
+Test-design note: `check_and_heal()`'s internal `get_mode()` call
+resolves against `radio`'s own module namespace, not whatever name a
+caller imported it under — an early draft that had `deauth.py` call
+`check_and_heal()` directly would have made the existing
+`deauth_module.get_mode` monkeypatches in `test_deauth.py` silently
+inert (patching the wrong namespace), letting real subprocess calls run
+during unit tests. Caught before running the suite by tracing exactly
+which module-level name each mock patches; final design has `deauth.py`
+call the smaller, already-patchable `get_mode`/`ensure_monitor_mode`
+primitives directly instead of the composite function.
+
+**Verification:** `pytest -q` → 195 passed (167 pre-merge baseline + 20
+from the main-branch catch-up + 8 new for this item). `ruff check
+--select F401,F541` and `mypy --ignore-missing-imports
+--show-error-codes` clean on every changed file. No GUI test file exists
+for `app.py` (project convention — manually/live tested), so the
+scan-loop wiring there is unverified beyond a lint/mypy pass.
+
+**Status: 2/6 roadmap items done** (cracking docs, self-healing check).
+Remaining: dpkt/pypacker swap, OWE downgrade attack itself, CSA
+spoofing, Dragonblood SAE. Committed to the worktree branch, merged to
+local `main` — not pushed (still accumulating toward the v2.3 batch).
