@@ -12,7 +12,7 @@ from scapy.sendrecv import AsyncSniffer, sendp
 from .attacks.pmkid import extract_pmkid, to_22000
 from .frames import bssid_of, channel_of, craft_probe_req, eapol_key_info, is_eapol, ssid_of
 from .radio import ALL_CHANNELS, CHANNELS_5GHZ, CHANNELS_24GHZ, ChannelHopper, random_locally_administered_mac
-from .secure import security_profile, wps_profile
+from .secure import owe_transition_info, security_profile, wps_profile
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
 
@@ -70,6 +70,8 @@ class AccessPoint:
     wps_model_name: str | None = None
     wps_model_number: str | None = None
     wps_device_name: str | None = None
+    owe_transition_bssid: str | None = None  # paired open BSS, from the OWE Transition Mode IE
+    owe_transition_ssid: str | None = None
     signal: int | None = None  # best (strongest) dBm seen from RadioTap
     last_signal: int | None = None  # most recent dBm reading (NOT a running max -- for live time-series display)
     beacon_count: int = 0  # number of Dot11Beacon frames seen (not probe responses)
@@ -159,6 +161,11 @@ def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
         if profile["security"] != "open" or ap.security is None:
             ap.security = profile["security"]
             ap.pmf = profile["pmf"]
+        if ap.security == "OWE":
+            owe = owe_transition_info(pkt)
+            if owe is not None:
+                ap.owe_transition_bssid = owe["bssid"]
+                ap.owe_transition_ssid = owe["ssid"]
         wps = wps_profile(pkt)
         if wps is not None:
             ap.wps = wps["state"]  # AP self-reports current lock state each beacon; always take the latest

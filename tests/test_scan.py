@@ -6,11 +6,12 @@ strong reading instead of tracking live RSSI."""
 from __future__ import annotations
 
 import pytest
-from scapy.layers.dot11 import Dot11, RadioTap
+from scapy.layers.dot11 import Dot11, Dot11Elt, RadioTap
 
-from atwa.frames import craft_beacon, craft_probe_resp
+from atwa.frames import craft_beacon, craft_probe_resp, craft_rsn_ie
 from atwa.radio import ALL_CHANNELS, CHANNELS_24GHZ, CHANNELS_5GHZ
 from atwa.scan import ScanResult, channels_for_band, parse_channel_range, process_packet
+from atwa.secure import OWE_TRANSITION_OUI_TYPE
 
 
 def _data_frame(bssid: str, addr1: str, addr2: str):
@@ -207,6 +208,34 @@ def test_process_packet_ignores_non_m1_eapol_for_pmkid():
     process_packet(frame / EAPOL(version=1, type=3) / Raw(load=key_frame), result)
 
     assert result.aps["aa:bb:cc:dd:ee:ff"].pmkid is None
+
+
+def test_process_packet_extracts_owe_transition_pair():
+    rsn = craft_rsn_ie(akms=[18])
+    ssid_bytes = b"HomeOpen"
+    owe_ie = Dot11Elt(ID=221, info=OWE_TRANSITION_OUI_TYPE + bytes.fromhex("112233445566") + bytes([len(ssid_bytes)]) + ssid_bytes)
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OWENet", channel=6, privacy=True, extra_ies=[rsn, owe_ie])
+    result = ScanResult()
+
+    process_packet(pkt, result)
+
+    ap = result.aps["aa:bb:cc:dd:ee:ff"]
+    assert ap.security == "OWE"
+    assert ap.owe_transition_bssid == "11:22:33:44:55:66"
+    assert ap.owe_transition_ssid == "HomeOpen"
+
+
+def test_process_packet_leaves_owe_transition_none_when_not_advertised():
+    rsn = craft_rsn_ie(akms=[18])
+    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OWENet", channel=6, privacy=True, extra_ies=[rsn])
+    result = ScanResult()
+
+    process_packet(pkt, result)
+
+    ap = result.aps["aa:bb:cc:dd:ee:ff"]
+    assert ap.security == "OWE"
+    assert ap.owe_transition_bssid is None
+    assert ap.owe_transition_ssid is None
 
 
 def test_parse_channel_range_single_values():

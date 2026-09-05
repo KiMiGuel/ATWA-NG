@@ -179,12 +179,29 @@ open:
         the OWE-downgrade item) — `security_profile()` never checked AKM
         suite 18 at all, so every real OWE (Enhanced Open) beacon was
         silently reported as PSK-crackable `"WPA2"`. Fixed + tested.
-  - [ ] OWE transition-mode downgrade (the actual attack: parse the OWE
-        Transition Mode vendor IE for the paired open SSID/BSSID, spoof
-        it) — **not built.** Only the misclassification bug above is
-        fixed; the IE-parsing + downgrade-attack piece is still open,
-        deliberately not rushed without a real OWE capture to verify
-        byte offsets against.
+  - [x] OWE transition-mode downgrade (2026-09-04) — built.
+        `secure.owe_transition_info()` parses the OWE Transition Mode
+        vendor IE (element 221, OUI 50:6F:9A, type 0x1C) for the paired
+        open BSSID/SSID, per the documented WFA/hostapd spec format;
+        `scan.py`'s `process_packet()` populates the new
+        `owe_transition_bssid`/`owe_transition_ssid` `AccessPoint`
+        fields; `recommend_attack()` now recommends `owe_downgrade` when
+        a pair is found. `attacks/eviltwin.py run_owe_downgrade()` (new
+        CLI subcommand `owe-downgrade`) broadcasts the paired open SSID
+        as a rogue twin and deauths the real OWE BSSID — no captive
+        portal or password harvesting (OWE has no password; the whole
+        point is the client's traffic returning to cleartext the moment
+        it associates), success is a client's L2 association via `iw
+        ... station dump`, not a DHCP lease.
+        **⚠️ Built against the documented spec/hostapd IE format, NOT
+        live-verified** — no real OWE-transition AP was available to
+        test against (none found in range during the 2026-09-02 live
+        session either). Unit/lint/mypy-clean (209/209 passing) but
+        unlike everything else in this section, nobody has confirmed
+        the byte offsets against a real capture. Revisit live
+        verification if/when a real OWE-transition AP becomes
+        available — do not treat this as equally trustworthy to the
+        live-witnessed items above until then.
   <!-- - [ ] CSA spoofing — exploratory, no published PoC bytes exist.
        Pulled off the active roadmap (2026-09-04): unlike every other
        item here, there's no published PoC, research paper with exact
@@ -250,9 +267,9 @@ direction — no per-item pushes).
        explicit direction — the Install section is where a reader
        actually learns what to install, not a parenthetical gloss.
 2. [ ] dpkt vs. pypacker swap in scan.py — the CPU/fan fix candidate.
-3. [ ] OWE transition-mode downgrade (the actual attack — IE parsing +
-       rogue-open-twin; the misclassification bug is already fixed,
-       separately, see the WPA3/PMF-bypass list above).
+3. [x] OWE transition-mode downgrade (2026-09-04) — built, NOT
+       live-verified (no real OWE-transition AP available). See the
+       Roadmap section above for the full account.
 <!-- 4. [ ] CSA spoofing — exploratory, no PoC exists anywhere found.
      Pulled off this list (2026-09-04), not discarded — see the Roadmap
      section above for why. Further research needed / future update. -->

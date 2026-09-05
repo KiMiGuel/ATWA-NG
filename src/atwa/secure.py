@@ -21,6 +21,7 @@ from .wps.tlv import (
 
 WPA_VENDOR_OUI = b"\x00\x50\xf2\x01"  # Microsoft OUI + WPA type 1
 WPS_VENDOR_OUI = WPS_VENDOR_OUI_TYPE
+OWE_TRANSITION_OUI_TYPE = b"\x50\x6f\x9a\x1c"  # WFA OUI (50:6F:9A) + OWE Transition Mode type 0x1C
 
 # RSN AKM suite types (last byte of 00:0F:AC:<type>)
 AKM_PSK = 2
@@ -152,6 +153,46 @@ def wps_profile(pkt: Packet) -> dict | None:
     return None
 
 
+def owe_transition_info(pkt: Packet) -> dict | None:
+    """Extract the OWE Transition Mode vendor-specific IE from an OWE
+    beacon/probe-response, if present.
+
+    Per the Wi-Fi Alliance OWE transition-mode spec (the format hostapd's
+    own OWE support generates): element ID 221 (vendor-specific), OUI
+    50:6F:9A, type 0x1C, followed by BSSID (6 bytes), SSID length
+    (1 byte), SSID (variable), then optional band/channel-info bytes
+    this function doesn't need. An OWE AP running in transition mode
+    advertises this to point clients at its paired OPEN BSS -- the only
+    lever recommend_attack() has for OWE (no PSK exists to crack, so
+    there's nothing else to attack).
+
+    Same raw-byte-search approach as the WPA1/WPS vendor IEs above:
+    scapy can swallow vendor-specific IEs into a Raw payload instead of
+    exposing them as walkable elements, so search the frame bytes for
+    the OUI+type signature directly rather than relying on _walk_elts.
+
+    Returns {"bssid": str, "ssid": str | None} or None if no such IE is
+    present (a non-transition OWE AP has no open pair to downgrade to,
+    and this hasn't been verified against a real OWE-transition capture
+    yet -- built from the documented spec/hostapd format, not a
+    live-verified byte layout)."""
+    raw = bytes(pkt)
+    idx = raw.find(OWE_TRANSITION_OUI_TYPE)
+    while idx != -1:
+        if idx >= 2 and raw[idx - 2] == 221:
+            elt_len = raw[idx - 1]
+            elt_end = idx + elt_len
+            body = raw[idx + len(OWE_TRANSITION_OUI_TYPE) : elt_end]
+            if len(body) >= 7:
+                bssid = ":".join(f"{b:02x}" for b in body[:6])
+                ssid_len = body[6]
+                ssid_bytes = body[7 : 7 + ssid_len]
+                ssid = ssid_bytes.decode("utf-8", errors="replace") if ssid_bytes else None
+                return {"bssid": bssid, "ssid": ssid}
+        idx = raw.find(OWE_TRANSITION_OUI_TYPE, idx + 1)
+    return None
+
+
 def _decode_str(value: bytes | None) -> str | None:
     """Decode a WSC UTF-8 attribute value, returning None if missing/empty."""
     if not value:
@@ -173,7 +214,14 @@ def recommend_attack(ap) -> dict:
     if security == "open":
         return {"attack": "none", "reason": "Open network — no handshake to capture (consider evil-twin/portal audit)."}
     if security == "OWE":
-        return {"attack": "none", "reason": "OWE (Enhanced Open): no PSK exists to attack — PMK comes from an anonymous per-session DH exchange. Only lever is an OWE-transition downgrade to the paired open SSID, if one is advertised (not yet built)."}
+        owe_ssid = getattr(ap, "owe_transition_ssid", None)
+        owe_bssid = getattr(ap, "owe_transition_bssid", None)
+        if owe_bssid:
+            return {
+                "attack": "owe_downgrade",
+                "reason": f"OWE (Enhanced Open) transition mode: paired open network {owe_ssid!r} advertised ({owe_bssid}) — downgrade forces clients back to cleartext.",
+            }
+        return {"attack": "none", "reason": "OWE (Enhanced Open): no PSK exists to attack — PMK comes from an anonymous per-session DH exchange. No paired open SSID advertised (not in transition mode), so no downgrade lever exists either."}
     if security == "WEP":
         return {"attack": "wep_replay", "reason": "WEP: ARP-request replay to force IVs, then PTW crack."}
     if pmf == "required":

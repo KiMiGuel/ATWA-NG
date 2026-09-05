@@ -25,6 +25,7 @@ from .cli_commands.attacks import (
     _cmd_eviltwin,
     _cmd_handshake,
     _cmd_omni,
+    _cmd_owe_downgrade,
     _cmd_pmkid,
     _cmd_smart,
     _cmd_wep,
@@ -191,6 +192,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("outfile")
     p.add_argument("--timeout", type=float, default=120.0)
     p.set_defaults(func=_cmd_downgrade_twin)
+
+    p = sub.add_parser("owe-downgrade", help="OWE-transition rogue open twin (secure.py owe_downgrade recommendation)")
+    p.add_argument("iface_ap")
+    p.add_argument("iface_mon")
+    p.add_argument("owe_bssid", help="the REAL OWE AP's BSSID -- deauth target")
+    p.add_argument("open_ssid", help="the paired open network's SSID, from the OWE Transition Mode IE (see scan's owe_transition_ssid field)")
+    p.add_argument("channel", type=int)
+    p.add_argument("--timeout", type=float, default=120.0)
+    p.set_defaults(func=_cmd_owe_downgrade)
 
     return parser
 
