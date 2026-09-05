@@ -47,3 +47,10 @@ source_cherrypick.c
 atwa_issues.md
 research-2026-08-30.md
 .mcp.json
+
+# Old n2-ng v1 predecessor project's source/research (2026-09-04):
+# unused by anything in ATWA-NG (confirmed via grep -- zero references
+# in src/), kept locally only for historical reference during the
+# rewrite. Same treatment as above: untracked, not deleted.
+vendor/n2-ng-v1-src/
+vendor/n2-ng-v1-research/
