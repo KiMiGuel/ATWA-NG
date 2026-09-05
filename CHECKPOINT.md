@@ -558,3 +558,82 @@ scan-loop wiring there is unverified beyond a lint/mypy pass.
 Remaining: dpkt/pypacker swap, OWE downgrade attack itself, CSA
 spoofing, Dragonblood SAE. Committed to the worktree branch, merged to
 local `main` — not pushed (still accumulating toward the v2.3 batch).
+
+## 2026-09-04: CSA spoofing deferred (further research needed); OWE downgrade attack built, not live-verified
+
+User asked to comment CSA spoofing out of the active roadmap rather
+than discard it — unlike every other roadmap item, no published PoC or
+spec-level writeup exists anywhere to build against or verify byte
+offsets from. Marked `<!-- -->`-commented in both STATUS.md spots it
+appeared (WPA3/PMF-bypass sublist + 6-point closeout list), with a
+visible "further research needed / future update" note pointing at
+each. Not deleted — revisit if a real PoC surfaces. Active roadmap
+count effectively drops from 4 to 3 remaining items.
+
+Then picked up OWE transition-mode downgrade, the actual attack (the
+misclassification bug was already fixed 2026-08-31). Before writing
+code, flagged to the user that the item's scope is wider than its name
+suggests — `process_packet()`'s downstream helpers (`security_profile`,
+`wps_profile`, `frames.py`) are all built on scapy's object model, same
+as the dpkt/pypacker item — and confirmed the order to work in: OWE and
+Dragonblood first (both more contained), full dpkt/pypacker swap last,
+stopping to check in before starting that one.
+
+`secure.owe_transition_info()` parses the OWE Transition Mode vendor IE
+(element 221, OUI 50:6F:9A, type 0x1C → BSSID + SSID of the paired open
+BSS) per the documented WFA/hostapd spec format — a real, stable,
+widely-implemented format, not a guess (unlike CSA, this one has a
+solid reference to build against even without a live capture).
+`scan.py` gained two new `AccessPoint` fields populated whenever a
+scanned OWE beacon carries the IE; `recommend_attack()` now recommends
+`owe_downgrade` instead of `none` when a pair is found.
+`attacks/eviltwin.py run_owe_downgrade()` (new CLI subcommand
+`owe-downgrade`) broadcasts the paired open SSID as a rogue twin and
+deauths the real OWE BSSID — deliberately much smaller than
+`run_eviltwin()`/`run_downgrade_twin()`: no captive portal, no password
+harvesting (OWE has no password — the whole point is the client's
+traffic returning to cleartext the instant it associates). Success is
+measured via `iw ... station dump` (L2 association), not a DHCP lease,
+so it doesn't depend on the client ever requesting an IP.
+
+Caught one real test bug before it shipped: a first-draft test
+asserting which BSSID the background deauth thread targets raced the
+thread's own startup, since `_patch_common()`'s `time.sleep` mock is a
+total no-op — nothing forced the main thread's poll loop to yield long
+enough for the OS scheduler to run the daemon thread at all. Root cause
+traced (not guessed): the poll loop's `_station_dump` stub returned a
+match on its very first call, breaking the loop before any real
+wall-clock time elapsed, unlike `run_downgrade_twin`'s own tests, which
+are safe only because their equivalent poll loop is forced to spin for
+several genuine seconds (a real, unmocked `time.monotonic()` deadline)
+before the mocked listener thread's result appears. Fixed by making the
+station-dump stub return empty for a few calls and restoring a real
+(tiny) sleep for that one test — then hit a second bug in the fix
+itself: monkeypatching `eviltwin_mod.time.sleep` and then calling
+`time.sleep` from a *fresh* `import time` in the test both point at the
+same shared stdlib module object, so the replacement called itself
+infinitely (`RecursionError`). Fixed by capturing the real `time.sleep`
+function object before patching, not a module reference. Verified
+stable across 8 repeated runs after the fix, not just a single green run.
+
+**Caveat, explicit and important:** this attack is built against the
+documented IE spec/hostapd format, not verified against a real
+OWE-transition capture — no such AP was available (none found in range
+during the 2026-09-02 live-hardware session either), matching this
+project's own established caution (same class as the 2026-08-29 PyRIC
+revert and the original OWE item's own "not yet built" note). User
+explicitly decided: commit as built-but-unverified and move on to
+Dragonblood, rather than block on finding a real target now. Revisit
+live verification later if/when one turns up.
+
+**Verification:** `pytest -q` → 209 passed (167 pre-catchup baseline +
+20 main-branch catch-up + 8 self-healing check + 14 new here). `ruff
+check --select F401,F541` and `mypy --ignore-missing-imports
+--show-error-codes` clean on every changed file, checked individually
+after a misleading batched-path ruff warning turned out to be a
+harmless CLI artifact (confirmed by re-running each file alone).
+
+**Status: 3/6 roadmap items done** (cracking docs, self-healing check,
+OWE downgrade). CSA deferred (not counted). Remaining: dpkt/pypacker
+swap, Dragonblood SAE. Committed to the worktree branch, merged to
+local `main` — not pushed.
