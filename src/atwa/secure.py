@@ -5,10 +5,7 @@ output.
 
 from __future__ import annotations
 
-from scapy.layers.dot11 import Dot11Beacon, Dot11ProbeResp
-from scapy.packet import Packet
-
-from .frames import _walk_elts
+from .dissect import CAP_PRIVACY, Frame, beacon_capability, walk_ies
 from .wps.tlv import (
     ATTR_AP_SETUP_LOCKED,
     ATTR_DEVICE_NAME,
@@ -50,23 +47,23 @@ def _rsn_info(elt_info: bytes) -> tuple[set[int], int] | None:
         return None
 
 
-def security_profile(pkt: Packet) -> dict:
+def security_profile(frame: Frame) -> dict:
     """Derive {security, pmf} from a beacon/probe-response frame.
 
     security: open | WEP | WPA | WPA2 | WPA3 | transition | OWE
     pmf: none | capable | required | unknown (unknown = WPA2 without caps,
     deauth still worth attempting).
     """
-    cap_layer = pkt.getlayer(Dot11Beacon) or pkt.getlayer(Dot11ProbeResp)
-    privacy = bool(cap_layer and "privacy" in (cap_layer.cap or []))
+    privacy = bool(beacon_capability(frame) & CAP_PRIVACY)
 
     rsn = None
-    for elt in _walk_elts(pkt):
-        if elt.ID == 48:
-            rsn = _rsn_info(bytes(elt.info))
-    # WPA1 vendor IE (ID 221, OUI 00:50:f2:01): scapy may swallow it into a
-    # Raw payload, so detect it in the raw frame bytes instead.
-    raw = bytes(pkt)
+    for ie_id, info in walk_ies(frame.body[12:]):
+        if ie_id == 48:
+            rsn = _rsn_info(bytes(info))
+    # WPA1 vendor IE (ID 221, OUI 00:50:f2:01): not every vendor IE
+    # shows up as a clean walkable element in a real capture, so detect
+    # it in the raw frame bytes directly instead of relying on walk_ies.
+    raw = frame.raw
     wpa_vendor = False
     idx = raw.find(WPA_VENDOR_OUI)
     while idx != -1:
@@ -107,7 +104,7 @@ def security_profile(pkt: Packet) -> dict:
     return {"security": security, "pmf": pmf}
 
 
-def wps_profile(pkt: Packet) -> dict | None:
+def wps_profile(frame: Frame) -> dict | None:
     """Extract WPS IE data from a beacon/probe-response.
 
     Returns None if the frame carries no WPS vendor IE (OUI 00:50:F2,
@@ -126,14 +123,14 @@ def wps_profile(pkt: Packet) -> dict | None:
     when the AP advertises them.
 
     Same raw-byte-search approach as the WPA1 vendor IE check above:
-    scapy can swallow vendor-specific IEs into a Raw payload instead of
-    exposing them as walkable elements, so search the frame bytes for the
-    OUI+type signature directly rather than relying on _walk_elts. The IE's
-    own length byte (idx-1) bounds the WSC-TLV blob before handing it to
-    the same decode_tlvs() the M1..M7 exchange uses (WFA vendor IE 221 and
-    a beacon's WPS IE share the same [type(2) len(2) value] attribute
+    not every vendor IE shows up as a clean walkable element in a real
+    capture, so search the frame bytes for the OUI+type signature
+    directly rather than relying on walk_ies. The IE's own length byte
+    (idx-1) bounds the WSC-TLV blob before handing it to the same
+    decode_tlvs() the M1..M7 exchange uses (WFA vendor IE 221 and a
+    beacon's WPS IE share the same [type(2) len(2) value] attribute
     format)."""
-    raw = bytes(pkt)
+    raw = frame.raw
     idx = raw.find(WPS_VENDOR_OUI)
     while idx != -1:
         if idx >= 2 and raw[idx - 2] == 221:
@@ -153,7 +150,7 @@ def wps_profile(pkt: Packet) -> dict | None:
     return None
 
 
-def owe_transition_info(pkt: Packet) -> dict | None:
+def owe_transition_info(frame: Frame) -> dict | None:
     """Extract the OWE Transition Mode vendor-specific IE from an OWE
     beacon/probe-response, if present.
 
@@ -167,16 +164,16 @@ def owe_transition_info(pkt: Packet) -> dict | None:
     there's nothing else to attack).
 
     Same raw-byte-search approach as the WPA1/WPS vendor IEs above:
-    scapy can swallow vendor-specific IEs into a Raw payload instead of
-    exposing them as walkable elements, so search the frame bytes for
-    the OUI+type signature directly rather than relying on _walk_elts.
+    not every vendor IE shows up as a clean walkable element in a real
+    capture, so search the frame bytes for the OUI+type signature
+    directly rather than relying on walk_ies.
 
     Returns {"bssid": str, "ssid": str | None} or None if no such IE is
     present (a non-transition OWE AP has no open pair to downgrade to,
     and this hasn't been verified against a real OWE-transition capture
     yet -- built from the documented spec/hostapd format, not a
     live-verified byte layout)."""
-    raw = bytes(pkt)
+    raw = frame.raw
     idx = raw.find(OWE_TRANSITION_OUI_TYPE)
     while idx != -1:
         if idx >= 2 and raw[idx - 2] == 221:

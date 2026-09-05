@@ -2,7 +2,12 @@
 the target list's sort/display column); last_signal is the latest reading
 (for a live rolling time-series graph) -- see gui/widgets.SignalGraph.
 Conflating the two made the GUI's signal graph plateau after the first
-strong reading instead of tracking live RSSI."""
+strong reading instead of tracking live RSSI.
+
+process_packet() takes raw frame bytes (RadioTap header onward) since
+the dpkt swap, not a scapy Packet -- every fixture here builds one via
+scapy's craft_*() helpers (or a hand-built RadioTap()/Dot11()/... frame)
+and passes bytes(pkt) through, exactly like a real captured frame."""
 from __future__ import annotations
 
 import pytest
@@ -14,18 +19,18 @@ from atwa.scan import ScanResult, channels_for_band, parse_channel_range, proces
 from atwa.secure import OWE_TRANSITION_OUI_TYPE
 
 
-def _data_frame(bssid: str, addr1: str, addr2: str):
+def _data_frame(bssid: str, addr1: str, addr2: str) -> bytes:
     """A data frame attributable to `bssid` via addr3 -- the shape
     process_packet's client-detection branch keys off of."""
-    return Dot11(addr1=addr1, addr2=addr2, addr3=bssid, type=2, subtype=0)
+    return bytes(RadioTap() / Dot11(addr1=addr1, addr2=addr2, addr3=bssid, type=2, subtype=0))
 
 
-def _beacon_with_signal(dbm: int):
+def _beacon_with_signal(dbm: int) -> bytes:
     pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)
     rtap = pkt.getlayer(RadioTap)
     rtap.present = "dBm_AntSignal"
     rtap.dBm_AntSignal = dbm
-    return pkt
+    return bytes(pkt)
 
 
 def test_signal_is_running_max_last_signal_is_latest():
@@ -44,7 +49,7 @@ def test_last_signal_none_when_no_dbm_reported():
     result = ScanResult()
     pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)
 
-    process_packet(pkt, result)
+    process_packet(bytes(pkt), result)
 
     ap = result.aps["aa:bb:cc:dd:ee:ff"]
     assert ap.signal is None
@@ -57,8 +62,8 @@ def test_last_signal_none_when_no_dbm_reported():
 
 def test_beacon_count_increments_only_for_beacon_frames():
     result = ScanResult()
-    beacon = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)
-    probe_resp = craft_probe_resp(bssid="aa:bb:cc:dd:ee:ff", ssid="test", client="11:22:33:44:55:66", channel=6)
+    beacon = bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6))
+    probe_resp = bytes(craft_probe_resp(bssid="aa:bb:cc:dd:ee:ff", ssid="test", client="11:22:33:44:55:66", channel=6))
 
     process_packet(beacon, result)
     process_packet(beacon, result)
@@ -72,7 +77,7 @@ def test_beacon_count_starts_at_zero_for_new_ap():
     result = ScanResult()
     pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)
 
-    process_packet(pkt, result)
+    process_packet(bytes(pkt), result)
 
     assert result.aps["aa:bb:cc:dd:ee:ff"].beacon_count == 1
 
@@ -83,16 +88,16 @@ def test_first_seen_set_once_last_seen_updates():
     generators), so patching the shared stdlib module is unsafe here."""
     import time as real_time
 
-    pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)
+    raw = bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6))
     result = ScanResult()
 
-    process_packet(pkt, result)
+    process_packet(raw, result)
     ap = result.aps["aa:bb:cc:dd:ee:ff"]
     first_seen_initial = ap.first_seen
     assert first_seen_initial is not None
 
     real_time.sleep(0.01)
-    process_packet(pkt, result)
+    process_packet(raw, result)
 
     assert ap.first_seen == first_seen_initial  # unchanged on repeat sightings
     assert ap.last_seen > first_seen_initial  # advances on repeat sightings
@@ -126,7 +131,7 @@ def test_channels_for_band_unknown_defaults_to_all():
 
 def test_own_mac_excluded_from_client_detection():
     result = ScanResult()
-    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
 
     process_packet(
         _data_frame("aa:bb:cc:dd:ee:ff", addr1="aa:bb:cc:dd:ee:ff", addr2="11:22:33:44:55:66"),
@@ -138,7 +143,7 @@ def test_own_mac_excluded_from_client_detection():
 
 def test_real_client_still_detected_alongside_own_mac_exclusion():
     result = ScanResult()
-    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
 
     process_packet(
         _data_frame("aa:bb:cc:dd:ee:ff", addr1="aa:bb:cc:dd:ee:ff", addr2="77:88:99:aa:bb:cc"),
@@ -152,7 +157,7 @@ def test_own_mac_none_keeps_old_behavior():
     """No own_mac passed (e.g. the plain scan() call site) -> no filtering,
     matching every existing caller's unchanged behavior."""
     result = ScanResult()
-    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
 
     process_packet(
         _data_frame("aa:bb:cc:dd:ee:ff", addr1="aa:bb:cc:dd:ee:ff", addr2="11:22:33:44:55:66"),
@@ -162,7 +167,7 @@ def test_own_mac_none_keeps_old_behavior():
     assert result.aps["aa:bb:cc:dd:ee:ff"].clients == {"11:22:33:44:55:66"}
 
 
-def _eapol_m1_with_pmkid(bssid: str, client: str, pmkid: bytes):
+def _eapol_m1_with_pmkid(bssid: str, client: str, pmkid: bytes) -> bytes:
     """A data frame carrying an EAPOL Message 1 with a PMKID KDE, matching
     what attacks/pmkid.py's extract_pmkid() scans for: `dd <len> 00 0f ac
     04 <pmkid16>`. eapol_key_info() reads mic/ack straight from raw bytes,
@@ -174,13 +179,13 @@ def _eapol_m1_with_pmkid(bssid: str, client: str, pmkid: bytes):
     key_info = (0x0080).to_bytes(2, "big")  # ack set, mic not set = M1
     kde = b"\xdd\x14\x00\x0f\xac\x04" + pmkid
     key_frame = bytes([2]) + key_info + b"\x00" * 92 + kde
-    dot11 = _data_frame(bssid, addr1=client, addr2=bssid)
-    return dot11 / EAPOL(version=1, type=3) / Raw(load=key_frame)
+    dot11 = Dot11(addr1=client, addr2=bssid, addr3=bssid, type=2, subtype=0)
+    return bytes(RadioTap() / dot11 / EAPOL(version=1, type=3) / Raw(load=key_frame))
 
 
 def test_process_packet_passively_captures_pmkid_from_ambient_m1():
     result = ScanResult()
-    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
 
     pmkid_bytes = bytes(range(16))
     process_packet(_eapol_m1_with_pmkid("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", pmkid_bytes), result)
@@ -199,13 +204,13 @@ def test_process_packet_ignores_non_m1_eapol_for_pmkid():
     from scapy.packet import Raw
 
     result = ScanResult()
-    process_packet(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6), result)
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
 
     key_info = (0x0180).to_bytes(2, "big")  # ack set AND mic set = M3, not M1
     kde = b"\xdd\x14\x00\x0f\xac\x04" + bytes(range(16))
     key_frame = bytes([2]) + key_info + b"\x00" * 92 + kde
-    frame = _data_frame("aa:bb:cc:dd:ee:ff", addr1="11:22:33:44:55:66", addr2="aa:bb:cc:dd:ee:ff")
-    process_packet(frame / EAPOL(version=1, type=3) / Raw(load=key_frame), result)
+    dot11 = Dot11(addr1="11:22:33:44:55:66", addr2="aa:bb:cc:dd:ee:ff", addr3="aa:bb:cc:dd:ee:ff", type=2, subtype=0)
+    process_packet(bytes(RadioTap() / dot11 / EAPOL(version=1, type=3) / Raw(load=key_frame)), result)
 
     assert result.aps["aa:bb:cc:dd:ee:ff"].pmkid is None
 
@@ -217,7 +222,7 @@ def test_process_packet_extracts_owe_transition_pair():
     pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OWENet", channel=6, privacy=True, extra_ies=[rsn, owe_ie])
     result = ScanResult()
 
-    process_packet(pkt, result)
+    process_packet(bytes(pkt), result)
 
     ap = result.aps["aa:bb:cc:dd:ee:ff"]
     assert ap.security == "OWE"
@@ -230,7 +235,7 @@ def test_process_packet_leaves_owe_transition_none_when_not_advertised():
     pkt = craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="OWENet", channel=6, privacy=True, extra_ies=[rsn])
     result = ScanResult()
 
-    process_packet(pkt, result)
+    process_packet(bytes(pkt), result)
 
     ap = result.aps["aa:bb:cc:dd:ee:ff"]
     assert ap.security == "OWE"

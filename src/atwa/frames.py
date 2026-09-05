@@ -270,46 +270,6 @@ def assoc_resp_status(pkt: Packet) -> int | None:
     return resp.status if resp else None
 
 
-def _walk_elts(pkt: Packet):
-    """Yield every Dot11Elt information element in the frame."""
-    elt = pkt.getlayer(Dot11Elt)
-    while isinstance(elt, Dot11Elt):
-        yield elt
-        elt = elt.payload if isinstance(elt.payload, Dot11Elt) else None
-
-
-def ssid_of(pkt: Packet) -> str | None:
-    """Return the SSID element value, or None for hidden/missing SSIDs.
-
-    Real SSIDs aren't guaranteed UTF-8 (older/cheap firmware, non-UTF8
-    locales) — try UTF-8 first, fall back to latin-1 (never fails, every
-    byte 0-255 is a valid codepoint) instead of always landing on U+FFFD
-    replacement chars, which render as tofu boxes in the GUI regardless
-    of what the original bytes actually were.
-    """
-    for elt in _walk_elts(pkt):
-        if elt.ID == 0:
-            try:
-                return elt.info.decode("utf-8") or None
-            except UnicodeDecodeError:
-                return elt.info.decode("latin-1") or None
-    return None
-
-
-def channel_of(pkt: Packet) -> int | None:
-    """Return the DS parameter set channel, or None."""
-    for elt in _walk_elts(pkt):
-        if elt.ID == 3 and elt.info:
-            return elt.info[0]
-    return None
-
-
-def bssid_of(pkt: Packet) -> str | None:
-    """Return the BSSID (addr3) of an 802.11 frame, or None."""
-    dot11 = pkt.getlayer(Dot11)
-    return dot11.addr3 if dot11 else None
-
-
 def is_eapol(pkt: Packet) -> bool:
     """True if the frame carries an EAPOL (802.1X) payload."""
     return bool(pkt.haslayer(EAPOL))

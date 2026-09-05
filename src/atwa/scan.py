@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import socket
+import threading
 import time
 from dataclasses import dataclass, field
 
 from scapy.config import conf
-from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeResp, RadioTap
-from scapy.sendrecv import AsyncSniffer, sendp
+from scapy.sendrecv import sendp
 
 from .attacks.pmkid import extract_pmkid, to_22000
-from .frames import bssid_of, channel_of, craft_probe_req, eapol_key_info, is_eapol, ssid_of
+from .dissect import Frame, channel_of, dissect, eapol_key_info, is_beacon_or_probe_resp, is_eapol, ssid_of
+from .frames import craft_probe_req
 from .radio import ALL_CHANNELS, CHANNELS_5GHZ, CHANNELS_24GHZ, ChannelHopper, random_locally_administered_mac
 from .secure import owe_transition_info, security_profile, wps_profile
 
@@ -74,7 +76,7 @@ class AccessPoint:
     owe_transition_ssid: str | None = None
     signal: int | None = None  # best (strongest) dBm seen from RadioTap
     last_signal: int | None = None  # most recent dBm reading (NOT a running max -- for live time-series display)
-    beacon_count: int = 0  # number of Dot11Beacon frames seen (not probe responses)
+    beacon_count: int = 0  # number of beacon frames seen (not probe responses)
     first_seen: float | None = None  # time.time() of first frame seen for this bssid
     last_seen: float | None = None  # time.time() of most recent frame seen for this bssid
     manufacturer: str | None = None  # OUI vendor name resolved from the BSSID
@@ -94,11 +96,7 @@ class ScanResult:
     aps: dict[str, AccessPoint] = field(default_factory=dict)
 
 
-def _is_target_frame(pkt) -> bool:
-    return pkt.haslayer(Dot11Beacon) or pkt.haslayer(Dot11ProbeResp)
-
-
-def _update_rx_quality(ap: AccessPoint, pkt) -> None:
+def _update_rx_quality(ap: AccessPoint, frame: Frame) -> None:
     """Track the AP's beacon/probe-response sequence numbers to derive
     rx_quality: what fraction of its frames we actually captured, adapted
     from airodump-ng's update_rx_quality() (dump_add_packet()'s seq-gap
@@ -107,10 +105,7 @@ def _update_rx_quality(ap: AccessPoint, pkt) -> None:
     cumulative fcapt/fmiss across the AP's lifetime, not airodump-ng's
     periodic reset-and-recompute window, since this scanner has no
     separate periodic-tick callback to drive that reset from."""
-    dot11 = pkt.getlayer(Dot11)
-    if dot11 is None:
-        return
-    seq = dot11.SC >> 4
+    seq = frame.sequence_control >> 4
     if ap._last_seq is not None:
         missed = (seq - ap._last_seq - 1) % 4096
         if 0 < missed < 1000:  # same sanity bound as airodump-ng -- reject wraparound noise
@@ -121,16 +116,20 @@ def _update_rx_quality(ap: AccessPoint, pkt) -> None:
     ap.rx_quality = min(100, int(100 * ap._fcapt / total)) if total else 0
 
 
-def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
-    """Update result with AP and client info from one sniffed frame.
+def process_packet(raw: bytes, result: ScanResult, own_mac: str | None = None) -> None:
+    """Update result with AP and client info from one sniffed frame
+    (RadioTap header onward, as captured off the wire).
 
     own_mac (optional): the scanning/attacking adapter's own MAC, excluded
     from client detection -- without it, our own auth/deauth/assoc frames
     sent at the target during an attack get misread as a real client of
     that AP (confirmed live, 2026-08-28: our randomized monitor MAC showed
     up in a target's Clients list after running PMKID/deauth against it)."""
-    if _is_target_frame(pkt):
-        bssid = bssid_of(pkt)
+    frame = dissect(raw)
+    if frame is None:
+        return
+    if is_beacon_or_probe_resp(frame):
+        bssid = frame.addr3
         if not bssid:
             return
         now = time.time()
@@ -142,16 +141,16 @@ def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
             if manuf and manuf.lower() != bssid.lower():
                 ap.manufacturer = manuf
         ap.last_seen = now
-        if pkt.haslayer(Dot11Beacon):
+        if frame.subtype == 8:  # beacon, not probe response
             ap.beacon_count += 1
-        _update_rx_quality(ap, pkt)
-        ssid = ssid_of(pkt)
+        _update_rx_quality(ap, frame)
+        ssid = ssid_of(frame)
         if ssid:
             ap.ssid = ssid
-        ch = channel_of(pkt)
+        ch = channel_of(frame)
         if ch:
             ap.channel = ch
-        profile = security_profile(pkt)
+        profile = security_profile(frame)
         # Never let a transient "open" reading downgrade an AP already
         # known to be secured — real captures include malformed/partial
         # frames (weak signal, RF noise) where security_profile() can't
@@ -162,33 +161,27 @@ def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
             ap.security = profile["security"]
             ap.pmf = profile["pmf"]
         if ap.security == "OWE":
-            owe = owe_transition_info(pkt)
+            owe = owe_transition_info(frame)
             if owe is not None:
                 ap.owe_transition_bssid = owe["bssid"]
                 ap.owe_transition_ssid = owe["ssid"]
-        wps = wps_profile(pkt)
+        wps = wps_profile(frame)
         if wps is not None:
             ap.wps = wps["state"]  # AP self-reports current lock state each beacon; always take the latest
             for key in ("manufacturer", "model_name", "model_number", "device_name"):
                 if wps.get(key):
                     setattr(ap, f"wps_{key}", wps[key])
-        rtap = pkt.getlayer(RadioTap)
-        dbm = getattr(rtap, "dBm_AntSignal", None) if rtap else None
-        if dbm is not None:
-            ap.last_signal = dbm  # always the latest reading, unlike signal's running max
-            if ap.signal is None or dbm > ap.signal:
-                ap.signal = dbm
-        return
-    dot11 = pkt.getlayer(Dot11)
-    if dot11 is None:
+        if frame.signal_dbm is not None:
+            ap.last_signal = frame.signal_dbm  # always the latest reading, unlike signal's running max
+            if ap.signal is None or frame.signal_dbm > ap.signal:
+                ap.signal = frame.signal_dbm
         return
     # Attribute client addresses to their AP via addr3 (BSSID) when known.
-    bssid = dot11.addr3
+    bssid = frame.addr3
     if bssid and bssid in result.aps:
         ap = result.aps[bssid]
-        rtap = pkt.getlayer(RadioTap)
-        dbm = getattr(rtap, "dBm_AntSignal", None) if rtap else None
-        for addr in (dot11.addr1, dot11.addr2):
+        dbm = frame.signal_dbm
+        for addr in (frame.addr1, frame.addr2):
             if addr and addr != BROADCAST and addr != bssid and (own_mac is None or addr.lower() != own_mac.lower()):
                 ap.clients.add(addr)
                 if dbm is not None and (addr not in ap.client_signal or dbm > ap.client_signal[addr]):
@@ -198,13 +191,64 @@ def process_packet(pkt, result: ScanResult, own_mac: str | None = None) -> None:
         # our own active association (that's attacks/pmkid.py's job). A
         # client naturally reconnecting to this AP during a routine scan
         # is a "free" capture we were previously just discarding.
-        if ap.pmkid is None and is_eapol(pkt):
-            info = eapol_key_info(pkt)
+        if ap.pmkid is None and is_eapol(frame):
+            info = eapol_key_info(frame)
             if info is not None and info[1] and not info[0]:  # M1: ack set, mic not set
-                found = extract_pmkid(bytes(pkt))
+                found = extract_pmkid(frame.raw)
                 if found:
-                    client = dot11.addr1 if dot11.addr2 == bssid else dot11.addr2
+                    client = frame.addr1 if frame.addr2 == bssid else frame.addr2
                     ap.pmkid = to_22000(found, bssid, client, ap.ssid)
+
+
+class RawFrameSniffer:
+    """Continuous raw-bytes capture loop -- the dpkt-swap replacement for
+    scapy's AsyncSniffer in the scan hot path. Opens a raw AF_PACKET
+    socket via scapy's own L2listen() (socket setup/promisc/bind
+    machinery is unrelated to the per-packet dissection cost this swap
+    targets, so it stays) but calls recv_raw() instead of recv() --
+    recv_raw() returns raw bytes without scapy dissecting them into a
+    Packet object, letting prn() hand them to dissect() instead.
+
+    Deliberately mirrors just the AsyncSniffer surface callers already
+    depend on (start()/stop()/.thread.is_alive()/.exception) so the
+    self-healing check wired into the GUI's scan loop (app.py
+    _start_scan, radio.check_and_heal()) keeps working unchanged.
+    """
+
+    def __init__(self, iface: str, prn):
+        self.iface = iface
+        self.prn = prn
+        self.exception: Exception | None = None
+        self.thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        sock = None
+        try:
+            sock = conf.L2listen(iface=self.iface)
+            sock.ins.settimeout(0.5)  # periodic wake-up so stop() is noticed promptly even with no traffic
+            while not self._stop_event.is_set():
+                try:
+                    _cls, raw, _ts = sock.recv_raw()
+                except socket.timeout:
+                    continue
+                if raw:
+                    self.prn(raw)
+        except Exception as exc:  # noqa: BLE001 - surfaced via .exception, same contract as AsyncSniffer
+            self.exception = exc
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:  # noqa: BLE001, S110 - close can race with teardown
+                    pass
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
 
 def scan(
@@ -237,10 +281,9 @@ def scan(
     hopping logic."""
     result = ScanResult()
     hopper = ChannelHopper(iface=iface, channels=channels or list(ALL_CHANNELS))
-    sniffer = AsyncSniffer(
+    sniffer = RawFrameSniffer(
         iface=iface,
-        prn=lambda pkt: process_packet(pkt, result),
-        store=False,
+        prn=lambda raw: process_packet(raw, result),
     )
     sniffer.start()
     try:

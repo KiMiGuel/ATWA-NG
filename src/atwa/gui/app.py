@@ -1175,11 +1175,9 @@ class App:
         def loop():
             import time
 
-            from scapy.sendrecv import AsyncSniffer
-
-            from ..frames import bssid_of
+            from ..dissect import dissect
             from ..radio import ALL_CHANNELS, ChannelHopper, check_and_heal
-            from ..scan import ScanResult, process_packet
+            from ..scan import RawFrameSniffer, ScanResult, process_packet
 
             # One persistent hopper for the whole scanning session, not a
             # fresh one per pass — matches how the compiled scan engine actually works
@@ -1196,18 +1194,16 @@ class App:
             result = ScanResult(aps=self.aps)
             hopper = ChannelHopper(iface=self.mon_iface, channels=self._scan_channels or list(ALL_CHANNELS))
 
-            def on_packet(pkt):
-                bssid = bssid_of(pkt)
+            def on_packet(raw):
+                frame = dissect(raw)
+                bssid = frame.addr3 if frame else None
                 had_ssid = result.aps[bssid].ssid if bssid in result.aps else None
-                process_packet(pkt, result, own_mac=self.own_mac)
+                process_packet(raw, result, own_mac=self.own_mac)
                 if bssid and bssid in result.aps and not had_ssid and result.aps[bssid].ssid:
                     self._log(f"revealed hidden SSID: {result.aps[bssid].ssid} ({bssid})")
 
             def start_sniffer():
-                # Same conservative BPF filter as scan.scan() -- drops only
-                # control frames (ACK/RTS/CTS/block-ack), never management/
-                # data, since on_packet()/process_packet() reads both.
-                s = AsyncSniffer(iface=self.mon_iface, prn=on_packet, store=False)
+                s = RawFrameSniffer(iface=self.mon_iface, prn=on_packet)
                 s.start()
                 return s
 
