@@ -108,6 +108,8 @@ atwa verify-handshake captura.cap
 ```bash
 git clone https://github.com/KiMiGuel/ATWA-NG.git
 cd ATWA-NG
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
