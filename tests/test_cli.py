@@ -40,6 +40,7 @@ from atwa.scan import AccessPoint, ScanResult
     (["eviltwin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6"], attacks_cmds._cmd_eviltwin),
     (["downgrade-twin", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "MySSID", "6", "cap.pcap"], attacks_cmds._cmd_downgrade_twin),
     (["owe-downgrade", "wlan0", "wlan1", "AA:BB:CC:DD:EE:FF", "HomeOpen", "6"], attacks_cmds._cmd_owe_downgrade),
+    (["dragonblood", "wlan0", "AA:BB:CC:DD:EE:FF", "words.txt"], attacks_cmds._cmd_dragonblood),
 ])
 def test_subcommand_parses_and_wires_correct_handler(argv, expected_func):
     parser = build_parser()
@@ -180,3 +181,52 @@ def test_wps_recon_single_channel_arg_scoped_to_that_channel(monkeypatch):
     args = build_parser().parse_args(["wps-recon", "wlan0", "--channel", "6"])
     scan_cmds._cmd_wps_recon(args)
     assert captured["channels"] == [6]
+
+
+# --- _cmd_dragonblood: wordlist file I/O + outfile writing -------------
+
+
+def test_dragonblood_reads_wordlist_and_writes_pruned_outfile(monkeypatch, tmp_path, capsys):
+    from atwa.attacks.dragonblood import DragonbloodResult
+
+    wordlist_file = tmp_path / "words.txt"
+    wordlist_file.write_text("password1\n\npassword2\n  \npassword3\n")  # blank lines must be skipped
+    outfile = tmp_path / "pruned.txt"
+
+    captured = {}
+
+    def fake_prune(iface, bssid, wordlist, channel, num_macs, samples_per_mac, timeout, progress_fn):
+        captured["wordlist"] = wordlist
+        return DragonbloodResult(
+            pruned_wordlist=["password1", "password3"],
+            mac_timings={"11:11:11:11:11:11": 0.021},
+            detail="2/3 candidates consistent",
+        )
+
+    monkeypatch.setattr(attacks_cmds, "timing_prune_wordlist", fake_prune)
+    args = build_parser().parse_args(["dragonblood", "wlan0", "AA:BB:CC:DD:EE:FF", str(wordlist_file), "--outfile", str(outfile)])
+
+    rc = attacks_cmds._cmd_dragonblood(args)
+
+    assert rc == 0
+    assert captured["wordlist"] == ["password1", "password2", "password3"]
+    assert outfile.read_text() == "password1\npassword3\n"
+    out = capsys.readouterr().out
+    assert "2/3 candidates consistent" in out
+    assert "21.0ms" in out
+
+
+def test_dragonblood_skips_outfile_when_not_given(monkeypatch, tmp_path):
+    from atwa.attacks.dragonblood import DragonbloodResult
+
+    wordlist_file = tmp_path / "words.txt"
+    wordlist_file.write_text("password1\n")
+
+    monkeypatch.setattr(
+        attacks_cmds, "timing_prune_wordlist",
+        lambda **kw: DragonbloodResult(pruned_wordlist=["password1"], mac_timings={}, detail="ok"),
+    )
+    args = build_parser().parse_args(["dragonblood", "wlan0", "AA:BB:CC:DD:EE:FF", str(wordlist_file)])
+
+    rc = attacks_cmds._cmd_dragonblood(args)
+    assert rc == 0

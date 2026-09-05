@@ -22,6 +22,7 @@ import argparse
 from .cli_commands.attacks import (
     _cmd_deauth,
     _cmd_downgrade_twin,
+    _cmd_dragonblood,
     _cmd_eviltwin,
     _cmd_handshake,
     _cmd_omni,
@@ -201,6 +202,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("channel", type=int)
     p.add_argument("--timeout", type=float, default=120.0)
     p.set_defaults(func=_cmd_owe_downgrade)
+
+    p = sub.add_parser("dragonblood", help="SAE timing side-channel wordlist pruning (CVE-2019-9494) -- only meaningful against unpatched pre-hostapd-2.10 APs")
+    p.add_argument("iface")
+    p.add_argument("bssid")
+    p.add_argument("wordlist", help="path to a newline-separated password wordlist")
+    p.add_argument("--channel", type=int, default=None)
+    p.add_argument("--num-macs", type=int, default=4)
+    p.add_argument("--samples-per-mac", type=int, default=5)
+    p.add_argument("--timeout", type=float, default=2.0, help="per-SAE-Commit reply timeout in seconds")
+    p.add_argument("--outfile", default=None, help="write the pruned wordlist here")
+    p.set_defaults(func=_cmd_dragonblood)
 
     return parser
 
