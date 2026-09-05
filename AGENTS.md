@@ -41,6 +41,15 @@ PMKID-less attack logic intact.
   what "NG" stands for in user-facing text.
 
 ## Rules
+- **Worktree/main sync**: multiple worktrees/branches can merge into
+  `main` independently (2026-09-04: a worktree fell behind `main` by 5
+  commits — OWE fix, pmf_bypass, downgrade_twin, cracking docs — landed
+  via a different branch with nobody syncing it back). At the START of
+  every session, before any new work, run `git merge main --ff-only` in
+  the current worktree (falls back to `git merge main` if that fails,
+  i.e. main has actually diverged) — worktrees share one `.git`, so this
+  needs no fetch. After merging a worktree branch into `main`, do NOT
+  assume other worktrees picked it up automatically; they didn't.
 - `github.com/KiMiGuel/ATWA-NG` is live (has been since ~2026-08-28) —
   pushes/tags are fine. The old "TOP SECRET, no GitHub push" note is
   retired; the still-active boundary is just no mixing into `~/CCM`
