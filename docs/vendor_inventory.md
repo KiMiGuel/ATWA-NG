@@ -5,20 +5,36 @@ notes whether it is a **vendored** binary (shipped under `vendor/`) or a
 **system** dependency, and rates the difficulty of replacing it with native
 Python. It is the starting point for Phase 6 of the refactor plan.
 
-**Project-wide wrapper policy (confirmed 2026-08-27):** the only acceptable
-wrappers in ATWA-NG are cracking backends (John, `aircrack-ng`) and
-cap/pcap-format tools (`hcxpcapngtool`, `hcxhashtool`, `pcapfix`,
-`mergecap`) — everything else (scanning, injection, WPS, monitor-mode
-control) must be native Python, with no legacy-fallback flags. **Scanning,
-injection, and WPS (both attack and recon) are all done** — the last
-wrapper outside the cracking-backend exception (`wash`, for `wps-recon`)
-was closed out 2026-08-31.
+**Project-wide wrapper policy (confirmed 2026-08-27, extended 2026-09-04):**
+the acceptable wrappers in ATWA-NG are cracking backends (John,
+`aircrack-ng`), cap/pcap-format tools (`hcxpcapngtool`, `hcxhashtool`,
+`pcapfix`, `mergecap`), and `eapol_dump.sh` (see below) — everything else
+(scanning, injection, WPS, monitor-mode control) must be native Python,
+with no legacy-fallback flags. **Scanning, injection, and WPS (both
+attack and recon) are all done** — the last wrapper outside these
+exceptions (`wash`, for `wps-recon`) was closed out 2026-08-31.
+
+### `eapol_dump.sh` (accepted exception, 2026-09-04)
+
+`vendor/eapol_dump/eapol_dump.sh` (third-party, "(c) 2016 __franky") is
+spawned by `atwa verify-handshake` (`src/atwa/cli_commands/crack.py:42`,
+`EAPOLDUMP_BIN` in `cli_commands/__init__.py:38`) to dump per-frame
+EAPOL nonce/MIC values from a `.cap` file for manual inspection — a
+diagnostic/inspection tool, not a scanning, injection, or attack
+primitive, so it sits outside the spirit of the native-only mandate
+(which targets the actual attack surface) the same way `hcxpcapngtool`/
+`pcapfix` do. Flagged as an undisclosed gap during the 2026-09-02 live
+test (not listed here, didn't cleanly fit either pre-existing
+exception category); resolved by extending the exception list above
+rather than replacing it with a native EAPOL dumper. Kept as-is —
+works correctly, low-risk, one-off diagnostic use only.
 
 ## Vendor roles
 
 | Vendor directory | What ATWA-NG uses it for | Long-term plan |
 |---|---|---|
 | `vendor/aircrack-ng` | `aircrack-ng` (WPA/WEP cracking) only — `airodump-ng` (removed 2026-08-27) and `aireplay-ng` (removed 2026-08-27) are **no longer used anywhere** | Keep `aircrack-ng` as an **optional cracking backend** alongside John — the one permanent exception to the native-only policy. |
+| `vendor/eapol_dump` | `eapol_dump.sh` — per-frame EAPOL nonce/MIC dump for `atwa verify-handshake` | Accepted exception (2026-09-04) — diagnostic/inspection tool, not attack surface. Leave as-is. |
 | `vendor/n2-ng-v1-research` | Research notes only (WPA3, PMKID, WPS, evil-twin, password-cracking papers) | No code to port; use as design reference. Remove/update any docs that still say "n2-ng". |
 | `vendor/n2-ng-v1-src` | Legacy v1 Python source (`main.py`, `scanner.py`, `omni.py`, `capture.py`, `display.py`, `utils.py`) | Mine for reusable helpers (CSV parsing, capture-path helpers, security profiling), rewrite into `src/atwa/` modules, ignore duplicates. |
 | `vendor/reaver` | Historical reference only now — `reaver`'s WPS state machine/PIN exchange was ported into native Python (`src/atwa/attacks/wps.py`, pixie-dust/bruteforce/M2→M3 fix, developed 2026-08-27 onward) and `wash`'s recon role was closed out 2026-08-31 (`wps-recon` now uses `scan.py`/`secure.wps_profile()`). No remaining call sites spawn anything from this directory. | Kept vendored for reference/comparison only; not a build dependency for anything atwa currently runs. |
@@ -81,6 +97,7 @@ as `airodump-ng`, no legacy flag.
 | `aircrack-ng` | `src/atwa/cli_commands/crack.py:23` | Crack `.cap` directly (`crack-cap`) | Return code + stdout | Keep as option | N/A — stays optional backend |
 | `aircrack-ng` | `src/atwa/crack/aircrack.py:67,80` | GUI cracking backend (`AirCracker`) | stdout parsed for key | Keep as option | N/A — stays optional backend |
 | ~~`wash`~~ | ~~`src/atwa/cli_commands/scan.py`~~ | ~~WPS recon (`wps-recon`)~~ | — | Done (2026-08-31) | Closed — `wps-recon` now native |
+| `eapol_dump.sh` | `src/atwa/cli_commands/crack.py:42` | Per-frame EAPOL nonce/MIC dump (`verify-handshake`) | stdout, human-inspected | N/A — accepted exception | N/A — diagnostic tool, not attack surface |
 
 ### System / third-party binaries
 
