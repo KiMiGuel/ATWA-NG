@@ -151,6 +151,8 @@
   td:last-child{color:var(--ink-muted)}
   tbody tr:hover{background:var(--bg-raised)}
 
+  .screenshot{margin-top:34px;border:1px solid var(--line);background:var(--bg-sunken);padding:10px}
+  .screenshot img{display:block;width:100%;height:auto}
   footer{border-top:1px solid var(--line);padding:40px 0 60px;color:var(--ink-muted);font-size:.88rem}
   footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:20px}
   footer a{margin-right:20px;font-family:var(--font-mono);font-size:.82rem}
@@ -174,6 +176,7 @@
       <a href="#what">What it does</a>
       <a href="#pincer">PINCER</a>
       <a href="#attacks">Attacks</a>
+      <a href="#usage">Usage</a>
       <a href="#how">How it works</a>
       <a href="#install">Install</a>
       <a href="https://github.com/KiMiGuel/ATWA-NG">GitHub</a>
@@ -291,6 +294,61 @@ atwa gui</pre>
       <tr><td>Hidden SSID de-cloaking</td><td>Automatic, the moment a probe response reveals it</td></tr>
     </table>
     </div>
+  </div>
+</section>
+
+<section id="usage">
+  <div class="wrap">
+    <p class="kicker">Using it</p>
+    <h2>What the buttons actually do</h2>
+    <p class="lead">Launch with <code>atwa gui</code> (needs root). Here's the flow, start to finish.</p>
+    <div class="screenshot bracketed">
+      <img src="brand/gui-screenshot.png" alt="ATWA-NG GUI — adapter selection, scan list, target panel, attacks and log">
+    </div>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">01</span>
+        <h3>Pick an adapter, Start Monitor</h3>
+        <p>Puts your WiFi card into monitor mode. A second adapter in <b style="color:var(--ink)">AP iface</b> unlocks PINCER or Evil Twin's rogue AP.</p>
+      </div>
+      <div class="card">
+        <span class="tag">02</span>
+        <h3>Start Scanning</h3>
+        <p>Channel-hops and fills the target list live — BSSID, SSID, channel, security, signal.</p>
+      </div>
+      <div class="card">
+        <span class="tag">03</span>
+        <h3>Click a target</h3>
+        <p>Locks the channel, starts the signal graph, and starts a real capture against just that AP.</p>
+      </div>
+      <div class="card">
+        <span class="tag">04</span>
+        <h3>Run an attack</h3>
+        <p>Deauth, PMKID, Handshake, Smart/OMNI, WEP, WPS, Evil Twin — from the Attack menu or button stack.</p>
+      </div>
+      <div class="card">
+        <span class="tag">05</span>
+        <h3>Captures tab</h3>
+        <p>Inspect, Convert to 22000, Fix, Merge, Crack Selected, or the folder-wide Crack Handshakes dialog.</p>
+      </div>
+      <div class="card">
+        <span class="tag">06</span>
+        <h3>Cracking</h3>
+        <p>Two backends — Miguel the Ripper (default) or aircrack-ng. Point Crack Handshakes at a folder and it merges, converts, and cracks the lot.</p>
+      </div>
+    </div>
+    <div class="install bracketed">
+      <div class="bar"><span>cracking from the CLI</span></div>
+      <pre><span class="c"># .cap/.pcap auto-converts to 22000 first</span>
+atwa crack capture.cap rockyou.txt
+
+<span class="c"># aircrack-ng backend instead</span>
+atwa crack-cap capture.cap rockyou.txt --bssid AA:BB:CC:DD:EE:FF
+
+<span class="c"># sanity-check a capture before spending wordlist time on it</span>
+atwa verify-handshake capture.cap</pre>
+    </div>
+    <p class="lead" style="margin-top:24px">Full CLI reference (16 subcommands) and a dependency checklist → <a href="https://github.com/KiMiGuel/ATWA-NG/blob/main/USAGE.md">USAGE.md</a></p>
   </div>
 </section>
 
