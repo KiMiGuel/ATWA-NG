@@ -32,3 +32,18 @@ Pycharm/
 
 # Third-party copyrighted reference material — local only, never pushed
 2007-471.pdf
+
+# AI-agent workflow/internal files (2026-09-04 user rule): kept and
+# actively maintained locally (session logs, agent instructions, research
+# notes), but never shipped to a public clone. `git rm --cached` untracks
+# an already-committed file without touching it on disk -- these entries
+# only stop them from being re-added, they don't delete anything here.
+AGENTS.md
+CLAUDE.md
+CHECKPOINT.md
+STATUS.md
+NOTES_ARCHIVE.txt
+source_cherrypick.c
+atwa_issues.md
+research-2026-08-30.md
+.mcp.json
