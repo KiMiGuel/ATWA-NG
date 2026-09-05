@@ -185,8 +185,19 @@ open:
         fixed; the IE-parsing + downgrade-attack piece is still open,
         deliberately not rushed without a real OWE capture to verify
         byte offsets against.
-  - [ ] CSA spoofing — exploratory, no published PoC bytes exist. Not
-        started.
+  <!-- - [ ] CSA spoofing — exploratory, no published PoC bytes exist.
+       Pulled off the active roadmap (2026-09-04): unlike every other
+       item here, there's no published PoC, research paper with exact
+       frame-format details, or working reference implementation
+       anywhere to build against or verify byte offsets from — this
+       would mean designing the attack from the 802.11 spec alone, with
+       no way to check correctness short of live-testing against real
+       hardware. Further research needed before this is worth
+       scheduling again. Do NOT discard — revisit if/when a real PoC or
+       spec-level writeup surfaces. -->
+  CSA spoofing: further research needed / future update — not
+  discarded, just off the active list for now (see commented-out entry
+  above for why).
   - [ ] Dragonblood SAE side-channel — bigger, novel build (timing/cache
         measurement, no existing scaffolding to reuse). Not started.
 - [x] Color-theme/logo integration — substantially complete as of
@@ -242,7 +253,9 @@ direction — no per-item pushes).
 3. [ ] OWE transition-mode downgrade (the actual attack — IE parsing +
        rogue-open-twin; the misclassification bug is already fixed,
        separately, see the WPA3/PMF-bypass list above).
-4. [ ] CSA spoofing — exploratory, no PoC exists anywhere found.
+<!-- 4. [ ] CSA spoofing — exploratory, no PoC exists anywhere found.
+     Pulled off this list (2026-09-04), not discarded — see the Roadmap
+     section above for why. Further research needed / future update. -->
 5. [ ] Dragonblood SAE side-channel — bigger, novel build.
 6. [x] Self-healing monitor-mode/channel drift check (2026-09-04) — done,
        see the Roadmap section above for the full account.
