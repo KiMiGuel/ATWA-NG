@@ -156,6 +156,8 @@
   footer a{margin-right:20px;font-family:var(--font-mono);font-size:.82rem}
   .disclaimer{color:var(--ink-dim);font-size:.8rem;max-width:640px;margin-top:10px;font-family:var(--font-mono)}
   footer b{color:var(--ink);font-family:var(--font-display)}
+  .cross-promo{margin-top:18px;padding-top:18px;border-top:1px dashed var(--line)}
+  .cross-promo a{font-family:var(--font-display);font-size:.95rem;color:var(--cyan-bright)}
 </style>
 </head>
 <body>
@@ -359,16 +361,21 @@ atwa gui</pre>
 </section>
 
 <footer>
-  <div class="wrap">
-    <div>
-      <b>ATWA-NG</b> — hybrid WiFi pentesting engine, the N2-NG successor.<br>
-      Author: <b>KiMiGuEL</b> · <a href="https://github.com/KiMiGuel">INDEPENTEST</a>
-      <p class="disclaimer">FOR AUTHORIZED SECURITY TESTING ONLY — against networks and devices you own or are explicitly authorized to test.</p>
+  <div class="wrap" style="display:block">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:20px">
+      <div>
+        <b>ATWA-NG</b> — hybrid WiFi pentesting engine, the N2-NG successor.<br>
+        Author: <b>KiMiGuEL</b> · <a href="https://github.com/KiMiGuel">INDEPENTEST</a>
+        <p class="disclaimer">FOR AUTHORIZED SECURITY TESTING ONLY — against networks and devices you own or are explicitly authorized to test.</p>
+      </div>
+      <div>
+        <a href="https://github.com/KiMiGuel/ATWA-NG">GitHub</a>
+        <a href="https://github.com/KiMiGuel/ATWA-NG/releases">Releases</a>
+        <a href="https://github.com/KiMiGuel/ATWA-NG/blob/main/README.md">Docs</a>
+      </div>
     </div>
-    <div>
-      <a href="https://github.com/KiMiGuel/ATWA-NG">GitHub</a>
-      <a href="https://github.com/KiMiGuel/ATWA-NG/releases">Releases</a>
-      <a href="https://github.com/KiMiGuel/ATWA-NG/blob/main/README.md">Docs</a>
+    <div class="cross-promo">
+      ¿Ocupas una wordlist? <a href="https://kimiguel.github.io/Indepenlist-MX-wordlist/">Presiona aquí →</a>
     </div>
   </div>
 </footer>
