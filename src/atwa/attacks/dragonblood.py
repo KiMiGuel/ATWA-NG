@@ -144,9 +144,23 @@ class DragonbloodResult:
 
 def _measure_sae_commit_rtt(iface: str, bssid: str, client_mac: str, timeout: float = 2.0) -> float | None:
     """Send one SAE Commit from client_mac to bssid and measure wall-clock
-    time until the AP's own Authentication reply (any Dot11Auth frame
-    from bssid using the SAE algorithm) -- None if nothing arrives
-    within timeout.
+    time until the AP genuinely engages with it (any Dot11Auth frame from
+    bssid using the SAE algorithm with status=0) -- None if nothing
+    arrives within timeout, OR if the only reply is a rejection.
+
+    status MUST be checked, not just algo -- confirmed live (2026-09-04)
+    against a real WPA2 (non-SAE) AP: it replied within ~30ms to every
+    single Commit with algo=3 (echoing back the algorithm we asked for,
+    standard 802.11 behavior for a rejection) but status=13
+    (AUTH_ALGO_UNSUPPORTED) -- a fast, constant-time "algorithm not
+    supported" bounce from the AP's ordinary auth-algorithm check,
+    returned before it would ever touch the timing-vulnerable
+    hunting-and-pecking derivation at all. Treating that as a real timing
+    sample would poison every measurement with meaningless, uniform
+    rejection latency instead of the actual signal -- worse, it would
+    look like clean, consistent data instead of an obvious failure,
+    exactly the kind of wrong-but-plausible result that's hard to catch
+    without testing against real hardware.
 
     A single measurement is noisy (network jitter, retries, general RF
     conditions) -- timing_prune_wordlist() averages several per MAC,
@@ -161,7 +175,7 @@ def _measure_sae_commit_rtt(iface: str, bssid: str, client_mac: str, timeout: fl
         auth = pkt.getlayer(Dot11Auth)
         if dot11 is None or auth is None:
             return
-        if dot11.addr2 != bssid or auth.algo != SAE_AUTH_ALGO:
+        if dot11.addr2 != bssid or auth.algo != SAE_AUTH_ALGO or auth.status != 0:
             return
         found.append(time.perf_counter() - sent_at[0])
 

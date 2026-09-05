@@ -156,11 +156,11 @@ class FakeSniffer:
         pass
 
 
-def _sae_reply(bssid: str, client: str) -> object:
+def _sae_reply(bssid: str, client: str, seqnum: int = 2, status: int = 0) -> object:
     """A minimal SAE Commit-shaped reply FROM bssid TO client (addr2 is
     the sender -- reversed from craft_sae_commit's own client->bssid
     addressing)."""
-    return RadioTap() / Dot11(type=0, subtype=11, addr1=client, addr2=bssid, addr3=bssid) / Dot11Auth(algo=SAE_AUTH_ALGO, seqnum=2, status=0)
+    return RadioTap() / Dot11(type=0, subtype=11, addr1=client, addr2=bssid, addr3=bssid) / Dot11Auth(algo=SAE_AUTH_ALGO, seqnum=seqnum, status=status)
 
 
 def test_measure_sae_commit_rtt_returns_elapsed_time(monkeypatch):
@@ -194,6 +194,27 @@ def test_measure_sae_commit_rtt_ignores_reply_from_wrong_bssid(monkeypatch):
 def test_measure_sae_commit_rtt_returns_none_on_no_reply(monkeypatch):
     monkeypatch.setattr(dragonblood_module, "AsyncSniffer", FakeSniffer)
     monkeypatch.setattr(dragonblood_module, "sendp", lambda pkt, iface, verbose: None)
+
+    rtt = _measure_sae_commit_rtt("wlan0mon", MAC_A, MAC_B, timeout=0.05)
+    assert rtt is None
+
+
+def test_measure_sae_commit_rtt_ignores_algorithm_rejection(monkeypatch):
+    """Regression test for a real bug found live (2026-09-04): a real
+    WPA2 (non-SAE) AP replied to every single Commit within ~30ms with
+    algo=3 (echoing the requested algorithm, standard for a rejection)
+    but status=13 (AUTH_ALGO_UNSUPPORTED) -- a fast, constant-time bounce
+    from the AP's ordinary auth-algorithm check, never touching the
+    timing-vulnerable derivation at all. Counting that as a real sample
+    would poison every measurement with meaningless, uniform rejection
+    latency that looks like clean data instead of an obvious failure."""
+    monkeypatch.setattr(dragonblood_module, "AsyncSniffer", FakeSniffer)
+    monkeypatch.setattr(dragonblood_module.time, "sleep", lambda s: None)
+
+    def fake_sendp(pkt, iface, verbose):
+        FakeSniffer.last_instance.prn(_sae_reply(MAC_A, MAC_B, seqnum=2, status=13))
+
+    monkeypatch.setattr(dragonblood_module, "sendp", fake_sendp)
 
     rtt = _measure_sae_commit_rtt("wlan0mon", MAC_A, MAC_B, timeout=0.05)
     assert rtt is None
