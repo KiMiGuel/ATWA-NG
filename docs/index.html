@@ -172,6 +172,7 @@
       <a href="#what">What it does</a>
       <a href="#pincer">PINCER</a>
       <a href="#attacks">Attacks</a>
+      <a href="#gui">The GUI</a>
       <a href="#how">How it works</a>
       <a href="#install">Install</a>
       <a href="https://github.com/KiMiGuel/ATWA-NG">GitHub</a>
@@ -288,6 +289,26 @@ atwa gui</pre>
       <tr><td>Cracking</td><td>Miguel and aircrack-ng wired in — one-click crack, or point it at a folder of captures to merge, convert, and crack the lot</td></tr>
       <tr><td>Hidden SSID de-cloaking</td><td>Automatic, the moment a probe response reveals it</td></tr>
     </table>
+    </div>
+  </div>
+</section>
+
+<section id="gui">
+  <div class="wrap">
+    <p class="kicker">The GUI, button by button</p>
+    <h2>First tool to put scanning and pentesting in one window</h2>
+    <p class="lead">No separate scanner, no separate attack script, no separate cracker — same window from first beacon to cracked password.</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">SCAN</span>
+        <h3>Find it</h3>
+        <p><b>Start Monitor Mode</b>, then <b>Start Scanning</b> — targets fill in live. Click one to lock its channel and start capturing. <b>Stop Scan</b> / <b>Stop Monitor Mode</b> to end it, <b>WPS Scan</b> to check who nearby has WPS open.</p>
+      </div>
+      <div class="card">
+        <span class="tag">CRACK</span>
+        <h3>Break it</h3>
+        <p>Captures tab → <b>Crack Handshakes</b>. Point it at a folder and a wordlist, pick <b>John</b> or <b>Aircrack-ng</b>, hit <b>Run</b>. <b>Stop</b> actually kills the process — the password lands on screen and in <code>creds.json</code> next to the capture.</p>
+      </div>
     </div>
   </div>
 </section>

@@ -75,31 +75,15 @@ Every one of these is a real, native attack — not a `subprocess.run()` gamble.
 
 ---
 
-## Cracking, how-to
+## One window: scan it, attack it, crack it
 
-Two backends, pick either — **Miguel the Ripper** is the default; **aircrack-ng** is wired in as an alternate.
+ATWA-NG is the first WiFi tool to put scanning and pentesting in the same GUI — no separate scanner, no separate attack script, no separate cracker to juggle.
 
-**GUI — the easy way.** Captures menu → Crack Handshakes. Point it at a *folder*, not a single file: it merges every `.cap`/`.pcap`/`.pcapng` and `.22000` it finds in there, converts formats as needed, and cracks the combined result. Pick a backend (radio button) and a wordlist, hit Run. A folder named `<SSID>_<BSSID>` (what every attack writes to under `~/atwa-hs` by default) auto-fills the BSSID field for aircrack-ng.
+**Scanning.** Pick an adapter, hit **Start Monitor Mode**, then **Start Scanning** — targets fill in live (SSID, BSSID, channel, signal). Click a target to lock onto its channel and start capturing. **Stop Scan** / **Stop Monitor Mode** end it, **WPS Scan** checks who nearby has WPS open.
 
-**CLI — three commands, pick the shape that matches what you have:**
+**Cracking.** Captures tab → **Crack Handshakes**. Point it at a folder and a wordlist, pick a backend — **John** (merges everything it finds) or **Aircrack-ng** (needs a BSSID, auto-filled from the folder name) — and hit **Run**. **Stop** actually kills the process; a cracked password shows on screen and gets saved to `creds.json` next to the capture.
 
-```bash
-# Already have a 22000 hash line, or a single .cap/.pcap/.pcapng — Miguel the Ripper backend.
-# .cap/.pcap/.pcapng gets auto-converted to 22000 first (via hcxpcapngtool), no extra step needed.
-atwa crack capture.cap rockyou.txt
-atwa crack handshake.22000 rockyou.txt
-
-# Same capture file, aircrack-ng backend instead (needs the real capture, not a 22000 hash).
-atwa crack-cap capture.cap rockyou.txt --bssid AA:BB:CC:DD:EE:FF
-
-# Sanity-check a capture actually has a real, crackable handshake before
-# spending wordlist time on it (checks message pairing, not password validity).
-atwa verify-handshake capture.cap
-```
-
-**A whole folder from the CLI** — no dedicated subcommand for this (the GUI's Crack Handshakes dialog is the only place the merge-a-whole-folder flow lives today); drive `crack.convert.merge_captures()`/`merge_22000_files()` directly from a script if you need it outside the GUI. Note `atwa smart`/`atwa omni` already crack their *own* target's captured material automatically as their final stage — that's single-target, not the folder-wide merge.
-
-**Where captures live:** every attack (PMKID, handshake, PINCER, downgrade-twin, evil-twin) writes to `~/atwa-hs/<SSID>_<BSSID>/`, always — that's the one place to point a manual crack run at regardless of which attack produced the capture.
+Full button-by-button walkthrough with screenshots: [USAGE.md](USAGE.md#4-the-core-flow). CLI equivalents for every step: [USAGE.md § CLI reference](USAGE.md#5-cli-reference).
 
 ---
 
