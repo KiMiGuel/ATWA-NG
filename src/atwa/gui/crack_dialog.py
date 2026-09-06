@@ -21,6 +21,7 @@ from typing import Any
 from ..crack.aircrack import AirCracker, AircrackUnavailableError
 from ..crack.convert import cap_to_22000, merge_22000_files, merge_captures
 from ..crack.john import JohnCracker, JohnUnavailableError
+from ..storage import record_cracked_password
 from .theme import THEME
 
 _CAP_SUFFIXES = {".cap", ".pcap", ".pcapng"}
@@ -198,6 +199,8 @@ class CrackDialog(tk.Toplevel):
                 return
             results = cracker.run_streaming(str(batch), wordlist, self._on_line, self._proc_holder)
             if results:
+                for hash_id, password in results.items():
+                    record_cracked_password(directory, "john", hash_id, password)
                 summary = "\n".join(f"{k}: {v}" for k, v in results.items())
                 self._queue.put(("done", f"\nCRACKED:\n{summary}"))
             else:
@@ -224,6 +227,8 @@ class CrackDialog(tk.Toplevel):
                 return
             results = cracker.run_streaming(capfile, wordlist, self._on_line, self._proc_holder)
             if results:
+                for hash_id, password in results.items():
+                    record_cracked_password(directory, "aircrack-ng", hash_id, password)
                 summary = "\n".join(f"{k}: {v}" for k, v in results.items())
                 self._queue.put(("done", f"\nCRACKED:\n{summary}"))
             else:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from ..crack.convert import cap_to_22000
 from ..crack.john import JohnCracker
+from ..storage import record_cracked_password
 from . import CAPCRACK_BIN, EAPOLDUMP_BIN, _run_bounded
 
 
@@ -17,6 +19,7 @@ def _cmd_crack(args) -> int:
     results = JohnCracker().crack(hashfile, args.wordlist)
     for hash_id, password in results.items():
         print(f"{hash_id}: {password}")
+        record_cracked_password(Path(args.hashfile).parent, "john", hash_id, password)
     return 0 if results else 1
 
 

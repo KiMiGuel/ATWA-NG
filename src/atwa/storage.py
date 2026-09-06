@@ -6,6 +6,7 @@ sessions and renames going forward.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -75,3 +76,24 @@ def organized_output_path(kind: str, filename: str) -> Path:
 
 def is_supported_capture(path: Path) -> bool:
     return path.suffix.lower() in VALID_CAPTURE_SUFFIXES
+
+
+def record_cracked_password(directory: Path, tool: str, identifier: str, password: str) -> Path:
+    """Append a cracked-password record to <directory>/creds.json.
+
+    Kept next to the handshake it was cracked from, per the existing
+    per-target folder convention, rather than a separate results store.
+    """
+    creds_file = Path(directory) / "creds.json"
+    try:
+        records = json.loads(creds_file.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        records = []
+    records.append({
+        "tool": tool,
+        "identifier": identifier,
+        "password": password,
+        "cracked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+    creds_file.write_text(json.dumps(records, indent=2) + "\n")
+    return creds_file
