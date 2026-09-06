@@ -220,6 +220,8 @@ class App:
         attack_menu.add_command(label="WPS Pixie-Dust (offline)", command=self._attack_wps_pixie)
         attack_menu.add_command(label="WPS Bruteforce (experimental)", command=self._attack_wps_bruteforce)
         attack_menu.add_command(label="Evil Twin (Captive Portal)", command=self._attack_eviltwin)
+        attack_menu.add_command(label="Downgrade Twin (WPA3-transition, portal-free)", command=self._attack_downgrade_twin)
+        attack_menu.add_command(label="OWE Downgrade (open-transition, portal-free)", command=self._attack_owe_downgrade)
         attack_menu.add_command(label="Online Password Guess (live, budgeted)", command=self._attack_online_guess)
         attack_menu.add_separator()
         attack_menu.add_command(
@@ -697,7 +699,7 @@ class App:
             ("WPS Null-PIN", self._attack_wps_null_pin, "TButton"),
             ("WPS Pixie-Dust", self._attack_wps_pixie, "TButton"),
             ("WPS Bruteforce (experimental)", self._attack_wps_bruteforce, "TButton"),
-            ("Evil Twin (Captive Portal)", self._attack_eviltwin, "TButton"),
+            "eviltwin_menu",
             ("Online Password Guess", self._attack_online_guess, "TButton"),
         ]
         # 2-column grid instead of one-per-row: halves the panel's total
@@ -709,8 +711,23 @@ class App:
         attack_grid.columnconfigure(0, weight=1)
         attack_grid.columnconfigure(1, weight=1)
         self.attack_buttons: list[ttk.Button] = []
-        for i, (label, cmd, style) in enumerate(buttons):
-            b = ttk.Button(attack_grid, text=label, command=cmd, style=style)
+        for i, entry in enumerate(buttons):
+            if entry == "eviltwin_menu":
+                # Evil Twin family collapsed into one dropdown -- Downgrade
+                # Twin and OWE Downgrade are portal-free variants of the
+                # same rogue-AP mechanism, and one button per variant was
+                # crowding this panel (2026-09-06 user request: keep the
+                # panel to one Evil Twin button, pick the variant from a
+                # menu instead of adding rows).
+                eviltwin_menu = tk.Menu(attack_grid, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+                eviltwin_menu.add_command(label="Evil Twin (Captive Portal)", command=self._attack_eviltwin)
+                eviltwin_menu.add_command(label="Downgrade Twin (portal-free)", command=self._attack_downgrade_twin)
+                eviltwin_menu.add_command(label="OWE Downgrade (portal-free)", command=self._attack_owe_downgrade)
+                b = ttk.Menubutton(attack_grid, text="Evil Twin ▾", menu=eviltwin_menu, style="TMenubutton")
+                b.eviltwin_menu = eviltwin_menu  # keep the Menu alive with the widget
+            else:
+                label, cmd, style = entry
+                b = ttk.Button(attack_grid, text=label, command=cmd, style=style)
             b.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=1)
             self.attack_buttons.append(b)
 
@@ -2055,6 +2072,86 @@ class App:
         ):
             return
         self._run_bg(f"Evil Twin on {ap.bssid}", self._runner().eviltwin, ap, iface_ap)
+
+    def _attack_downgrade_twin(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "Downgrade Twin needs a known SSID.")
+            return
+        iface_ap = self.iface_ap_var.get().strip()
+        if not iface_ap:
+            messagebox.showerror(
+                "ATWA-NG",
+                "No AP interface configured.\n\n"
+                "Pick one in the toolbar's 'AP iface' dropdown (the ACHM "
+                "adapter, in managed mode, distinct from the scan/monitor "
+                "adapter).",
+            )
+            return
+        if iface_ap == self.mon_iface:
+            messagebox.showerror(
+                "ATWA-NG",
+                f"AP interface ({iface_ap}) is the same as the monitor "
+                f"interface ({self.mon_iface}).\n\n"
+                "Downgrade Twin needs two separate adapters: one to host "
+                "the rogue twin, one to stay in monitor mode for deauth.",
+            )
+            return
+        if not self._confirm_attack(
+            "Downgrade Twin",
+            f"Portal-free WPA2-only rogue twin of {ap.bssid} ({ap.ssid}).\n\n"
+            f"AP interface: {iface_ap}  |  Monitor: {self.mon_iface}\n"
+            "Will deauth real clients and passively capture a 4-way "
+            "handshake if one reconnects to the twin using its real "
+            "password. No captive portal.",
+        ):
+            return
+        self._run_bg(f"Downgrade Twin on {ap.bssid}", self._runner().downgrade_twin, ap, iface_ap)
+
+    def _attack_owe_downgrade(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.owe_transition_ssid:
+            messagebox.showwarning(
+                "ATWA-NG",
+                "OWE Downgrade needs a target with an OWE Transition Mode IE "
+                "(a paired open SSID advertised alongside it) -- this AP "
+                "doesn't have one.",
+            )
+            return
+        iface_ap = self.iface_ap_var.get().strip()
+        if not iface_ap:
+            messagebox.showerror(
+                "ATWA-NG",
+                "No AP interface configured.\n\n"
+                "Pick one in the toolbar's 'AP iface' dropdown (the ACHM "
+                "adapter, in managed mode, distinct from the scan/monitor "
+                "adapter).",
+            )
+            return
+        if iface_ap == self.mon_iface:
+            messagebox.showerror(
+                "ATWA-NG",
+                f"AP interface ({iface_ap}) is the same as the monitor "
+                f"interface ({self.mon_iface}).\n\n"
+                "OWE Downgrade needs two separate adapters: one to host "
+                "the rogue open twin, one to stay in monitor mode for "
+                "deauth.",
+            )
+            return
+        if not self._confirm_attack(
+            "OWE Downgrade",
+            f"Rogue open twin of the paired network {ap.owe_transition_ssid!r}, "
+            f"deauthing clients off the real OWE AP {ap.bssid}.\n\n"
+            f"AP interface: {iface_ap}  |  Monitor: {self.mon_iface}\n"
+            "Clients falling back to the open twin lose OWE encryption "
+            "entirely. No captive portal.",
+        ):
+            return
+        self._run_bg(f"OWE Downgrade on {ap.bssid}", self._runner().owe_downgrade, ap, iface_ap)
 
     def _attack_online_guess(self):
         """Live per-password 4-way handshake attempt against the AP itself

@@ -97,6 +97,12 @@ def apply(root) -> dict[str, tk_font.Font]:
               background=[("active", THEME["border_dim"]), ("disabled", THEME["panel"])],
               foreground=[("active", THEME["accent_text"]), ("disabled", THEME["muted"])])
 
+    style.configure("TMenubutton", background=THEME["panel_alt"], foreground=THEME["fg"],
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid", padding=(8, 3))
+    style.map("TMenubutton",
+              background=[("active", THEME["border_dim"]), ("disabled", THEME["panel"])],
+              foreground=[("active", THEME["accent_text"]), ("disabled", THEME["muted"])])
+
     style.configure("Accent.TButton", background=THEME["accent_dim"], foreground=THEME["accent_text"],
                      bordercolor=THEME["border"], borderwidth=1, relief="solid",
                      font=fonts["ui_bold"], padding=(8, 3))

