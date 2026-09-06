@@ -75,15 +75,21 @@ Cada uno de estos es un ataque real, nativo — no una apuesta con `subprocess.r
 
 ---
 
-## Una sola ventana: escanea, ataca, crackea
+## Usando la GUI
 
-ATWA-NG es la primera herramienta WiFi en poner el escaneo y el pentesting en la misma GUI — sin escáner aparte, sin script de ataque aparte, sin cracker aparte que andar cambiando.
+<p align="center">
+  <img src="docs/brand/gui-screenshot.png" alt="ATWA-NG GUI — selección de adaptador, lista de escaneo, panel de objetivo, ataques y log" width="720">
+</p>
 
-**Escaneo.** Elige un adaptador, presiona **Start Monitor Mode**, luego **Start Scanning** — los objetivos se llenan en vivo (SSID, BSSID, canal, señal). Haz clic en un objetivo para fijarlo en su canal y empezar a capturar. **Stop Scan** / **Stop Monitor Mode** lo detienen, **WPS Scan** revisa quién cerca tiene WPS abierto.
+ATWA-NG es la primera herramienta WiFi en poner el escaneo y el pentesting en la misma ventana — sin escáner aparte, sin script de ataque aparte, sin cracker aparte. Lánzala con `atwa gui` (necesita root). Así es el flujo, de principio a fin:
 
-**Crackeo.** Pestaña Captures → **Crack Handshakes**. Apúntalo a una carpeta y un wordlist, elige un motor — **John** (fusiona todo lo que encuentre) o **Aircrack-ng** (necesita un BSSID, auto-completado desde el nombre de la carpeta) — y presiona **Run**. **Stop** de verdad mata el proceso; una contraseña crackeada se muestra en pantalla y se guarda en `creds.json` junto a la captura.
+- **Menú Adapter** — elige tu tarjeta WiFi, luego **Start Monitor** la pone en modo monitor. Un segundo adaptador en **AP iface** desbloquea PINCER o el lado de AP falso de Evil Twin.
+- **Start Scanning** — salta de canal en canal y llena la lista de **Scanned Access Points** en vivo: BSSID, SSID, canal, seguridad, señal.
+- **Haz clic en una fila objetivo** — fija el adaptador al canal de ese AP, arranca el gráfico de señal, y empieza una captura real contra solo ese AP (también llena la lista de **Clients**).
+- **Menú/stack de botones Attack** — Deauth, PMKID, Handshake Capture, Smart/OMNI, WEP, variantes de WPS, Evil Twin. **Stop Attack** termina lo que esté corriendo.
+- **Pestaña Captures** — Inspect, Convert to 22000, Fix (repara una captura malformada), Merge, Crack Selected, o el diálogo **Crack Handshakes...** para toda una carpeta: apúntalo a una carpeta y un wordlist, elige un motor (**John** o **Aircrack-ng**), presiona **Run**. Una contraseña crackeada se muestra en pantalla y se guarda en `creds.json` junto a la captura.
 
-Guía completa botón por botón con capturas de pantalla: [USAGE.md](USAGE.md#4-the-core-flow). Equivalentes de CLI para cada paso: [USAGE.md § CLI reference](USAGE.md#5-cli-reference).
+Referencia completa de CLI (16 subcomandos) y checklist de dependencias en [USAGE.md](./USAGE.md).
 
 ---
 
