@@ -54,3 +54,13 @@ research-2026-08-30.md
 # rewrite. Same treatment as above: untracked, not deleted.
 vendor/n2-ng-v1-src/
 vendor/n2-ng-v1-research/
+
+# Dead vendor tool, already removed from the repo (2026-09-06): kept
+# untracked-not-deleted like the entries above, but was missing its own
+# .gitignore entry until now, so a careless `git add -A`/`git add .`
+# could have silently re-added it.
+vendor/reaver/
+
+# Live-test session logs (2026-09-06): scratch output from manual
+# `atwa` runs against real hardware, never meant to be committed.
+atwa-live-test-*.log
