@@ -2873,7 +2873,7 @@ class App:
         # No driver quirk involved -- any open raw socket on an interface
         # that goes admin-down behaves this way, on any adapter. The join
         # timeout only needs to cover one dwell period plus loop overhead
-        # (dwell defaults to 0.3s); 2s leaves comfortable margin.
+        # (dwell defaults to 0.25s); 2s leaves comfortable margin.
         if self._scan_thread is not None:
             self._scan_thread.join(timeout=2.0)
         self._save_settings()

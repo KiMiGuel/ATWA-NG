@@ -453,7 +453,17 @@ class ChannelHopper:
 
     iface: str
     channels: list[int] = field(default_factory=lambda: list(ALL_CHANNELS))
-    dwell: float = 0.3
+    # Matches airodump-ng's default hop delay (DEFAULT_HOPFREQ, 250ms) --
+    # confirmed live (2026-09-07) both tools pay the same ~90-95ms
+    # mt76x0u hardware-retune tax per hop regardless of dwell value (a
+    # kernel-driver/firmware round trip, not fixable at the netlink call
+    # site -- verified against pyRIC with a persistent socket too), so
+    # this constant is the only lever. The old 0.3 vs. this 0.25 meant
+    # ~13% fewer channel visits per unit wall-clock time, which matched
+    # a live side-by-side AP-count gap almost exactly (61 vs. 71 APs in
+    # a 20s scan -> 86% coverage, vs. an 87% hop-rate ratio); dropping
+    # to 0.25 closed it completely (71 vs. 71, same 20s window).
+    dwell: float = 0.25
     _idx: int = 0
 
     def hop(self) -> int:
