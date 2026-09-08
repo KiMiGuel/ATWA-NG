@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 from .base import Cracker
@@ -52,6 +53,37 @@ class JohnParseError(RuntimeError):
 
 _NO_HASHES_MARKER = "No password hashes loaded"
 
+# John's wpapsk format has no OpenMP support (confirmed live: john warns
+# "no OpenMP support for this hash type, consider --fork=N" on every run
+# without it), so without --fork it only ever uses one core regardless of
+# the machine. Capped at 8 rather than the raw core count -- John forks a
+# full separate process per worker, and past ~8 the per-process overhead
+# (each with its own .rec/.log) stops paying for itself on a wordlist
+# attack, which is I/O-bound on candidate generation more than CPU-bound.
+_MAX_FORK = 8
+
+
+def _fork_count() -> int:
+    return max(1, min(os.cpu_count() or 1, _MAX_FORK))
+
+
+def _rules_args(rules: str) -> list[str]:
+    """--rules=<section> if a real ruleset was chosen, else nothing --
+    empty string and the literal "None" both mean plain wordlist mode
+    (John's own default when --rules is omitted entirely)."""
+    if rules and rules.lower() != "none":
+        return [f"--rules={rules}"]
+    return []
+
+
+def _session_name() -> str:
+    """A fresh, unique --session name per run. John's default (unnamed)
+    session always writes to the same john.rec regardless of hashfile/
+    wordlist -- giving every run its own name means a leftover .rec from
+    a stopped run can never be mistaken for -- or interfere with -- a
+    later run with different arguments."""
+    return f"atwa_{uuid.uuid4().hex[:12]}"
+
 
 class JohnCracker(Cracker):
     """Crack WPA hashes via john --format=wpapsk.
@@ -74,11 +106,18 @@ class JohnCracker(Cracker):
         """Convert a hashcat 22000 file to John's format; return that path."""
         return hc22000_to_john(hashfile, hashfile + ".john")
 
-    def crack(self, hashfile: str, wordlist: str) -> dict[str, str]:
+    def crack(self, hashfile: str, wordlist: str, rules: str = "") -> dict[str, str]:
         """Convert hashfile for John, run it with wordlist, parse `--show`."""
         john_file = self._prepare(hashfile)
+        fork = _fork_count()
+        cmd = [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}",
+               "--progress-every=5", f"--session={_session_name()}"]
+        if fork > 1:
+            cmd.append(f"--fork={fork}")
+        cmd.extend(_rules_args(rules))
+        cmd.append(john_file)
         proc = subprocess.run(
-            [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}", john_file],
+            cmd,
             capture_output=True,
             text=True,
             check=False,
@@ -90,14 +129,24 @@ class JohnCracker(Cracker):
             )
         return self.show(john_file)
 
-    def run_streaming(self, hashfile: str, wordlist: str, on_line, proc_holder: dict) -> dict[str, str]:
+    def run_streaming(self, hashfile: str, wordlist: str, on_line, proc_holder: dict, rules: str = "") -> dict[str, str]:
         """Like crack(), but streams stdout line-by-line to on_line(str) as it
         happens (Popen, not subprocess.run) and stashes the live process on
         proc_holder["proc"] so a caller can proc.terminate() it from another
         thread — a real Stop button that actually terminates the process."""
         john_file = self._prepare(hashfile)
+        fork = _fork_count()
+        cmd = [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}",
+               "--progress-every=5", f"--session={_session_name()}"]
+        if fork > 1:
+            cmd.append(f"--fork={fork}")
+        cmd.extend(_rules_args(rules))
+        cmd.append(john_file)
+        on_line(f"wordlist: {wordlist}\n")
+        on_line(f"rules: {rules or 'None'}\n")
+        on_line(f"fork: {fork}\n")
         proc = subprocess.Popen(
-            [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}", john_file],
+            cmd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             stdin=subprocess.DEVNULL,
         )
@@ -123,6 +172,18 @@ class JohnCracker(Cracker):
                 f"hcxhashtool conversion — not a wrong wordlist. Try aircrack-ng instead."
             )
         return self.show(john_file)
+
+    def benchmark(self, seconds: int = 3) -> str:
+        """Run John's own --test benchmark for this format and return its
+        raw output (candidates/sec at whatever --fork this machine gets by
+        default) -- the real, per-machine number, not a guess. Separate
+        from an actual crack run: --test needs no hashfile/wordlist at all."""
+        fork = _fork_count()
+        cmd = [self.binary, f"--format={self.fmt}", f"--test={seconds}"]
+        if fork > 1:
+            cmd.append(f"--fork={fork}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return (proc.stdout + proc.stderr).strip()
 
     def show(self, hashfile: str) -> dict[str, str]:
         """Parse `john --show` output into {hash_id: plaintext}."""

@@ -16,10 +16,13 @@ def _cmd_crack(args) -> int:
     if hashfile.endswith((".cap", ".pcap", ".pcapng")):
         hashfile = cap_to_22000(hashfile, hashfile + ".22000")
         print(f"converted to {hashfile}")
-    results = JohnCracker().crack(hashfile, args.wordlist)
+    results = JohnCracker().run_streaming(hashfile, args.wordlist, lambda line: print(line, end=""), {},
+                                           rules=getattr(args, "rules", ""))
     for hash_id, password in results.items():
         print(f"{hash_id}: {password}")
         record_cracked_password(Path(args.hashfile).parent, "john", hash_id, password)
+    if not results:
+        print("No passwords recovered.")
     return 0 if results else 1
 
 

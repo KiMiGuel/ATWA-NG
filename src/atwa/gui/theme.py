@@ -52,10 +52,26 @@ THEME = {
 
 
 def apply(root) -> dict[str, tk_font.Font]:
-    """Configure ttk styles + scalable fonts. Returns the font handles."""
-    style = ttk.Style(root)
-    if "clam" in style.theme_names():
-        style.theme_use("clam")
+    """Configure ttk styles + scalable fonts. Returns the font handles.
+
+    Base engine is ttkthemes' "equilux" (2026-09-08 user request) instead
+    of plain ttk's "clam" -- every color below is still driven by THEME,
+    so this doesn't reskin ATWA-NG to equilux's own gray palette, it just
+    swaps the underlying widget geometry/interaction rendering (flatter
+    buttons, cleaner hover/press states) that clam can't produce on its
+    own, confirmed via a real side-by-side render before adopting it.
+    Falls back to plain ttk + clam if ttkthemes isn't installed, so a
+    missing optional dependency degrades the look rather than crashing
+    the whole GUI."""
+    try:
+        from ttkthemes import ThemedStyle
+
+        style = ThemedStyle(root)
+        style.set_theme("black")
+    except Exception:  # noqa: BLE001 - ttkthemes missing or failed to init; degrade, don't crash the GUI
+        style = ttk.Style(root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
 
     families = set(tk_font.families())
     mono_family = next((f for f in ("Consolas", "DejaVu Sans Mono", "Liberation Mono") if f in families), "Courier")
@@ -132,6 +148,18 @@ def apply(root) -> dict[str, tk_font.Font]:
                      bordercolor=THEME["border"], borderwidth=1, relief="solid",
                      font=fonts["ui_bold"], padding=(8, 3))
     style.map("Danger.TButton", background=[("active", "#ff7676"), ("disabled", THEME["panel"])])
+
+    # Dragonblood's own look (2026-09-08 user request: "font colored red and
+    # have like blood on the button") -- black background with a red border
+    # and red text instead of Danger.TButton's solid red fill, so it reads
+    # as a distinct "bloody" identity rather than the generic destructive-
+    # action red already used for Stop/Cleanup.
+    style.configure("Blood.TButton", background=THEME["bg"], foreground=THEME["error"],
+                     bordercolor=THEME["error"], borderwidth=2, relief="solid",
+                     font=fonts["ui_bold"], padding=(8, 3))
+    style.map("Blood.TButton",
+              background=[("active", "#3a0009"), ("disabled", THEME["panel"])],
+              foreground=[("disabled", THEME["muted"])])
 
     style.configure("TLabelframe", background=THEME["bg"], bordercolor=THEME["border"],
                      relief="solid", borderwidth=1)

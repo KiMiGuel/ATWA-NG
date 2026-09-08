@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import queue
+import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -25,7 +26,6 @@ from typing import TYPE_CHECKING
 from .. import __version__
 from ..scan import AccessPoint
 from . import theme as theme_mod
-from .crack_dialog import CrackDialog
 from .widgets import SignalGraph
 
 if TYPE_CHECKING:
@@ -134,6 +134,7 @@ class App:
         self.monitor_status_var = tk.StringVar(value="MONITOR: OFF")
         self.channel_lock_var = tk.StringVar(value="Scanning all channels")
         self.wordlist_var = tk.StringVar(value=self.settings.get("wordlist", ""))
+        self.john_rules_var = tk.StringVar(value=self.settings.get("john_rules", ""))
         self.capture_dir_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready.")
         self.randomize_mac_var = tk.BooleanVar(value=self.settings.get("randomize_mac", True))
@@ -188,6 +189,7 @@ class App:
         file_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
         file_menu.add_command(label="Set Capture Folder...", command=self._choose_capture_dir)
         file_menu.add_command(label="Set Wordlist...", command=self._choose_wordlist)
+        file_menu.add_command(label="Set John Ruleset...", command=self._choose_john_rules)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -223,6 +225,8 @@ class App:
         attack_menu.add_command(label="Downgrade Twin (WPA3-transition, portal-free)", command=self._attack_downgrade_twin)
         attack_menu.add_command(label="OWE Downgrade (open-transition, portal-free)", command=self._attack_owe_downgrade)
         attack_menu.add_command(label="Online Password Guess (live, budgeted)", command=self._attack_online_guess)
+        attack_menu.add_command(label="🩸 Dragonblood (SAE timing side-channel, unverified)",
+                                 command=self._attack_dragonblood, foreground=self.THEME["error"])
         attack_menu.add_separator()
         attack_menu.add_command(
             label="⚡ PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
@@ -243,7 +247,7 @@ class App:
         cap_menu.add_command(label="Crack Selected", command=self._capture_crack)
         cap_menu.add_command(label="Copy Path", command=self._capture_copy_path)
         cap_menu.add_separator()
-        cap_menu.add_command(label="Crack Handshakes (folder)...", command=self._open_crack_dialog)
+        cap_menu.add_command(label="Benchmark John", command=self._capture_benchmark_john)
         cap_menu.add_command(label="Cleanup Handshakes...", command=self._capture_cleanup)
         menubar.add_cascade(label="Captures", menu=cap_menu)
 
@@ -549,7 +553,11 @@ class App:
         cols = [c[0] for c in TARGET_COLUMNS]
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
         for key, heading, width in TARGET_COLUMNS:
-            self.tree.heading(key, text=heading, command=lambda c=key: self._on_target_heading_click(c))
+            # No command= here -- click-to-sort is driven entirely by
+            # _on_tree_heading_press/_release below, alongside drag-to-
+            # reorder, so there's exactly one source of truth for what a
+            # heading press/release means instead of two competing ones.
+            self.tree.heading(key, text=heading)
             # stretch=False on every column but TARGET_STRETCH_COLUMN: fixed
             # columns keep whatever width the user drags them to instead of
             # ttk auto-compressing them to fit the visible pane (2026-08-26
@@ -568,6 +576,18 @@ class App:
         self.tree.bind("<<TreeviewSelect>>", self._on_target_select)
         self.tree.bind("<Double-1>", self._on_target_double_click)
         self.tree.bind("<Button-3>", self._on_target_right_click)
+        # Column headings drive both click-to-sort AND drag-to-reorder from
+        # this one press/release pair (2026-09-08 user request for drag
+        # reordering) -- deliberately NOT ttk's built-in heading command=
+        # callback plus a separate drag binding, since the two would race:
+        # ttk fires its own heading command on release regardless of
+        # whether the press started there, so a real reorder-drag would
+        # ALSO trigger a sort on the origin column. One handler, one
+        # decision (same column released = click = sort; different column
+        # = drag = reorder), no double-firing possible.
+        self.tree.bind("<ButtonPress-1>", self._on_tree_heading_press, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_heading_release, add="+")
+        self._drag_press_col: str | None = None
 
         # Wheel scroll over the whole box (Filter row, empty tree area),
         # not just rows with content -- same reasoning as the right-side
@@ -581,15 +601,17 @@ class App:
         self._bind_wheel_recursive(box, on_tree_wheel)
 
         self.hidden_columns: set[str] = set(self.settings.get("hidden_columns", []))
+        self.column_order: list[str] = list(self.settings.get("column_order", []))
         self._apply_column_visibility()
 
         # Row color by security (OPN/WEP/WPA/WPA2/WPA3).
-        self.tree.tag_configure("open", foreground=self.THEME["go"])
+        self.tree.tag_configure("open", foreground="#888888")
         self.tree.tag_configure("wep", foreground=self.THEME["error"])
         self.tree.tag_configure("wpa", foreground=self.THEME["warn"])
         self.tree.tag_configure("wpa2", foreground="#ffffff")
         self.tree.tag_configure("wpa3", foreground=self.THEME["info"])
         self.tree.tag_configure("transition", foreground="#cc88ff")
+        self.tree.tag_configure("owe", foreground="#ff9500")
         self.tree.tag_configure("unknown", foreground=self.THEME["muted"])
 
         # Subtle row banding so the target list reads as separated rows
@@ -701,6 +723,7 @@ class App:
             ("WPS Bruteforce (experimental)", self._attack_wps_bruteforce, "TButton"),
             "eviltwin_menu",
             ("Online Password Guess", self._attack_online_guess, "TButton"),
+            ("🩸 Dragonblood (unverified)", self._attack_dragonblood, "Blood.TButton"),
         ]
         # 2-column grid instead of one-per-row: halves the panel's total
         # height, which is what was pushing WPS/Evil-Twin/Online-Guess (and
@@ -755,6 +778,19 @@ class App:
         # (2026-08-28 user report: fields vanishing on resize).
         opts_row.columnconfigure(1, weight=1, minsize=100)
 
+        # Crack w/ John and Crack w/ Aircrack pulled out of the action grid
+        # below into their own full-width row -- these are THE two primary
+        # crack actions (the folder-picker dialog that used to occupy the
+        # prominent accent-button slot was removed as redundant with this
+        # panel's own file list), so they get the visual weight instead of
+        # being sized identically to Refresh/Copy Path/etc.
+        crack_row = ttk.Frame(parent)
+        crack_row.pack(fill=tk.X, padx=4, pady=(0, 4))
+        ttk.Button(crack_row, text="Crack w/ John", command=self._capture_crack_john,
+                   style="Accent.TButton").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        ttk.Button(crack_row, text="Crack w/ Aircrack", command=self._capture_crack_aircrack,
+                   style="Accent.TButton").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+
         # Wrapping grid, not a single pack(side=LEFT) row -- 9 buttons in one
         # unwrapped row ran off the right edge with no way to reach the last
         # few short of the Captures menu (2026-08-28 user report: "captures
@@ -772,16 +808,16 @@ class App:
             ("Merge (2+)", self._capture_merge, "TButton"),
             ("Crack Selected", self._capture_crack, "TButton"),
             ("Copy Path", self._capture_copy_path, "TButton"),
-            ("Crack Handshakes (folder)...", self._open_crack_dialog, "Accent.TButton"),
-            ("Crack w/ John", self._capture_crack_john, "TButton"),
-            ("Crack w/ Aircrack", self._capture_crack_aircrack, "TButton"),
+            ("Benchmark (John)", self._capture_benchmark_john, "TButton"),
+            ("Stop Cracking", self._stop_cracking, "Danger.TButton"),
             ("Cleanup Handshakes...", self._capture_cleanup, "Danger.TButton"),
         ]
-        # 6 per row (not 5): 12 buttons / 6 = exactly 2 full rows, so the
-        # last-row-span logic below never triggers -- Cleanup Handshakes
-        # used to be the lone short-row leftover and got stretched across
-        # 4 columns as a result (2026-08-28 user report: "that red button
-        # is too big").
+        # 6 per row: 11 buttons -> 1 full row + a 5-button last row, which
+        # the last-row-span logic below stretches its last button across
+        # the remaining column (see that logic's own comment for why a
+        # short last row needs it). Crack w/ John and Crack w/ Aircrack
+        # aren't in this grid -- they get their own full-width row above,
+        # see crack_row.
         actions_per_row = 6
         n = len(action_defs)
         for col in range(actions_per_row):
@@ -1389,6 +1425,69 @@ class App:
             ), tags=((ap.security or "unknown").lower(), band_tag))
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
+        self._autosize_target_columns()
+
+    def _autosize_target_columns(self):
+        """Column width = actual longest rendered value (header or any
+        current row), not a hardcoded guess -- fixes BSSID needing a manual
+        drag every time to stop clipping its last couple characters, and CH
+        sitting on wasted space while other columns are tight (2026-09-08
+        user report). Recomputed on every render since content changes
+        (new APs discovered, SSIDs resolved from hidden to real)."""
+        font = self.fonts["mono"]
+        pad = 24  # heading sort-arrow (▲/▼ + space) plus Treeview's own cell padding
+        for key, heading, _default_width in TARGET_COLUMNS:
+            widest = font.measure(f"{heading} ▼")  # account for the sort-arrow suffix even when not currently sorted by this column
+            for iid in self.tree.get_children():
+                widest = max(widest, font.measure(str(self.tree.set(iid, key))))
+            self.tree.column(key, width=widest + pad)
+
+    def _on_tree_heading_press(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        self._drag_press_col = self.tree.identify_column(event.x) if region == "heading" else None
+
+    def _on_tree_heading_release(self, event):
+        """Same column released as pressed -> plain click -> sort (what
+        ttk's own heading command= used to do). Different column -> the
+        user dragged one heading onto another -> swap their display order
+        instead. See the binding-site comment for why both live in one
+        handler rather than ttk's command= plus a separate drag binding."""
+        pressed = self._drag_press_col
+        self._drag_press_col = None
+        region = self.tree.identify_region(event.x, event.y)
+        if pressed is None or region != "heading":
+            return
+        released = self.tree.identify_column(event.x)
+        if released == pressed:
+            col = self._displaycolumn_to_key(pressed)
+            if col:
+                self._on_target_heading_click(col)
+        else:
+            self._reorder_columns(pressed, released)
+
+    def _displaycolumn_to_key(self, display_id: str) -> str | None:
+        """identify_column() returns '#N' (1-indexed position among
+        currently VISIBLE columns) -- map that back to a real column key."""
+        try:
+            idx = int(display_id.replace("#", "")) - 1
+        except ValueError:
+            return None
+        displaycols = list(self.tree["displaycolumns"])
+        return displaycols[idx] if 0 <= idx < len(displaycols) else None
+
+    def _reorder_columns(self, from_display_id: str, to_display_id: str):
+        """Swap two columns' positions (drag one heading onto another).
+        Persisted the same way hidden_columns already is, via
+        _save_settings()."""
+        displaycols = list(self.tree["displaycolumns"])
+        from_key = self._displaycolumn_to_key(from_display_id)
+        to_key = self._displaycolumn_to_key(to_display_id)
+        if from_key is None or to_key is None:
+            return
+        from_idx, to_idx = displaycols.index(from_key), displaycols.index(to_key)
+        displaycols[from_idx], displaycols[to_idx] = displaycols[to_idx], displaycols[from_idx]
+        self.tree["displaycolumns"] = displaycols
+        self.column_order = displaycols
 
     def _on_target_heading_click(self, col: str):
         """Click a column heading to sort by it; click again to reverse."""
@@ -1436,8 +1535,15 @@ class App:
 
     def _apply_column_visibility(self):
         """displaycolumns, not width=0 — a zero-width column is still a
-        clickable sliver in ttk.Treeview, this actually removes it."""
-        visible = [key for key, _, _ in TARGET_COLUMNS if key not in self.hidden_columns]
+        clickable sliver in ttk.Treeview, this actually removes it.
+
+        Order comes from self.column_order (user drag-reordering, see
+        _reorder_columns) with any column missing from it (never dragged
+        yet, or newly added to TARGET_COLUMNS in a future version) appended
+        at its default TARGET_COLUMNS position -- so a column can never
+        silently disappear just because it's absent from a saved order."""
+        order = self.column_order + [key for key, _, _ in TARGET_COLUMNS if key not in self.column_order]
+        visible = [key for key in order if key not in self.hidden_columns]
         self.tree["displaycolumns"] = visible
 
     def _show_column_menu(self, event):
@@ -1907,10 +2013,33 @@ class App:
             self._auto_deauth_stop.set()
         crack_proc = self._crack_proc_holder.get("proc")
         if crack_proc is not None and crack_proc.poll() is None:
-            crack_proc.terminate()
-            self._log("stop requested: terminated the running crack process (John/aircrack-ng)")
+            self._log("stop requested: terminating the running crack process (John/aircrack-ng)")
+
+            def escalate(proc=crack_proc):
+                # SIGTERM alone isn't reliable -- a live test against
+                # aircrack-ng showed it can catch SIGTERM, print "Quitting
+                # aircrack-ng..." repeatedly, and never actually exit.
+                # SIGKILL can't be caught, so escalate to it after a grace
+                # period (same fix crack_dialog.py's Stop button already
+                # needed). Run off the Tk thread so the UI doesn't block.
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._log("crack process still running after 3s -- force-killing")
+                    proc.kill()
+                    proc.wait()
+
+            threading.Thread(target=escalate, daemon=True).start()
         self._log("stop requested (OMNI/Smart/WPS-bruteforce/auto-deauth loops will exit at their "
                    "next check; a single blocking call in progress will still finish on its own timeout)")
+
+    def _stop_cracking(self):
+        """Dedicated Stop button for the Captures panel -- the generic
+        'Stop Attack' button lives in the Attacks tab and isn't visible
+        while cracking from here, which was the actual complaint (not that
+        stopping didn't work). Same termination path as _stop_attack."""
+        self._stop_attack()
 
     def _toggle_auto_deauth(self):
         """'Auto-deauth until handshake': deauth the locked target on a
@@ -2188,6 +2317,41 @@ class App:
         ):
             return
         self._run_bg(f"Online guess on {ap.bssid}", self._runner().online_guess, ap)
+
+    def _attack_dragonblood(self):
+        """SAE (WPA3) timing side-channel wordlist pruning (CVE-2019-9494,
+        attacks/dragonblood.py) -- only meaningful against an unpatched
+        pre-hostapd-2.10 AP (mid-2019), and its core KDF math is flagged
+        unverified against a real spec/capture (see that module's
+        docstring). Confirm dialog says so up front rather than presenting
+        this as a proven working attack."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if ap.security not in ("WPA3", "transition"):
+            messagebox.showwarning(
+                "ATWA-NG",
+                f"Dragonblood targets SAE (WPA3) — this AP is {ap.security}, which doesn't "
+                "run the SAE handshake this timing side-channel needs.",
+            )
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        if not self._confirm_attack(
+            "Dragonblood",
+            f"SAE timing side-channel wordlist pruning against {ap.bssid} ({ap.ssid}).\n\n"
+            "⚠ Only works against an UNPATCHED AP (pre-hostapd-2.10, mid-2019) — modern "
+            "APs run a fixed-time loop with no timing signal to measure.\n"
+            "⚠ The core math (KDF byte layout) is unit-tested for internal consistency "
+            "only, NOT verified against the real spec or a real capture — treat pruning "
+            "results with real skepticism.\n\n"
+            f"Sends several SAE Commit frames from spoofed MACs and measures reply timing "
+            f"using {wordlist}.",
+        ):
+            return
+        self._run_bg(f"Dragonblood on {ap.bssid}", self._runner().dragonblood, ap)
 
     def _attack_pincer(self):
         """Flagship dual-Alfa mode (STATUS.md 'Ideas/undecided', 2026-08-14
@@ -2507,8 +2671,22 @@ class App:
 
         self._run_bg("Merge captures", work)
 
-    def _open_crack_dialog(self):
-        CrackDialog(self.root, self.fonts, self.capture_dir_var.get(), self.wordlist_var.get())
+    def _capture_benchmark_john(self):
+        """Real per-machine John speed (candidates/sec, auto --fork'd to
+        this CPU's core count) via John's own --test self-benchmark --
+        no hashfile/wordlist needed, just the format."""
+        from ..crack.john import JohnCracker, JohnUnavailableError
+
+        def work():
+            try:
+                cracker = JohnCracker()
+            except JohnUnavailableError as exc:
+                return str(exc)
+            result = cracker.benchmark()
+            self._queue.put(("info", result))
+            return "done"
+
+        self._run_bg("Benchmark John", work)
 
     def _open_wps_scan(self):
         """Live table of currently-known WPS-capable APs (manufacturer/model/
@@ -2627,7 +2805,8 @@ class App:
             except JohnUnavailableError as exc:
                 return str(exc)
             self._crack_proc_holder.clear()
-            results = cracker.run_streaming(hashfile, wordlist, self._progress_fn, self._crack_proc_holder)
+            results = cracker.run_streaming(hashfile, wordlist, self._progress_fn, self._crack_proc_holder,
+                                             rules=self.john_rules_var.get())
             if not results:
                 return "no passwords recovered"
             self._queue.put(("info", "\n".join(f"{k}: {v}" for k, v in results.items())))
@@ -2638,20 +2817,26 @@ class App:
     def _crack_with_aircrack(self, paths: list[str], wordlist: str):
         import re
         from pathlib import Path
+        from tkinter import simpledialog
 
         from ..crack.aircrack import AirCracker, AircrackUnavailableError
         from ..crack.convert import merge_captures
 
         bssid_match = re.search(r"([0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})$", Path(paths[0]).parent.name)
-        if not bssid_match:
-            messagebox.showwarning(
+        if bssid_match:
+            bssid = bssid_match.group(1).replace("-", ":").lower()
+        else:
+            typed = simpledialog.askstring(
                 "ATWA-NG",
                 "Couldn't determine the BSSID from this file's folder name — aircrack-ng needs one "
-                "to avoid its interactive network picker. Use 'Crack Handshakes (folder)...' instead, "
-                "which lets you type a BSSID directly.",
+                "to avoid its interactive network picker. Enter it directly:",
+                parent=self.root,
             )
-            return
-        bssid = bssid_match.group(1).replace("-", ":").lower()
+            if not typed or not re.fullmatch(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", typed.strip()):
+                if typed is not None:
+                    messagebox.showwarning("ATWA-NG", "Not a valid BSSID (expected aa:bb:cc:dd:ee:ff).")
+                return
+            bssid = typed.strip().lower()
 
         def work():
             capfile = paths[0] if len(paths) == 1 else merge_captures(paths)
@@ -2739,6 +2924,40 @@ class App:
         path = filedialog.askopenfilename(title="Select wordlist")
         if path:
             self.wordlist_var.set(path)
+
+    # Curated subset of John's stock rule sections (see /etc/john/john.conf
+    # [List.Rules:*]) -- not exhaustive, just the commonly-used ones. Free
+    # text is still accepted for anything else defined there.
+    _JOHN_RULE_PRESETS = ("None", "Wordlist", "best64", "Jumbo", "All", "hashcat")
+
+    def _choose_john_rules(self):
+        """Global setting (File menu, not per-dialog): which John --rules
+        section every crack run uses, applied uniformly whether cracking
+        starts from the Captures panel's quick buttons or the Crack
+        Handshakes dialog -- one setting, everywhere John runs."""
+        win = tk.Toplevel(self.root)
+        win.title("Set John Ruleset")
+        win.configure(bg=self.THEME["bg"])
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        ttk.Label(win, text="John --rules section (word-mangling rules applied to the wordlist):").pack(
+            anchor=tk.W, padx=10, pady=(10, 4))
+        var = tk.StringVar(value=self.john_rules_var.get() or "None")
+        combo = ttk.Combobox(win, textvariable=var, values=self._JOHN_RULE_PRESETS, width=30)
+        combo.pack(anchor=tk.W, padx=10, pady=(0, 4))
+        ttk.Label(win, text="(or type any other section name from john.conf)",
+                  style="Muted.TLabel").pack(anchor=tk.W, padx=10, pady=(0, 10))
+
+        def apply_and_close():
+            chosen = var.get().strip() or "None"
+            self.john_rules_var.set("" if chosen.lower() == "none" else chosen)
+            win.destroy()
+
+        buttons = ttk.Frame(win)
+        buttons.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="OK", command=apply_and_close, style="Accent.TButton").pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side=tk.LEFT, padx=6)
 
     def _choose_capture_dir(self):
         path = filedialog.askdirectory(title="Select capture folder")
@@ -2844,6 +3063,7 @@ class App:
 
     def _save_settings(self):
         self.settings.set("wordlist", self.wordlist_var.get())
+        self.settings.set("john_rules", self.john_rules_var.get())
         self.settings.set("capture_dir", self.capture_dir_var.get())
         self.settings.set("adapter", self.adapter_var.get())
         self.settings.set("iface_ap", self.iface_ap_var.get())
@@ -2852,6 +3072,7 @@ class App:
         self.settings.set("sort_col", self._sort_col)
         self.settings.set("sort_reverse", self._sort_reverse)
         self.settings.set("hidden_columns", sorted(self.hidden_columns))
+        self.settings.set("column_order", self.column_order)
         try:
             self.settings.save()
         except OSError as exc:

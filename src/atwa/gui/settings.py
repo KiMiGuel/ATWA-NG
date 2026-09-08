@@ -15,6 +15,7 @@ from ..storage import user_home
 
 DEFAULTS: dict = {
     "wordlist": "",
+    "john_rules": "",  # empty = no --rules flag (John's plain wordlist mode)
     "capture_dir": "",  # empty = use storage.capture_root() default
     "adapter": "",
     "security_filter": "All",
@@ -22,6 +23,7 @@ DEFAULTS: dict = {
     "sort_col": None,
     "sort_reverse": False,
     "hidden_columns": [],
+    "column_order": [],
 }
 
 

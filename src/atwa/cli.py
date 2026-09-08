@@ -173,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("crack", help="crack a 22000/cap file with John")
     p.add_argument("hashfile")
     p.add_argument("wordlist")
+    p.add_argument("--rules", default="", help="John --rules section name (e.g. best64, Jumbo, All); omit for plain wordlist mode")
     p.set_defaults(func=_cmd_crack)
 
     p = sub.add_parser("eviltwin", help="rogue AP + captive portal")
