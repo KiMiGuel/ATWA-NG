@@ -769,27 +769,28 @@ class App:
             b.pack(fill=tk.X, padx=4, pady=1)
             self.attack_buttons.append(b)
 
-        # Dragonblood moved down here, full-width to match (2026-09-12 user
-        # request) -- it's experimental, so it sits below the two proven
-        # chain attacks rather than sharing the grid with routine actions.
-        dragonblood_btn = ttk.Button(
-            attacks_box, text="🩸 Dragonblood (unverified)", command=self._attack_dragonblood, style="Blood.TButton",
-        )
-        dragonblood_btn.pack(fill=tk.X, padx=4, pady=1)
-        self.attack_buttons.append(dragonblood_btn)
-
         # PINCER kept out of self.attack_buttons: it needs a second enable
         # condition (a detected dual-Alfa pair) that _set_busy()'s blanket
         # NORMAL-on-idle reset would otherwise clobber -- see _set_busy()
         # and _refresh_adapters() for where its state actually gets set.
         # Styled to match Smart/OMNI's accent color (2026-09-12 user
         # request) with a bigger font + a pincer emoji, same treatment as
-        # Dragonblood's own icon+color identity above.
+        # Dragonblood's own icon+color identity below.
         self.pincer_button = ttk.Button(
             attacks_box, text="🦀 PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
             style="PincerAccent.TButton",
         )
-        self.pincer_button.pack(fill=tk.X, padx=4, pady=(1, 4))
+        self.pincer_button.pack(fill=tk.X, padx=4, pady=1)
+
+        # Dragonblood last (2026-09-12 user request: swap with PINCER so
+        # Dragonblood sits at the very bottom) -- it's experimental, so it
+        # gets the final slot rather than sharing the grid with routine
+        # actions.
+        dragonblood_btn = ttk.Button(
+            attacks_box, text="🩸 Dragonblood (unverified)", command=self._attack_dragonblood, style="Blood.TButton",
+        )
+        dragonblood_btn.pack(fill=tk.X, padx=4, pady=(1, 4))
+        self.attack_buttons.append(dragonblood_btn)
 
     def _build_captures_panel(self, parent):
         opts_row = ttk.Frame(parent)
