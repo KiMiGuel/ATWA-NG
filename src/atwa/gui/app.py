@@ -708,13 +708,16 @@ class App:
         # whole job is interrupting one that's already running.
         ttk.Button(attacks_box, text="Stop Attack", command=self._stop_attack, style="Danger.TButton").pack(
             fill=tk.X, padx=4, pady=(4, 4))
+        # Smart/OMNI/Dragonblood pulled out of this grid (2026-09-12 user
+        # request) into their own full-width rows below it -- besides the
+        # requested visual promotion, it also fixes a leftover blank grid
+        # cell: 15 entries in a 2-column grid left the last row (Dragonblood)
+        # alone with an empty neighbor. 12 entries divides evenly, no gap.
         buttons = [
             ("Deauth All Clients", self._attack_deauth_all, "TButton"),
             ("Deauth Selected Client", self._attack_deauth_client, "TButton"),
             ("PMKID Attack (Clientless)", self._attack_pmkid, "TButton"),
             ("Handshake Capture", self._attack_handshake, "TButton"),
-            ("Smart Attack (Auto)", self._attack_smart, "Accent.TButton"),
-            ("OMNI Attack (All Stages)", self._attack_omni, "Accent.TButton"),
             ("WEP Attack", self._attack_wep, "TButton"),
             ("WEP Caffe Latte", self._attack_caffe_latte, "TButton"),
             ("WEP Chopchop", self._attack_chopchop, "TButton"),
@@ -723,7 +726,6 @@ class App:
             ("WPS Bruteforce (experimental)", self._attack_wps_bruteforce, "TButton"),
             "eviltwin_menu",
             ("Online Password Guess", self._attack_online_guess, "TButton"),
-            ("🩸 Dragonblood (unverified)", self._attack_dragonblood, "Blood.TButton"),
         ]
         # 2-column grid instead of one-per-row: halves the panel's total
         # height, which is what was pushing WPS/Evil-Twin/Online-Guess (and
@@ -754,14 +756,40 @@ class App:
             b.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=1)
             self.attack_buttons.append(b)
 
+        # Smart/OMNI promoted to full-width rows below the grid, same width
+        # as Dragonblood/PINCER (2026-09-12 user request) -- these three are
+        # the "run a whole chain" attacks, not one-off actions, so they get
+        # the same visual weight as PINCER rather than sharing a half-width
+        # grid cell with e.g. "WEP Chopchop".
+        for label, cmd in (
+            ("Smart Attack (Auto)", self._attack_smart),
+            ("OMNI Attack (All Stages)", self._attack_omni),
+        ):
+            b = ttk.Button(attacks_box, text=label, command=cmd, style="Accent.TButton")
+            b.pack(fill=tk.X, padx=4, pady=1)
+            self.attack_buttons.append(b)
+
+        # Dragonblood moved down here, full-width to match (2026-09-12 user
+        # request) -- it's experimental, so it sits below the two proven
+        # chain attacks rather than sharing the grid with routine actions.
+        dragonblood_btn = ttk.Button(
+            attacks_box, text="🩸 Dragonblood (unverified)", command=self._attack_dragonblood, style="Blood.TButton",
+        )
+        dragonblood_btn.pack(fill=tk.X, padx=4, pady=1)
+        self.attack_buttons.append(dragonblood_btn)
+
         # PINCER kept out of self.attack_buttons: it needs a second enable
         # condition (a detected dual-Alfa pair) that _set_busy()'s blanket
         # NORMAL-on-idle reset would otherwise clobber -- see _set_busy()
         # and _refresh_adapters() for where its state actually gets set.
+        # Styled to match Smart/OMNI's accent color (2026-09-12 user
+        # request) with a bigger font + a pincer emoji, same treatment as
+        # Dragonblood's own icon+color identity above.
         self.pincer_button = ttk.Button(
-            attacks_box, text="⚡ PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
+            attacks_box, text="🦀 PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
+            style="PincerAccent.TButton",
         )
-        self.pincer_button.pack(fill=tk.X, padx=4, pady=1)
+        self.pincer_button.pack(fill=tk.X, padx=4, pady=(1, 4))
 
     def _build_captures_panel(self, parent):
         opts_row = ttk.Frame(parent)
@@ -1295,7 +1323,25 @@ class App:
                     now = time.monotonic()
                     if now - last_health_check >= HEALTH_CHECK_INTERVAL:
                         last_health_check = now
-                        healed = check_and_heal(self.mon_iface)
+                        # check_and_heal() has no exception handling of its own --
+                        # every call inside it (get_mode/get_channel/set_channel)
+                        # raises RadioError straight through on any iw/ip failure.
+                        # This whole loop body sits in a try/finally with no
+                        # except, so an unguarded call here (a transient USB
+                        # hiccup, the adapter being briefly busy, ...) used to
+                        # propagate out of loop() entirely and silently kill
+                        # self._scan_thread -- self._scanning never gets cleared
+                        # since only Stop Scan does that, so the GUI kept showing
+                        # "scanning" while nothing was actually happening anymore
+                        # (2026-09-12 user report: "the scan eventually just
+                        # stops"). Caught and logged here instead, same
+                        # self-heal-don't-crash treatment this loop already gives
+                        # every other failure mode (dead sniffer, failed restart).
+                        try:
+                            healed = check_and_heal(self.mon_iface)
+                        except Exception as exc:  # noqa: BLE001
+                            self._log(f"health check failed, will retry next cycle: {exc}")
+                            healed = []
                         for action in healed:
                             self._log(action)
                         if healed and sniffer is not None:
@@ -1320,8 +1366,11 @@ class App:
                         # forever with zero indication of why.
                         if sniffer is not None and sniffer.exception is not None:
                             self._log(f"scan capture socket died: {sniffer.exception}")
-                        for action in check_and_heal(self.mon_iface):
-                            self._log(action)
+                        try:
+                            for action in check_and_heal(self.mon_iface):
+                                self._log(action)
+                        except Exception as exc:  # noqa: BLE001 -- see the other check_and_heal() call above for why this must not propagate
+                            self._log(f"health check failed, will retry next cycle: {exc}")
                         try:
                             sniffer = start_sniffer()
                             self._log("scan capture socket (re)started")
@@ -2672,9 +2721,9 @@ class App:
         self._run_bg("Merge captures", work)
 
     def _capture_benchmark_john(self):
-        """Real per-machine John speed (candidates/sec, auto --fork'd to
-        this CPU's core count) via John's own --test self-benchmark --
-        no hashfile/wordlist needed, just the format."""
+        """Real per-machine John speed (candidates/sec) via John's own
+        --test self-benchmark -- no hashfile/wordlist needed, just the
+        format. No --fork: John rejects --test combined with --fork."""
         from ..crack.john import JohnCracker, JohnUnavailableError
 
         def work():

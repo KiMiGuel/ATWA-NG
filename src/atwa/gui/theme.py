@@ -85,6 +85,7 @@ def apply(root) -> dict[str, tk_font.Font]:
         "mono": tk_font.Font(family=mono_family, size=11, weight="bold"),
         "mono_bold": tk_font.Font(family=mono_family, size=11, weight="bold"),
         "title": tk_font.Font(family=ui_family, size=15, weight="bold"),
+        "ui_bold_lg": tk_font.Font(family=ui_family, size=13, weight="bold"),
     }
     root.option_add("*Font", fonts["ui"])
     root.configure(bg=THEME["bg"])
@@ -123,6 +124,18 @@ def apply(root) -> dict[str, tk_font.Font]:
                      bordercolor=THEME["border"], borderwidth=1, relief="solid",
                      font=fonts["ui_bold"], padding=(8, 3))
     style.map("Accent.TButton",
+              background=[("active", THEME["accent"]), ("disabled", THEME["panel"])],
+              foreground=[("disabled", THEME["muted"])])
+
+    # PINCER's own look (2026-09-12 user request): same accent color as
+    # Smart/OMNI so all three read as one "flagship attack" family, but
+    # bumped to the larger font -- PINCER is a full-width row on its own
+    # like Dragonblood, so it can afford the extra size Accent.TButton's
+    # shared-with-half-width-grid-cells size can't.
+    style.configure("PincerAccent.TButton", background=THEME["accent_dim"], foreground=THEME["accent_text"],
+                     bordercolor=THEME["border"], borderwidth=1, relief="solid",
+                     font=fonts["ui_bold_lg"], padding=(8, 5))
+    style.map("PincerAccent.TButton",
               background=[("active", THEME["accent"]), ("disabled", THEME["panel"])],
               foreground=[("disabled", THEME["muted"])])
 

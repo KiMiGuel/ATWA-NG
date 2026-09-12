@@ -86,6 +86,7 @@ def capture_handshake(
     outfile: str | None = None,
     stop_event=None,
     progress_fn=None,
+    cap: HandshakeCapture | None = None,
 ) -> HandshakeCapture:
     """Sniff EAPOL frames for bssid until a complete pair, timeout, or
     stop_event fires.
@@ -96,12 +97,21 @@ def capture_handshake(
     no way to reclaim the interface — the sniffer keeps running for the
     rest of `timeout` in the background even after the caller has moved
     on, holding the raw socket open the whole time.
+
+    cap: an existing HandshakeCapture to fill in place instead of a
+    fresh one. This function normally runs on a background thread and
+    only returns once the whole listen window ends -- a caller that
+    needs to observe progress *while it's still running* (e.g.
+    attacks/logic.py's run_deauth_flow, to stop sending deauth as soon
+    as CHALLENGE material appears) has to pass in the object it intends
+    to poll: add() mutates it in place, so the caller's own reference
+    sees every update immediately, not just the final return value.
     """
     log = progress_fn or (lambda msg: None)
     if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
     log(f"listening for EAPOL on {bssid} (up to {timeout:.0f}s)...")
-    cap = HandshakeCapture()
+    cap = cap if cap is not None else HandshakeCapture()
     # linktype forced explicitly: without it, PcapWriter guesses from the
     # first packet's own .linktype attribute and warns + silently falls
     # back to Ethernet ("unknown LL type for NoneType. Using type 1

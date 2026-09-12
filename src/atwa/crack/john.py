@@ -175,13 +175,14 @@ class JohnCracker(Cracker):
 
     def benchmark(self, seconds: int = 3) -> str:
         """Run John's own --test benchmark for this format and return its
-        raw output (candidates/sec at whatever --fork this machine gets by
-        default) -- the real, per-machine number, not a guess. Separate
-        from an actual crack run: --test needs no hashfile/wordlist at all."""
-        fork = _fork_count()
+        raw output -- the real, per-machine number, not a guess. Separate
+        from an actual crack run: --test needs no hashfile/wordlist at all.
+
+        No --fork here: John rejects --test combined with --fork outright
+        ("Invalid options combination: --test=N"), confirmed live -- wpapsk
+        already has its own OpenMP threading for --test, so this machine's
+        cores are still exercised without it."""
         cmd = [self.binary, f"--format={self.fmt}", f"--test={seconds}"]
-        if fork > 1:
-            cmd.append(f"--fork={fork}")
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         return (proc.stdout + proc.stderr).strip()
 
