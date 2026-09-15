@@ -43,6 +43,13 @@ _driver_cache: dict[str, str | None] = {}
 def get_driver(iface: str) -> str | None:
     """iface's kernel driver name via ethtool -i, or None if undetermined.
 
+    Note (2026-09-14): ethtool is deprecated upstream. Evaluated
+    replacements and deliberately kept it for now -- the sysfs driver
+    symlink (/sys/class/net/<iface>/device/driver, same trick
+    _phy_for_iface() uses) covers `ethtool -i`, and `ip link`'s permaddr
+    field covers `ethtool -P`, but both need testing against the real
+    Alfa pair before a swap; ethtool is present everywhere Kali is.
+
     Cached per interface -- a driver never changes without a hot-unplug/
     replug (a fresh device node, i.e. a different iface name in the
     common case, or an explicit clear_driver_cache() call after one),
@@ -240,7 +247,17 @@ def check_kill_interfering_processes() -> list[str]:
     _AIRMON_INTERFERING_PROCESSES above, no nmcli/systemctl involved, and
     no automatic restart afterward (a manual `systemctl start
     NetworkManager` once you're done, same as airmon-ng requires).
-    Returns the process names actually killed."""
+    Returns the process names actually killed.
+
+    pkill only *sends* SIGTERM -- the killed processes take a moment to
+    actually exit and release the wireless device, and set_monitor_mode()
+    calls this and then immediately touches the interface. Without waiting
+    here, `iw set type monitor` right after a kill fails with "Device or
+    resource busy" (confirmed live 2026-09-15: Start Monitor clicked
+    immediately after launching the GUI failed; retrying a few seconds
+    later worked, once the supplicant had finished dying). So: poll until
+    every killed process is genuinely gone (up to ~3s), SIGKILL any
+    survivor, and only then return."""
     killed = []
     for name in _AIRMON_INTERFERING_PROCESSES:
         proc = subprocess.run(
@@ -248,6 +265,30 @@ def check_kill_interfering_processes() -> list[str]:
         )
         if proc.returncode == 0:
             killed.append(name)
+
+    def alive(name: str) -> bool:
+        return subprocess.run(
+            ["pgrep", "-x", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=5, check=False,
+        ).returncode == 0
+
+    survivors = killed
+    if survivors:
+        deadline = time.monotonic() + 3.0
+        while survivors and time.monotonic() < deadline:
+            survivors = [name for name in survivors if alive(name)]
+            if survivors:
+                time.sleep(0.1)
+        for name in survivors:
+            # Refused to die on SIGTERM within the grace period -- SIGKILL
+            # can't be caught or ignored, then give it one more short wait.
+            subprocess.run(
+                ["pkill", "-9", "-x", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False,
+            )
+        deadline = time.monotonic() + 1.0
+        while survivors and time.monotonic() < deadline:
+            survivors = [name for name in survivors if alive(name)]
+            if survivors:
+                time.sleep(0.1)
     return killed
 
 

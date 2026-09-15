@@ -37,7 +37,6 @@ from .attacks.wps import pixie_attempt as _default_pixie_attempt
 from .attacks.wps import wps_pin_bruteforce as _default_wps_bruteforce
 from .crack.base import Cracker
 from .crack.convert import cap_to_22000
-from .frames import BROADCAST
 from .radio import get_mac
 from .scan import AccessPoint
 
@@ -249,7 +248,8 @@ class OmniOrchestrator:
                 return False
             self._log(f"PMKID attempt {attempt + 1}/2 against {ap.bssid}")
             line = self._pmkid_fn(
-                self.iface, bssid=ap.bssid, client=attacker_mac, channel=ap.channel, timeout=12.0,
+                self.iface, bssid=ap.bssid, client=attacker_mac, channel=ap.channel,
+                essid=ap.ssid, timeout=12.0,
                 stop_event=self._stop, progress_fn=self._log,
             )
             if line:

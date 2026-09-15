@@ -78,4 +78,6 @@ def _cmd_eapol_hunt(args) -> int:
             proc.kill()
             out, _ = proc.communicate()
     print(out)
-    return 0
+    # Propagate the child's own exit status -- a crashed helper used to
+    # look identical to a clean "nothing found" run (always returned 0).
+    return proc.returncode if proc.returncode is not None and proc.returncode >= 0 else 0

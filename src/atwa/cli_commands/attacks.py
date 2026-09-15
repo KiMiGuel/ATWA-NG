@@ -33,8 +33,11 @@ def _cmd_deauth(args) -> int:
 
 
 def _cmd_pmkid(args) -> int:
+    if not args.essid:
+        print("warning: no --essid given; a PMKID-only 22000 line is uncrackable without it", file=sys.stderr)
     line = capture_pmkid(
         args.iface, bssid=args.bssid, client=args.client, channel=args.channel,
+        essid=args.essid,
         progress_fn=lambda msg: print(msg, flush=True),
     )
     if line is None:

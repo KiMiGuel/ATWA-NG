@@ -20,7 +20,10 @@ from atwa.attacks.handshake import HandshakeCapture, HandshakeStatus
 def test_hostapd_conf_wpa2_contains_expected_fields():
     conf = _hostapd_conf_wpa2("wlan1", "HomeNet", 6, "throwaway123")
     assert "interface=wlan1" in conf
-    assert "ssid=HomeNet" in conf
+    # SSID goes in as hostapd's ssid2= hex form -- injection-proof for
+    # SSIDs containing control chars (see _hostapd_ssid_line's docstring).
+    assert f"ssid2={'HomeNet'.encode().hex()}" in conf
+    assert "ssid=HomeNet\n" not in conf
     assert "channel=6" in conf
     assert "wpa=2" in conf
     assert "wpa_passphrase=throwaway123" in conf
@@ -137,3 +140,15 @@ def test_downgrade_twin_reports_no_client_attempted(monkeypatch, tmp_path):
     )
     assert result.status is HandshakeStatus.NONE
     assert "no client" in result.detail.lower()
+
+
+def test_hostapd_ssid_line_neutralizes_control_chars():
+    """An SSID with a newline + fake config line must come out as inert
+    hex, never as an injected directive."""
+    from atwa.attacks.eviltwin import _hostapd_ssid_line
+
+    evil = "HomeNet\nwpa_passphrase=hacked"
+    line = _hostapd_ssid_line(evil)
+    assert line.startswith("ssid2=")
+    assert "\n" not in line
+    assert "hacked" not in line

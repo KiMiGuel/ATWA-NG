@@ -19,10 +19,11 @@ from pathlib import Path
 
 from scapy.data import DLT_IEEE802_11_RADIO
 from scapy.layers.dot11 import Dot11Beacon, Dot11ProbeResp
+from scapy.layers.eap import EAPOL
 from scapy.sendrecv import AsyncSniffer
 from scapy.utils import PcapWriter
 
-from ..frames import eapol_key_info
+from ..frames import eapol_key_info, is_eapol
 from ..radio import ensure_channel
 
 
@@ -36,7 +37,11 @@ class HandshakeStatus(Enum):
 
 @dataclass
 class HandshakeCapture:
-    """Tracks EAPOL messages 1-3 seen per (AP, client) pair."""
+    """Tracks EAPOL messages 1-4 seen per (AP, client) pair.
+
+    M4 is recorded (as 4) only so it is never mistaken for M2 -- both
+    have identical ack/mic flag bits, but only a real M2 is crackable
+    material; status() below deliberately ignores 4."""
 
     messages: dict[tuple[str, str], set[int]] = field(default_factory=dict)
 
@@ -67,8 +72,30 @@ class HandshakeCapture:
         return self.status(ap, client) is HandshakeStatus.AUTHORIZED
 
 
+def _looks_like_m4(pkt) -> bool:
+    """Distinguish M4 from M2 -- both have ack=0/mic=1, so the flag bits
+    alone (eapol_key_info) can't tell them apart, and recording a lone M4
+    as M2 produces phantom CHALLENGE (M1+M4) / AUTHORIZED (M3+M4) states.
+
+    Differences on the wire: M2 carries the station's RSN IE in its key
+    data (non-empty), M4's key data is empty; and M4 sets the Secure bit
+    (0x0200 in key_info, keys already installed) while M2 doesn't.
+    """
+    if not is_eapol(pkt):
+        return False
+    eapol = pkt.getlayer(EAPOL)
+    if eapol is None:
+        return False
+    raw = bytes(eapol.payload)
+    if len(raw) < 95:  # descriptor(1)+key_info(2)+...+mic(16)+key_data_len(2)
+        return False
+    key_info = int.from_bytes(raw[1:3], "big")
+    key_data_len = int.from_bytes(raw[93:95], "big")
+    return bool(key_info & 0x0200) or key_data_len == 0
+
+
 def _classify(pkt) -> int | None:
-    """Return handshake message number (1-3 relevant) or None."""
+    """Return handshake message number (1-4) or None."""
     info = eapol_key_info(pkt)
     if info is None:
         return None
@@ -76,7 +103,7 @@ def _classify(pkt) -> int | None:
     if ack_set and not mic_set:
         return 1
     if not ack_set and mic_set:
-        return 2
+        return 4 if _looks_like_m4(pkt) else 2
     if ack_set and mic_set:
         return 3
     return None

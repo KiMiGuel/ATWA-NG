@@ -20,6 +20,7 @@ def deauth(
     low_rate: bool = False,
     reason: int = 7,
     progress_fn=None,
+    stop_event=None,
 ) -> int:
     """Send count deauth rounds from bssid to client.
 
@@ -43,6 +44,10 @@ def deauth(
     attacks/logic.py's run_deauth_flow -- as one layer against
     signature-based WIDS detection of a fixed reason code repeated
     every round.
+
+    stop_event: checked before every round; a set event aborts the burst
+    immediately (the GUI's Stop Attack button sets it) instead of letting
+    the remaining rounds play out.
 
     Returns the raw frame count actually handed to the OS for transmission
     (not the round count -- see above) -- 0 if iface isn't in monitor mode
@@ -109,6 +114,9 @@ def deauth(
     sent = 0
     try:
         for i in range(count):
+            if stop_event is not None and stop_event.is_set():
+                log(f"deauth stopped after {sent} frame(s) ({i}/{count} round(s)) -- stop requested")
+                return sent
             try:
                 sock.send(pkt_fwd)
                 sent += 1

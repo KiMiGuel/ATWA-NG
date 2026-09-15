@@ -48,8 +48,6 @@ def _fake_tempfile(*args, **kwargs):
 def _patch_common(monkeypatch, *, hostapd_alive=True):
     monkeypatch.setattr(eviltwin_mod, "_assign_ip", lambda iface: True)
     monkeypatch.setattr(eviltwin_mod, "_flush_ip", lambda iface: None)
-    monkeypatch.setattr(eviltwin_mod, "_iptables_nat_add", lambda ap, mon: None)
-    monkeypatch.setattr(eviltwin_mod, "_iptables_nat_remove", lambda ap, mon: None)
     monkeypatch.setattr(eviltwin_mod, "_popen", lambda cmd: _FakeProc(alive=hostapd_alive))
     monkeypatch.setattr(eviltwin_mod.time, "sleep", lambda s: None)
     monkeypatch.setattr(eviltwin_mod.os, "killpg", lambda *a, **k: None)

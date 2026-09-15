@@ -245,3 +245,16 @@ def test_send_until_m3_stops_resending_once_m3_arrives(monkeypatch):
     # Only the initial send plus at most one timer fire before M3 arrived.
     proactive = [s for s in sent if s != ("initial",)]
     assert len(proactive) <= 2
+
+
+def test_null_pin_psk_matches_pixie_empty_psk_derivation():
+    """The null-PIN attack's PSK1=PSK2 must be the same empty-PIN PSK
+    pixie_dust() checks as a candidate: HMAC-SHA256(AuthKey, b"")[:16].
+    Pins the two derivations together so they can't drift apart again."""
+    import hashlib
+    import hmac
+
+    from atwa.wps.crypto import psk_half
+
+    auth_key = b"\x42" * 32
+    assert psk_half(auth_key, b"") == hmac.new(auth_key, b"", hashlib.sha256).digest()[:16]

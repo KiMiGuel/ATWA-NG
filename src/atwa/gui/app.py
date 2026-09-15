@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import functools
 import queue
-import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -89,6 +88,13 @@ class App:
         self._busy = False
         self._captures_refreshing = False
         self._scanning = threading.Event()
+        # Generation token for the scan loop: a fast Stop -> Start would
+        # otherwise let the OLD loop thread (still mid-hop dwell when the
+        # flag got cleared) see _scanning set again and keep running --
+        # two loops, two sniffers, two hoppers fighting one radio.
+        # _stop_scan bumps this; a stale-generation loop exits at its next
+        # iteration check.
+        self._scan_generation = 0
         self._stop_event = threading.Event()
         self._scan_thread: threading.Thread | None = None
         # Default no-op; _run_bg() replaces this with a real self._log-backed
@@ -974,6 +980,8 @@ class App:
                         self._populate_capture_tree(payload)
                     elif kind == "inspect_all_done":
                         self._on_inspect_all_done(payload)
+                    elif kind == "ui":
+                        payload()  # generic "run this callable on the Tk thread" escape hatch
                 except Exception as exc:  # noqa: BLE001 - one bad queue item must not kill the drain loop
                     self._append_log(f"    (internal) error handling {kind!r} update: {exc}")
         finally:
@@ -1217,8 +1225,10 @@ class App:
             self.own_mac = mac
             self._permanent_mac = permanent_mac
             self._queue.put(("status", f"Monitor mode on {mon}"))
-            self.mac_var.set(mac + (" (randomized)" if permanent_mac else ""))
-            self.monitor_status_var.set(f"MONITOR: {mon}")
+            # Tk vars are NOT thread-safe -- set them on the Tk thread
+            # via the queue, not directly from this worker.
+            self._queue.put(("ui", lambda: self.mac_var.set(mac + (" (randomized)" if permanent_mac else ""))))
+            self._queue.put(("ui", lambda: self.monitor_status_var.set(f"MONITOR: {mon}")))
             return mon
 
         self._run_bg("Start monitor mode", work)
@@ -1235,7 +1245,7 @@ class App:
             set_managed_mode(iface, restore_mac=permanent_mac)
             self.mon_iface = None
             self._permanent_mac = None
-            self.monitor_status_var.set("MONITOR: OFF")
+            self._queue.put(("ui", lambda: self.monitor_status_var.set("MONITOR: OFF")))
             return iface
 
         self._run_bg("Stop monitor mode", work)
@@ -1250,6 +1260,8 @@ class App:
         if self._scanning.is_set():
             return
         self._scanning.set()
+        self._scan_generation += 1
+        generation = self._scan_generation
         self._log("scanning started")
 
         def loop():
@@ -1318,7 +1330,7 @@ class App:
             HEALTH_CHECK_INTERVAL = 10.0
 
             try:
-                while self._scanning.is_set():
+                while self._scanning.is_set() and generation == self._scan_generation:
                     now = time.monotonic()
                     if now - last_health_check >= HEALTH_CHECK_INTERVAL:
                         last_health_check = now
@@ -1422,6 +1434,7 @@ class App:
 
     def _stop_scan(self):
         self._scanning.clear()
+        self._scan_generation += 1  # invalidate any loop thread still mid-dwell
         self._log("scanning stopped")
 
     def _matches_security_filter(self, ap: AccessPoint) -> bool:
@@ -1676,7 +1689,7 @@ class App:
             # and only append newly-seen clients at the end.
             prev_selection = self.client_tree.selection()
             kept_ids = [mac for mac in current_ids if mac in new_set]
-            added_ids = sorted(mac for mac in ap.clients if mac not in current_set)
+            added_ids = sorted(mac for mac in new_set if mac not in current_set)
             new_ids = kept_ids + added_ids
             self.client_tree.delete(*current_ids)
             for i, mac in enumerate(new_ids):
@@ -2003,12 +2016,13 @@ class App:
         self._run_bg(f"Caffe Latte on {client_mac}", self._runner().caffe_latte, client_mac, ap, key_len)
 
     def _attack_chopchop(self):
-        """The native from-scratch chopchop (ICV-correction math) is
-        disabled — confirmed broken by two independent offline verification
-        tests, see the comment above attacks/wep_client.py's chopchop().
-        This drives the project's own vendored/self-compiled aireplay-ng's
-        real -4/--chopchop mode instead (chopchop_vendor(), wired via
-        AttackRunner.chopchop()) — not the broken native function."""
+        """The native from-scratch chopchop (ICV-correction math) was
+        confirmed broken by two independent offline verification tests and
+        later deleted (2026-09-14) -- see the note above
+        attacks/wep_client.py's chopchop_vendor(). This drives the
+        project's own vendored/self-compiled aireplay-ng's real
+        -4/--chopchop mode instead (chopchop_vendor(), wired via
+        AttackRunner.chopchop())."""
         ap = self._require_target()
         if not ap:
             return
@@ -2081,19 +2095,18 @@ class App:
                 # aircrack-ng showed it can catch SIGTERM, print "Quitting
                 # aircrack-ng..." repeatedly, and never actually exit.
                 # SIGKILL can't be caught, so escalate to it after a grace
-                # period (same fix crack_dialog.py's Stop button already
-                # needed). Run off the Tk thread so the UI doesn't block.
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    self._log("crack process still running after 3s -- force-killing")
-                    proc.kill()
-                    proc.wait()
+                # period. And with john --fork=N, signaling only the leader
+                # orphans the worker children -- terminate_tree() signals the
+                # whole process group. Run off the Tk thread so the UI
+                # doesn't block.
+                from ..crack.john import terminate_tree
+
+                terminate_tree(proc, grace=3.0)
 
             threading.Thread(target=escalate, daemon=True).start()
-        self._log("stop requested (OMNI/Smart/WPS-bruteforce/auto-deauth loops will exit at their "
-                   "next check; a single blocking call in progress will still finish on its own timeout)")
+        self._log("stop requested — aborting the running attack (deauth bursts and online-guess "
+                   "abort within a fraction of a second; OMNI/Smart/WPS loops exit at their next "
+                   "round check; a crack subprocess is terminated above)")
 
     def _stop_cracking(self):
         """Dedicated Stop button for the Captures panel -- the generic
@@ -2699,7 +2712,7 @@ class App:
                 results.append(out)
             self._queue.put(("info", "Converted:\n" + "\n".join(results)))
             self._queue.put(("status", "Ready."))
-            self.root.after(0, self._refresh_captures)
+            self._queue.put(("ui", self._refresh_captures))
             return "converted"
 
         self._run_bg("Convert to 22000", work)
@@ -2714,7 +2727,7 @@ class App:
         def work():
             outputs = [fix_capture(p) for p in paths]
             self._queue.put(("info", "Fixed:\n" + "\n".join(outputs)))
-            self.root.after(0, self._refresh_captures)
+            self._queue.put(("ui", self._refresh_captures))
             return "fixed"
 
         self._run_bg("Fix capture(s)", work)
@@ -2729,7 +2742,7 @@ class App:
         def work():
             out = merge_captures(paths)
             self._queue.put(("info", f"Merged into:\n{out}"))
-            self.root.after(0, self._refresh_captures)
+            self._queue.put(("ui", self._refresh_captures))
             return out
 
         self._run_bg("Merge captures", work)
@@ -2813,7 +2826,7 @@ class App:
 
     def _refresh_wps_scan(self, tree: ttk.Treeview):
         tree.delete(*tree.get_children())
-        rows = [ap for ap in self.aps.values() if ap.wps]
+        rows = [ap for ap in list(self.aps.values()) if ap.wps]  # list() snapshot: scan thread mutates self.aps concurrently
         rows.sort(key=lambda ap: ap.signal if ap.signal is not None else -999, reverse=True)
         for ap in rows:
             tree.insert("", tk.END, iid=ap.bssid, values=(
@@ -2975,7 +2988,7 @@ class App:
         def work():
             report = cleanup_handshakes(dry_run=False)
             self._queue.put(("info", report.summary()))
-            self.root.after(0, self._refresh_captures)
+            self._queue.put(("ui", self._refresh_captures))
             return f"{len(report.deleted)} file(s) deleted, {len(report.removed_dirs)} folder(s) removed"
 
         self._run_bg("Cleanup handshakes", work)
@@ -3108,7 +3121,7 @@ class App:
                 security="open", pmf="none", signal=-70, clients={"11:22:33:44:55:66", "11:22:33:44:55:67"},
             ),
         }
-        self.mon_iface = "wlan0mon (demo)"
+        self.mon_iface = "wlan0 (demo)"
         self.own_mac = "de:ad:be:ef:ff:ff"
         self.mac_var.set(self.own_mac)
         self.monitor_status_var.set(f"MONITOR: {self.mon_iface}")

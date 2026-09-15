@@ -111,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("bssid")
     p.add_argument("client")
     p.add_argument("--channel", type=int)
+    p.add_argument("--essid", help="network name -- required for a crackable 22000 line (PMK derives from it)")
     p.set_defaults(func=_cmd_pmkid)
 
     p = sub.add_parser("handshake", help="4-way handshake capture")

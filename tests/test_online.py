@@ -26,8 +26,7 @@ def test_build_m2_mic_is_verifiable():
         bssid="aa:bb:cc:dd:ee:ff", client="11:22:33:44:55:66",
         replay_counter=7, descriptor_version=2, snonce=snonce, kck=kck, rsn_ie_bytes=rsn_ie,
     )
-    pkt = EAPOL(bytes(frame))
-    key = pkt.getlayer(EAPOL_KEY)
+    key = frame.getlayer(EAPOL_KEY)
     assert bytes(key.key_nonce) == snonce
     assert key.key_replay_counter == 7
     assert key.key_ack == 0
@@ -50,9 +49,31 @@ def test_build_m2_wrong_kck_gives_different_mic():
     )
     frame_a = _build_m2(kck=b"\x01" * 16, **common)
     frame_b = _build_m2(kck=b"\x02" * 16, **common)
-    mic_a = bytes(EAPOL(bytes(frame_a)).getlayer(EAPOL_KEY).key_mic)
-    mic_b = bytes(EAPOL(bytes(frame_b)).getlayer(EAPOL_KEY).key_mic)
+    mic_a = bytes(frame_a.getlayer(EAPOL_KEY).key_mic)
+    mic_b = bytes(frame_b.getlayer(EAPOL_KEY).key_mic)
     assert mic_a != mic_b
+
+
+def test_build_m2_is_full_dot11_frame():
+    """M2 is sendp()'d onto a monitor-mode socket, so the packet must
+    start at RadioTap/Dot11 -- a bare EAPOL frame never transmits (the
+    original bug this regression test guards)."""
+    from scapy.layers.dot11 import Dot11, RadioTap
+    from scapy.layers.l2 import LLC, SNAP
+
+    frame = _build_m2(
+        bssid="aa:bb:cc:dd:ee:ff", client="11:22:33:44:55:66",
+        replay_counter=1, descriptor_version=2, snonce=b"\x01" * 32,
+        kck=b"\x00" * 16, rsn_ie_bytes=b"\x30\x00",
+    )
+    assert isinstance(frame.firstlayer(), RadioTap)
+    dot11 = frame.getlayer(Dot11)
+    assert dot11.addr1 == "aa:bb:cc:dd:ee:ff"  # RA = AP
+    assert dot11.addr2 == "11:22:33:44:55:66"  # TA = client
+    assert dot11.FCfield & 0x1  # ToDS
+    snap = frame.getlayer(SNAP)
+    assert frame.getlayer(LLC) is not None
+    assert snap.code == 0x888E
 
 
 def test_craft_client_deauth_direction():
@@ -186,3 +207,30 @@ def test_online_guess_resets_consecutive_failure_count_on_non_assoc_failure(tmp_
     # Never hits 3 assoc failures in a row, so it should exhaust the wordlist.
     assert result.attempts == 5
     assert "exhausted" in result.detail
+
+
+def test_portal_submission_requires_verification():
+    """eviltwin's portal: with a verify_fn, rejected passwords must NOT
+    land in result_box (the typo = false-success bug); accepted ones must."""
+    from atwa.attacks.eviltwin import _make_portal_handler
+
+    # Exercise the handler's decision path through a real HTTP round-trip
+    # against an ephemeral server -- no radio involved.
+    import http.client
+    import threading
+    from http.server import HTTPServer
+
+    for verify_result, expected in ((False, []), (True, ["hunter22"])):
+        result_box: list[str] = []
+        handler = _make_portal_handler("HomeNet", result_box, verify_fn=lambda pwd: verify_result)
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/submit", body="pwd=hunter22", headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        server.server_close()
+        assert result_box == expected

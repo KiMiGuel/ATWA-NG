@@ -15,6 +15,14 @@ from dataclasses import dataclass
 REQUIRED_TOOLS = {
     "iw": {"apt": "sudo apt install -y iw", "feature": "monitor mode, channel control"},
     "ip": {"apt": "sudo apt install -y iproute2", "feature": "interface up/down"},
+    # Shelled out unconditionally by radio.py (get_driver/get_permanent_mac
+    # need ethtool; check_kill_interfering_processes needs pkill; the ACHM
+    # txpower patch needs mount for debugfs) -- previously missing from
+    # this list entirely, so the dependency check could pass on a system
+    # where radio control still failed.
+    "ethtool": {"apt": "sudo apt install -y ethtool", "feature": "driver detection, permanent MAC"},
+    "pkill": {"apt": "sudo apt install -y procps", "feature": "killing interfering processes (airmon-ng check kill)"},
+    "mount": {"apt": "sudo apt install -y mount", "feature": "debugfs for the ACHM txpower patch"},
 }
 
 # Each of these gates exactly one Captures-tab action; missing one just

@@ -191,3 +191,45 @@ def test_is_eapol_false_for_ordinary_data_frame():
     assert frame is not None
     assert is_eapol(frame) is False
     assert eapol_key_info(frame) is None
+
+
+def test_is_eapol_true_for_qos_data_frame():
+    """QoS Data frames (subtype 8) carry a 2-byte QoS Control field
+    between the MAC header and the LLC/SNAP header -- the dominant
+    shape for EAPOL on real WPA2 networks. The body slice must skip it
+    or every real handshake frame is missed."""
+    from scapy.layers.dot11 import Dot11QoS
+    from scapy.packet import Raw
+    dot11 = Dot11(addr1=CLIENT, addr2=BSSID, addr3=BSSID, type=2, subtype=8)
+    key_frame = bytes([1]) + (0x0100).to_bytes(2, "big") + b"\x00" * 90  # M2
+    llc_snap = b"\xaa\xaa\x03\x00\x00\x00\x88\x8e"
+    eapol_hdr = bytes([1, 3]) + len(key_frame).to_bytes(2, "big")
+    pkt = RadioTap() / dot11 / Dot11QoS() / Raw(load=llc_snap + eapol_hdr + key_frame)
+    frame = dissect(bytes(pkt))
+    assert frame is not None
+    assert is_eapol(frame)
+    assert eapol_key_info(frame) == (True, False)
+
+
+def test_dissect_wds_four_addr_header():
+    """4-addr WDS data frame (ToDS+FromDS): body must start after the
+    30-byte header, not at the fixed 24. Header built by hand -- scapy
+    won't emit addr4 from a plain Dot11."""
+    from scapy.packet import Raw
+    def m(a: str) -> bytes:
+        return bytes(int(x, 16) for x in a.split(":"))
+    # FC: type=2, subtype=0, ToDS+FromDS -> 0x0308 little-endian
+    mac = (
+        b"\x08\x03" + b"\x00\x00"
+        + m(CLIENT) + m(BSSID) + m(BSSID) + b"\x10\x00"
+        + m("11:22:33:44:55:66")  # Addr4
+    )
+    llc_snap = b"\xaa\xaa\x03\x00\x00\x00\x88\x8e"
+    key_frame = bytes([1]) + (0x0080).to_bytes(2, "big") + b"\x00" * 90  # M1
+    eapol_hdr = bytes([1, 3]) + len(key_frame).to_bytes(2, "big")
+    pkt = RadioTap() / Raw(load=mac + llc_snap + eapol_hdr + key_frame)
+    frame = dissect(bytes(pkt))
+    assert frame is not None
+    assert frame.addr2 == BSSID
+    assert is_eapol(frame)
+    assert eapol_key_info(frame) == (False, True)

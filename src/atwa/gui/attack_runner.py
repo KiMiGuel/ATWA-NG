@@ -85,7 +85,7 @@ class AttackRunner:
             return f"skipped — {block}"
         sent = deauth(
             self._iface, ap.bssid, client=BROADCAST, count=64, channel=ap.channel,
-            progress_fn=self._progress_fn,
+            progress_fn=self._progress_fn, stop_event=self._stop_event,
         )
         return f"sent {sent} deauth frames to broadcast"
 
@@ -98,7 +98,7 @@ class AttackRunner:
             return f"skipped — {block}"
         sent = deauth(
             self._iface, ap.bssid, client=client, count=64, channel=ap.channel,
-            progress_fn=self._progress_fn,
+            progress_fn=self._progress_fn, stop_event=self._stop_event,
         )
         return f"sent {sent} deauth frames to {client}"
 
@@ -111,7 +111,7 @@ class AttackRunner:
         from ..storage import target_capture_dir
 
         line = capture_pmkid(
-            self._iface, ap.bssid, self._mac, channel=ap.channel,
+            self._iface, ap.bssid, self._mac, channel=ap.channel, essid=ap.ssid,
             stop_event=self._stop_event, progress_fn=self._progress_fn,
         )
         if line is None:
@@ -372,13 +372,20 @@ class AttackRunner:
         # attacks/logic.py; History.md, 2026-09-13.
         cap = HandshakeCapture()
 
-        self._log(f"PINCER: putting {scan_iface} (scan/listen) into monitor mode (randomize_mac={randomize_mac})")
-        scan_mon, scan_perm_mac = set_monitor_mode(scan_iface, randomize_mac=randomize_mac)
-        self._log(f"PINCER: {scan_mon} mode={get_mode(scan_mon)}")
-        self._log(f"PINCER: putting {attack_iface} (attack/deauth) into monitor mode (randomize_mac={randomize_mac})")
-        attack_mon, attack_perm_mac = set_monitor_mode(attack_iface, randomize_mac=randomize_mac)
-        self._log(f"PINCER: {attack_mon} mode={get_mode(attack_mon)}")
+        # Both mode-sets live INSIDE the try: if the second set_monitor_mode
+        # raises, the finally below must still restore the first radio --
+        # previously it was left stuck in monitor mode (the restore only ran
+        # for failures after both calls succeeded). The *_mon vars stay None
+        # for any radio that never made it, and the finally skips those.
+        scan_mon = attack_mon = None
+        scan_perm_mac = attack_perm_mac = None
         try:
+            self._log(f"PINCER: putting {scan_iface} (scan/listen) into monitor mode (randomize_mac={randomize_mac})")
+            scan_mon, scan_perm_mac = set_monitor_mode(scan_iface, randomize_mac=randomize_mac)
+            self._log(f"PINCER: {scan_mon} mode={get_mode(scan_mon)}")
+            self._log(f"PINCER: putting {attack_iface} (attack/deauth) into monitor mode (randomize_mac={randomize_mac})")
+            attack_mon, attack_perm_mac = set_monitor_mode(attack_iface, randomize_mac=randomize_mac)
+            self._log(f"PINCER: {attack_mon} mode={get_mode(attack_mon)}")
             if ap.channel:
                 ensure_channel(scan_mon, ap.channel)
                 ensure_channel(attack_mon, ap.channel)
@@ -410,10 +417,12 @@ class AttackRunner:
             listener.join(timeout=5)
             watch_stop.set()
         finally:
-            self._log("PINCER: restoring both radios to managed mode")
-            set_managed_mode(scan_mon, restore_mac=scan_perm_mac)
-            set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
-            self._log("PINCER: both radios restored")
+            self._log("PINCER: restoring radios to managed mode")
+            if attack_mon is not None:
+                set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
+            if scan_mon is not None:
+                set_managed_mode(scan_mon, restore_mac=scan_perm_mac)
+            self._log("PINCER: radios restored")
 
         status = best_status(cap)
         if status is HandshakeStatus.AUTHORIZED:

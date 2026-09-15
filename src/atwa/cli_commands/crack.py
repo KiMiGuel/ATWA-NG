@@ -13,7 +13,7 @@ from . import CAPCRACK_BIN, EAPOLDUMP_BIN, _run_bounded
 
 def _cmd_crack(args) -> int:
     hashfile = args.hashfile
-    if hashfile.endswith((".cap", ".pcap", ".pcapng")):
+    if hashfile.lower().endswith((".cap", ".pcap", ".pcapng")):
         hashfile = cap_to_22000(hashfile, hashfile + ".22000")
         print(f"converted to {hashfile}")
     results = JohnCracker().run_streaming(hashfile, args.wordlist, lambda line: print(line, end=""), {},

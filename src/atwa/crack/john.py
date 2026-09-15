@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import uuid
 from pathlib import Path
@@ -99,6 +100,30 @@ def _session_name() -> str:
     return str(_session_dir() / f"atwa_{uuid.uuid4().hex[:12]}")
 
 
+def terminate_tree(proc: subprocess.Popen, grace: float = 5.0) -> None:
+    """Terminate john including its --fork=N worker children.
+
+    --fork spawns N-1 child processes; proc.terminate()/kill() only
+    signals the leader, orphaning the workers (they keep burning CPU
+    after Stop -- confirmed shape of the bug report). The process is
+    started with start_new_session=True, so the whole group gets the
+    signal: SIGTERM first, SIGKILL on timeout."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.wait()
+
+
 class JohnCracker(Cracker):
     """Crack WPA hashes via john --format=wpapsk.
 
@@ -136,7 +161,9 @@ class JohnCracker(Cracker):
             text=True,
             check=False,
         )
-        if _NO_HASHES_MARKER in proc.stdout:
+        # John prints "No password hashes loaded" to STDERR, not stdout --
+        # checking stdout alone never fires and silently returns {}.
+        if _NO_HASHES_MARKER in proc.stdout + proc.stderr:
             raise JohnParseError(
                 f"john rejected {john_file} outright (0 hashes loaded) even after "
                 f"hcxhashtool conversion — not a wrong wordlist. Try aircrack-ng instead."
@@ -163,6 +190,7 @@ class JohnCracker(Cracker):
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             stdin=subprocess.DEVNULL,
+            start_new_session=True,  # own process group so terminate_tree() can kill --fork children
         )
         proc_holder["proc"] = proc
         assert proc.stdout is not None
@@ -173,13 +201,7 @@ class JohnCracker(Cracker):
                     rejected = True
                 on_line(line)
         finally:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+            terminate_tree(proc)
         if rejected:
             raise JohnParseError(
                 f"john rejected {john_file} outright (0 hashes loaded) even after "
@@ -210,7 +232,9 @@ class JohnCracker(Cracker):
         )
         results: dict[str, str] = {}
         for line in proc.stdout.splitlines():
-            parts = line.split(":")
+            # Split ONCE: a cracked PSK may itself contain ':' -- taking
+            # parts[1] of a full split silently truncates those passwords.
+            parts = line.split(":", 1)
             if len(parts) >= 2 and not line.endswith("password hashes cracked"):
                 results[parts[0]] = parts[1]
         return results

@@ -44,7 +44,8 @@ def cap_to_22000(capfile: str, outfile: str) -> str:
             "captures to 22000 format"
         )
     proc = subprocess.run(
-        ["hcxpcapngtool", "-o", outfile, capfile], capture_output=True, text=True, check=False
+        ["hcxpcapngtool", "-o", outfile, capfile], capture_output=True, text=True,
+        timeout=120, check=False,  # bounded, same as fix_capture/merge_captures below
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hcxpcapngtool failed: {proc.stderr.strip()}")
@@ -70,7 +71,8 @@ def hc22000_to_john(hashfile: str, outfile: str) -> str:
             "hcxhashtool not found; install hcxtools to convert 22000 hashes for John"
         )
     proc = subprocess.run(
-        ["hcxhashtool", "-i", hashfile, f"--john={outfile}"], capture_output=True, text=True, check=False
+        ["hcxhashtool", "-i", hashfile, f"--john={outfile}"], capture_output=True, text=True,
+        timeout=120, check=False,  # bounded, same as fix_capture/merge_captures below
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hcxhashtool failed: {proc.stderr.strip()}")

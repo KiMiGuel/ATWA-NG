@@ -60,9 +60,10 @@ class Frame:
     """One parsed 802.11 frame -- the raw-bytes replacement for a scapy
     Packet in the scan hot path.
 
-    body: everything after the fixed 24-byte MAC header -- information
-    elements for a management frame, or the data payload (EAPOL, etc.)
-    for a data frame.
+    body: everything after the MAC header -- information elements for a
+    management frame (always a 24-byte header), or the data payload
+    (EAPOL, etc.) for a data frame (24-byte header plus QoS Control and
+    Addr4 extension fields when present, see dissect()).
     raw: the full original frame bytes (RadioTap header onward) --
     RSN/WPA1/WPS/OWE-Transition scanning in secure.py searches this
     directly, same as it already searched `bytes(pkt)` before this
@@ -104,6 +105,24 @@ def dissect(raw: bytes) -> Frame | None:
     frame_type = (frame_control >> 2) & 0x3
     subtype = (frame_control >> 4) & 0xF
     sequence_control = struct.unpack_from("<H", mac, 22)[0]
+
+    # Data-frame MAC headers are NOT always 24 bytes: QoS data frames
+    # (subtype bit 3 -- the norm on WPA2 networks, which send EAPOL as
+    # QoS Data) carry a 2-byte QoS Control field, and 4-addr WDS frames
+    # (ToDS+FromDS both set) carry a 6-byte Addr4. Slicing the body at a
+    # fixed 24 shifted every such payload left, so _eapol_payload()'s
+    # LLC/SNAP match silently missed nearly all real handshake traffic.
+    to_ds = bool(mac[1] & 0x01)
+    from_ds = bool(mac[1] & 0x02)
+    header_len = 24
+    if frame_type == TYPE_DATA:
+        if to_ds and from_ds:
+            header_len += 6  # Addr4 (WDS); sequence control stays at offset 22
+        if subtype & 0x8:
+            header_len += 2  # QoS Control
+    if len(mac) < header_len:
+        return None
+
     return Frame(
         frame_type=frame_type,
         subtype=subtype,
@@ -112,7 +131,7 @@ def dissect(raw: bytes) -> Frame | None:
         addr3=_mac_str(mac[16:22]),
         sequence_control=sequence_control,
         signal_dbm=signal_dbm,
-        body=mac[24:],
+        body=mac[header_len:],
         raw=raw,
     )
 

