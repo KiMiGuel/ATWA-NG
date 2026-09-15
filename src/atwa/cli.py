@@ -4,8 +4,11 @@
   - scan, injection-test, wps-recon: native scapy scanning, injection
     self-test, and WPS reconnaissance (scan.py, injection_test.py,
     secure.wps_profile()) — no vendored binary involved.
-  - crack-cap: the one remaining wrapper path, a permitted exception
-    (cap/pcap-format cracking backend, alongside John).
+  - crack-cap: a permitted wrapper path (cap/pcap-format cracking
+    backend, alongside John). eapol-hunt/verify-handshake are additional
+    wrapper paths around vendored EAPOLHUNTER_BIN/EAPOLDUMP_BIN scripts
+    (cli_commands/__init__.py) -- see that module for the full, current
+    list of permitted exceptions to the native-only policy.
   - deauth, pmkid, handshake, omni, smart, wep, wps-pixie, wps-oneshot,
     crack: native-Python attack implementations (attacks/, wep/, wps/,
     crack/), imported here with plain relative imports (`.`/`..`) —

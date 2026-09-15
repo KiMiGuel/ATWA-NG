@@ -2,8 +2,7 @@
 
 Attribute IDs, message-type bytes, and the EAP-Expanded vendor triple are
 taken verbatim from wpa_supplicant's wps_defs.h (the reference
-implementation), not reconstructed from memory. See STATUS.md "Research
-notes" for provenance.
+implementation), not reconstructed from memory.
 """
 
 from __future__ import annotations

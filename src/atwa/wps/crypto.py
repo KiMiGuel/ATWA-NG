@@ -2,8 +2,7 @@
 E/R-Hash proof-of-PIN-possession formulas.
 
 Sourced from wpa_supplicant's wps_common.c / wps_defs.h (the reference
-implementation) rather than reconstructed from memory — see STATUS.md
-"Research notes" for exact provenance of each formula. Cross-checked
+implementation) rather than reconstructed from memory. Cross-checked
 against Viehböck's "Brute forcing Wi-Fi Protected Setup" (2011) for the
 E-Hash/R-Hash byte order and PIN-half split.
 """

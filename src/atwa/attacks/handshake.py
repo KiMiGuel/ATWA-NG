@@ -3,7 +3,11 @@
 Classification: a pair with only M1+M2 is CHALLENGE — unverified, since
 the AP never confirmed the client's MIC — while M2+M3 is AUTHORIZED,
 since the AP itself validated the proof before replying with M3.
-CHALLENGE-only must NOT stop auto-deauth loops, only AUTHORIZED should.
+CHALLENGE is real, crackable material — deauth loops may stop on it too
+(see attacks/logic.py's meets_threshold(); History.md, 2026-09-13). This
+module's own stop_filter below stays AUTHORIZED-only on purpose: that
+governs passive listening, not attacking, and costs nothing to keep
+running a bit longer for the stronger confirmation.
 """
 
 from __future__ import annotations
@@ -56,9 +60,9 @@ class HandshakeCapture:
     def authorized(self, ap: str, client: str) -> bool:
         """True only once the AP itself confirmed proof (M3 seen).
 
-        This is the sole signal that should stop an attack loop's deauth
-        rounds. CHALLENGE (M1+M2 only) is unverified and must keep the
-        loop running.
+        Used by this module's own stop_filter (passive listening only —
+        see the module docstring). Attack loops deciding whether to keep
+        deauthing should use attacks/logic.py's meets_threshold() instead.
         """
         return self.status(ap, client) is HandshakeStatus.AUTHORIZED
 

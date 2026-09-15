@@ -31,7 +31,10 @@ _VENDOR_ROOT = _REPO_ROOT / "vendor" / "aircrack-ng"
 # of the whole policy. CAPCRACK_BIN fits the original exemption (operates on
 # capture files). `wash` (WPS recon) doesn't need an entry here any more —
 # wps-recon now goes through scan.py/secure.wps_profile() natively
-# (2026-08-31), closing the last non-cracking wrapper.
+# (2026-08-31). CHOPCHOP_BIN (above) and EAPOLHUNTER_BIN/EAPOLDUMP_BIN
+# (below) remain as separate, still-active non-cracking wrappers, each
+# individually justified where they're defined/used -- `wash` dropping
+# out just means it's no longer one of them.
 CAPCRACK_BIN = _VENDOR_ROOT / "aircrack-ng"
 CHOPCHOP_BIN = _VENDOR_ROOT / "aireplay-ng"
 EAPOLHUNTER_BIN = _REPO_ROOT / "vendor" / "eapol_hunter" / "eapol_hunter.py"

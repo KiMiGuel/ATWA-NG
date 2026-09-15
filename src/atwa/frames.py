@@ -97,9 +97,9 @@ def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7, low_rate:
     always sends BOTH directions per round when a specific client is
     targeted, precisely because a frame lost in one direction (RF noise,
     a dropped retry) can leave the *other* endpoint still thinking it's
-    associated. ATWA-NG's own deauth() previously only ever sent the
-    AP-to-client direction -- see deauth() below, now fixed to send both
-    when a real client (not BROADCAST) is targeted.
+    associated. ATWA-NG's own deauth() (attacks/deauth.py) previously only
+    ever sent the AP-to-client direction -- now fixed to send both when a
+    real client (not BROADCAST) is targeted.
     """
     radiotap = RadioTap(present="Rate", Rate=12) if low_rate else RadioTap()
     if from_client:
@@ -219,10 +219,10 @@ def craft_probe_req(bssid: str, client: str, ssid: str = "") -> Packet:
 def craft_rts(bssid: str, client: str) -> Packet:
     """Craft a Request-To-Send control frame addressed at bssid.
 
-    Control frames carry only addr1 (receiver); no addr2/addr3 field in
-    the real 802.11 RTS layout, but scapy's Dot11 always emits addr2 --
-    harmless surplus bytes real receivers ignore for this subtype.
-    Ported from aireplay-ng --test's RTS constant.
+    Unlike CTS/ACK (receiver-address only), RTS carries two required
+    address fields: addr1 = RA (bssid) and addr2 = TA (client, the real
+    transmitter) -- no addr3. Ported from aireplay-ng --test's RTS
+    constant.
     """
     dot11 = Dot11(type=1, subtype=11, addr1=bssid, addr2=client)
     return _inject_radiotap() / dot11

@@ -20,9 +20,7 @@ table: try the most-voted candidate per key-byte position first, verify
 the assembled key against stored session keystreams, and only widen the
 search to next-best candidates where verification fails. Same general
 idea (votes -> verified candidate), different, honestly-labeled
-implementation. Correctness is established empirically in
-tests/test_wep_ptw.py via a synthetic known-key round trip, not by
-trusting the port.
+implementation.
 
 Constants (verified against aircrack-ng/include/aircrack-ng/ptw/
 aircrack-ptw-lib.h): IV = 3 bytes, up to 32 keystream bytes per session,

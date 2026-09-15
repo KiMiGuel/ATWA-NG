@@ -233,12 +233,14 @@ _AIRMON_INTERFERING_PROCESSES = (
 
 
 def check_kill_interfering_processes() -> list[str]:
-    """Kill the same processes airmon-ng's `airmon-ng check kill` does.
-    Best-effort and system-wide, matching airmon-ng's own behavior exactly
-    -- not scoped to one interface, no nmcli/systemctl involved, and no
-    automatic restart afterward (airmon-ng doesn't restart NetworkManager
-    for you either; that's a manual `systemctl start NetworkManager` once
-    you're done). Returns the process names actually killed."""
+    """Kill known Wi-Fi-interfering processes, modeled after (not an exact
+    port of) airmon-ng's `check kill` -- the real airmon-ng also stops
+    NetworkManager/avahi-daemon/wicd via systemctl/service and covers a
+    longer process list; this is a plain system-wide `pkill -x` loop over
+    _AIRMON_INTERFERING_PROCESSES above, no nmcli/systemctl involved, and
+    no automatic restart afterward (a manual `systemctl start
+    NetworkManager` once you're done, same as airmon-ng requires).
+    Returns the process names actually killed."""
     killed = []
     for name in _AIRMON_INTERFERING_PROCESSES:
         proc = subprocess.run(
@@ -354,8 +356,14 @@ def set_channel(iface: str, channel: int) -> None:
     the exact same channel set at the PHY level immediately captured real
     beacons. This had been wrongly written off as "5GHz doesn't work on this
     hardware" — wlan0 was never the hardware limit, this call was.
-    wlan1 (mt76x0u) still gets zero 5GHz frames even with the PHY-level
-    call — that part of the original finding holds; only wlan0 was wrong.
+    CORRECTION (2026-09-13): the line above claiming wlan1 (mt76x0u)
+    "still gets zero 5GHz frames even with the PHY-level call" was
+    disproved by a live re-test — 348 and 342 beacon/probe-resp frames
+    captured on wlan1 at channel 149 (5GHz) in two separate 8s windows,
+    using this exact PHY-level set_channel(). It was never re-verified
+    after the 2026-08-26 stuck-USB-state correction above and had been
+    carried forward as fact regardless. Both adapters are confirmed
+    capable of 5GHz monitor-mode RX via this function.
     Falls back to the old interface-level form if the phy can't be resolved.
     """
     phy = _phy_for_iface(iface)
@@ -403,11 +411,10 @@ def clear_channel_cache(iface: str | None = None) -> None:
 
 def check_and_heal(iface: str, expected_channel: int | None = None) -> list[str]:
     """Detect and correct monitor-mode/channel drift on iface -- the same
-    class of failure as the 2026-09-02 BPF-filter hotfix (scan.py/app.py):
-    code that assumes an interface stays exactly as it was left, silently
-    breaking once something external (NetworkManager reasserting control,
-    a driver reset, another process retuning the radio) changes that
-    state mid-session.
+    class of failure as any code that assumes an interface stays exactly
+    as it was left, silently breaking once something external
+    (NetworkManager reasserting control, a driver reset, another process
+    retuning the radio) changes that state mid-session.
 
     Reads the real hardware state directly (not the ensure_channel()
     cache, which only reflects what atwa itself last requested and can't
@@ -458,7 +465,14 @@ class ChannelHopper:
     # mt76x0u hardware-retune tax per hop regardless of dwell value (a
     # kernel-driver/firmware round trip, not fixable at the netlink call
     # site -- verified against pyRIC with a persistent socket too), so
-    # this constant is the only lever. The old 0.3 vs. this 0.25 meant
+    # this constant is the only lever.
+    # FLAGGED, NOT RE-VERIFIED (2026-09-13): the "verified against pyRIC"
+    # clause above is unconfirmed by anyone re-running it -- it's taken
+    # on faith the same way the now-disproved "wlan1 zero 5GHz frames"
+    # claim in set_channel() above was. Not shown wrong, just not
+    # actually re-checked; treat this specific clause as unverified until
+    # someone re-runs the hop-timing comparison against pyRIC directly.
+    # The old 0.3 vs. this 0.25 meant
     # ~13% fewer channel visits per unit wall-clock time, which matched
     # a live side-by-side AP-count gap almost exactly (61 vs. 71 APs in
     # a 20s scan -> 86% coverage, vs. an 87% hop-rate ratio); dropping

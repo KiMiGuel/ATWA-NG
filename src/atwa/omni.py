@@ -9,8 +9,9 @@ against the AP itself (attacks/online.py) -- WPA/WPA2/transition
 (PSK AKM) only, skipped for WPA3-only/SAE and WEP targets, and only
 run once a wordlist is configured (nothing to guess otherwise).
 
-Single-adapter by design. A dual-Alfa split listen/attack mode is an
-open idea (STATUS.md "Ideas / undecided"), not assumed here.
+Single-adapter by design. Dual-Alfa split listen/attack (PINCER) is a
+separate, real, tested implementation (gui/attack_runner.py's pincer()),
+not part of this orchestrator's own chain.
 
 Every stage body that touches the network is dependency-injected
 (pmkid_fn/handshake_fn/deauth_fn/cracker) so orchestration logic can be
@@ -29,7 +30,7 @@ from .attacks.deauth import deauth as _default_deauth
 from .attacks.eviltwin import run_eviltwin as _default_eviltwin
 from .attacks.handshake import HandshakeCapture, HandshakeStatus
 from .attacks.handshake import capture_handshake as _default_capture_handshake
-from .attacks.logic import run_deauth_flow, select_client
+from .attacks.logic import best_status, run_deauth_flow, select_client
 from .attacks.online import online_guess as _default_online_guess
 from .attacks.pmkid import capture_pmkid as _default_capture_pmkid
 from .attacks.wps import pixie_attempt as _default_pixie_attempt
@@ -360,25 +361,15 @@ class OmniOrchestrator:
             max_rounds=self.handshake_max_rounds,
             round_interval=self.handshake_round_interval,
             burst_size=self.handshake_burst_size,
+            min_status=HandshakeStatus.CHALLENGE,
             stop_event=self._stop,
             progress_fn=self._log,
         )
 
-        # Wait out the FULL listen window here, not just the deauth round
-        # budget consumed so far -- run_deauth_flow can (and, for
-        # CHALLENGE-only material, normally does) stop sending deauth well
-        # before capture_handshake()'s own internal stop_filter fires (that
-        # only triggers on full AUTHORIZED, matching HandshakeCapture's own
-        # "CHALLENGE-only must NOT stop auto-deauth loops" rule), so the
-        # listener keeps passively running for the rest of total_window
-        # regardless of how early the deauth side gave up. Joining on only
-        # the elapsed round budget (2026-09-12 code-review finding) left a
-        # real gap: the listener thread was often still alive, hadn't
-        # written result["cap"] yet, and the code below fell through to
-        # "no EAPOL captured" -- silently discarding real, already-verified
-        # CHALLENGE material sitting in live_cap the whole time, on top of
-        # leaving an orphaned socket/thread on self.iface while the
-        # orchestrator moved on to stages that also need that interface.
+        # Join on the FULL listen window, not just the deauth round budget --
+        # the listener may still be running and hasn't written result["cap"]
+        # yet. Joining short silently discarded real material. History.md,
+        # 2026-09-12.
         listener.join(timeout=total_window + 15.0)
         # Prefer the thread's actual return value (what the existing tests'
         # handshake_fn fakes provide), but fall back to live_cap -- the same
@@ -392,14 +383,7 @@ class OmniOrchestrator:
             report.stages.append(StageReport("handshake", StageResult.FAILED, "no EAPOL captured"))
             return HandshakeStatus.NONE
 
-        best = HandshakeStatus.NONE
-        for a, c in cap.messages:
-            status = cap.status(a, c)
-            if status is HandshakeStatus.AUTHORIZED:
-                best = HandshakeStatus.AUTHORIZED
-                break
-            if status is HandshakeStatus.CHALLENGE and best is HandshakeStatus.NONE:
-                best = HandshakeStatus.CHALLENGE
+        best = best_status(cap)
 
         if best is HandshakeStatus.AUTHORIZED:
             report.stages.append(StageReport("handshake", StageResult.SUCCESS, f"captured {outfile}"))

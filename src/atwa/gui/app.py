@@ -31,8 +31,6 @@ from .widgets import SignalGraph
 if TYPE_CHECKING:
     from .attack_runner import AttackRunner
 
-BROADCAST = "ff:ff:ff:ff:ff:ff"
-
 TARGET_COLUMNS = (
     ("bssid", "BSSID", 165),
     ("ssid", "SSID", 220),
@@ -1660,13 +1658,26 @@ class App:
         # and leave the existing selection alone. When it does change,
         # carry the previous selection forward if that client is still present.
         current_ids = self.client_tree.get_children()
-        new_ids = tuple(sorted(ap.clients))
-        if current_ids == new_ids:
-            for mac in new_ids:
+        current_set = set(current_ids)
+        new_set = set(ap.clients)
+        if current_set == new_set:
+            for mac in current_ids:
                 signal = ap.client_signal.get(mac)
                 self.client_tree.item(mac, values=(mac, signal if signal is not None else "-"))
         else:
+            # Re-sorting the whole list alphabetically on every rebuild (the
+            # old behavior) relocated existing rows on every client-set
+            # change -- on a busy AP that's most scan ticks. A click and a
+            # rebuild landing close together then raced: the row under the
+            # cursor when the click registered wasn't necessarily the row
+            # the user saw, and one MAC would appear permanently "stuck"
+            # selected (2026-09-13 live-test report). Keep existing rows in
+            # their existing order -- never relocate a row once inserted --
+            # and only append newly-seen clients at the end.
             prev_selection = self.client_tree.selection()
+            kept_ids = [mac for mac in current_ids if mac in new_set]
+            added_ids = sorted(mac for mac in ap.clients if mac not in current_set)
+            new_ids = kept_ids + added_ids
             self.client_tree.delete(*current_ids)
             for i, mac in enumerate(new_ids):
                 signal = ap.client_signal.get(mac)
@@ -1674,7 +1685,7 @@ class App:
                 self.client_tree.insert(
                     "", tk.END, iid=mac, values=(mac, signal if signal is not None else "-"), tags=(band_tag,),
                 )
-            still_present = [mac for mac in prev_selection if mac in new_ids]
+            still_present = [mac for mac in prev_selection if mac in new_set]
             if still_present:
                 self.client_tree.selection_set(still_present)
 
@@ -2151,7 +2162,8 @@ class App:
         import time as _time
 
         from ..attacks.deauth import deauth
-        from ..attacks.handshake import HandshakeStatus, capture_handshake
+        from ..attacks.handshake import HandshakeCapture, HandshakeStatus, capture_handshake
+        from ..attacks.logic import best_status, run_deauth_flow, select_client
         from ..storage import target_capture_dir
 
         if ap.pmf == "required":
@@ -2162,14 +2174,25 @@ class App:
         max_rounds = 6
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
         out_file = out_dir / f"autodeauth_{int(_time.time())}.pcap"
-        result: dict = {}
+        cap = HandshakeCapture()
 
         def listen():
-            result["cap"] = capture_handshake(
+            capture_handshake(
                 self.mon_iface, ap.bssid, channel=ap.channel,
                 timeout=interval * max_rounds + 10, outfile=str(out_file),
-                stop_event=stop_event, progress_fn=self._log,
+                stop_event=stop_event, progress_fn=self._log, cap=cap,
             )
+
+        def safe_deauth(iface, bssid, client, count, channel, reason, progress_fn=None):
+            # auto-deauth's loop must survive per-round errors (e.g. a
+            # radio.RadioError from deauth()'s own ensure_monitor_mode()
+            # call if the interface drops mid-run) -- run_deauth_flow
+            # itself doesn't wrap deauth_fn, so this does.
+            try:
+                return deauth(iface, bssid, client=client, count=count, channel=channel, reason=reason, progress_fn=progress_fn)
+            except Exception as exc:  # noqa: BLE001
+                (progress_fn or self._log)(f"auto-deauth round failed: {exc}")
+                return 0
 
         # Marks mon_iface busy so the background scan loop (_start_scan)
         # stops opening its own competing sniff() socket on the same
@@ -2184,35 +2207,25 @@ class App:
             watch_stop = threading.Event()
             threading.Thread(target=self._watch_capture_size, args=(out_file, watch_stop), daemon=True).start()
 
-            def authorized() -> bool:
-                cap = result.get("cap")
-                return bool(cap and any(cap.status(a, c) is HandshakeStatus.AUTHORIZED for a, c in cap.messages))
-
-            for round_n in range(max_rounds):
-                if stop_event.is_set():
-                    break
-                client = next(iter(ap.clients), BROADCAST)
-                try:
-                    sent = deauth(self.mon_iface, ap.bssid, client=client, channel=ap.channel, progress_fn=self._log)
-                    if sent == 0:
-                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: did NOT go out to {client} — see the warning above")
-                    else:
-                        self._log(f"auto-deauth round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) to {client}")
-                except Exception as exc:  # noqa: BLE001 - auto-deauth loop must survive per-round errors
-                    self._log(f"auto-deauth round {round_n + 1} failed: {exc}")
-                for _ in range(interval):
-                    if stop_event.is_set() or authorized():
-                        break
-                    _time.sleep(1)
-                if authorized():
-                    break
+            client = select_client(ap)
+            # burst_size=64 keeps auto-deauth's existing frame count -- see
+            # attacks/logic.py; History.md, 2026-09-13.
+            run_deauth_flow(
+                safe_deauth, self.mon_iface, ap, client, cap,
+                max_rounds=max_rounds, round_interval=interval, burst_size=64,
+                min_status=HandshakeStatus.CHALLENGE,
+                stop_event=stop_event, progress_fn=self._log,
+            )
 
             listener.join(timeout=5)
             watch_stop.set()
-            if authorized():
+            status = best_status(cap)
+            if status is HandshakeStatus.AUTHORIZED:
                 self._log(f"auto-deauth: AUTHORIZED handshake captured -> {out_file}")
+            elif status is HandshakeStatus.CHALLENGE:
+                self._log(f"auto-deauth: CHALLENGE handshake captured (unverified by AP) -> {out_file}")
             else:
-                self._log("auto-deauth: stopped or exhausted rounds, no AUTHORIZED handshake")
+                self._log("auto-deauth: stopped or exhausted rounds, no handshake material captured")
         finally:
             self._queue.put(("busy", False))
             self._queue.put(("auto_deauth_done", None))

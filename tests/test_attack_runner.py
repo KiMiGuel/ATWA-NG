@@ -24,6 +24,7 @@ class FakeAP:
     channel: int | None = 6
     pmf: str | None = "capable"
     clients: set[str] = field(default_factory=lambda: {"11:22:33:44:55:66"})
+    client_signal: dict[str, int] = field(default_factory=dict)
 
 
 def _make_runner(**overrides):
@@ -45,7 +46,10 @@ def _patch_radio(monkeypatch, sent_deauth=1):
     monkeypatch.setattr(radio_mod, "get_mode", lambda iface: "monitor")
     monkeypatch.setattr(radio_mod, "set_managed_mode", lambda iface, restore_mac=None: iface)
     monkeypatch.setattr(radio_mod, "ensure_channel", lambda iface, channel: True)
-    monkeypatch.setattr(deauth_mod, "deauth", lambda iface, bssid, client, channel, progress_fn=None: sent_deauth)
+    monkeypatch.setattr(
+        deauth_mod, "deauth",
+        lambda iface, bssid, client, channel, count=64, reason=7, progress_fn=None: sent_deauth,
+    )
     monkeypatch.setattr(storage_mod, "target_capture_dir", lambda essid, bssid, create=True: __import__("pathlib").Path("/tmp"))
 
 
@@ -65,12 +69,13 @@ def test_pincer_skips_entirely_when_pmf_required(monkeypatch, tmp_path):
 def test_pincer_stops_early_on_authorized_handshake(monkeypatch, tmp_path):
     _patch_radio(monkeypatch)
 
-    cap = HandshakeCapture()
-    cap.add("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", 1)
-    cap.add("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", 2)
-    cap.add("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", 3)
-
-    def fake_capture_handshake(iface, bssid, channel, timeout, outfile, stop_event=None, progress_fn=None):
+    def fake_capture_handshake(iface, bssid, channel, timeout, outfile, stop_event=None, progress_fn=None, cap=None):
+        # Mutate the passed-in cap in place, matching real capture_handshake's
+        # cap= contract (run_deauth_flow polls this same object live).
+        if cap is not None:
+            cap.add(bssid, "11:22:33:44:55:66", 1)
+            cap.add(bssid, "11:22:33:44:55:66", 2)
+            cap.add(bssid, "11:22:33:44:55:66", 3)
         return cap
 
     monkeypatch.setattr(handshake_mod, "capture_handshake", fake_capture_handshake)
@@ -85,7 +90,6 @@ def test_pincer_stops_early_on_authorized_handshake(monkeypatch, tmp_path):
     )
 
     assert "AUTHORIZED" in result
-    assert str(cap.messages) or True  # capture object was real, not stubbed away
 
 
 def test_pincer_stops_on_stop_event_between_rounds(monkeypatch, tmp_path):

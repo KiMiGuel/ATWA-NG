@@ -18,9 +18,12 @@ same MAC pair) matches what was observed. Patched implementations
 always run a fixed 40 iterations regardless of when the real point is
 found, eliminating the timing signal entirely.
 
-This module is stage 1 of 3 (2026-09-04 roadmap item): the pure-math
-offline half. Stage 2 (SAE Commit frame crafting) and stage 3 (the live
-timing-measurement/pruning attack) build on top of this.
+This module implements the pure-math offline half
+(hunting_and_pecking_iterations() etc.) and the live timing-measurement/
+pruning attack (_measure_sae_commit_rtt(), timing_prune_wordlist()),
+using SAE Commit frame crafting from frames.py's craft_sae_commit() --
+all implemented and unit-tested, unverified against a real WPA3-SAE
+target (see the confidence note below).
 
 ⚠️ CONFIDENCE NOTE -- read before trusting this against a real target:
 the P-256 curve constants and Legendre/QR-test logic below are HIGH

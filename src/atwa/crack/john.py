@@ -17,6 +17,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from .. import storage
 from .base import Cracker
 from .convert import hc22000_to_john
 
@@ -76,13 +77,26 @@ def _rules_args(rules: str) -> list[str]:
     return []
 
 
+def _session_dir() -> Path:
+    """Where John's --session .rec/.log files live: a hidden folder inside
+    the fixed capture root, not wherever atwa happened to be launched from.
+    John writes <session>.rec/<session>.log relative to the --session value
+    itself, so passing a path prefix (not just a bare name) redirects them
+    here directly -- previously they landed loose in the launch directory
+    (confirmed live: atwa_<hex>.log/.rec appearing directly in ~ after a
+    run launched from the home directory), with no cleanup, ever."""
+    d = storage.capture_root() / ".john-sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _session_name() -> str:
-    """A fresh, unique --session name per run. John's default (unnamed)
-    session always writes to the same john.rec regardless of hashfile/
-    wordlist -- giving every run its own name means a leftover .rec from
-    a stopped run can never be mistaken for -- or interfere with -- a
-    later run with different arguments."""
-    return f"atwa_{uuid.uuid4().hex[:12]}"
+    """A fresh, unique --session path prefix per run. John's default
+    (unnamed) session always writes to the same john.rec regardless of
+    hashfile/wordlist -- giving every run its own name means a leftover
+    .rec from a stopped run can never be mistaken for -- or interfere
+    with -- a later run with different arguments."""
+    return str(_session_dir() / f"atwa_{uuid.uuid4().hex[:12]}")
 
 
 class JohnCracker(Cracker):

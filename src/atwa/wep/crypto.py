@@ -13,8 +13,7 @@ changes.
 
 WEP per-packet key = IV (3 bytes) || root key (5 or 13 bytes). The ICV is
 an unkeyed CRC-32 over the plaintext, little-endian, appended before RC4
-encryption — see research/wep_attacks_dim06.md §2 (verified against a
-real GitHub WEP implementation) for the exact layout this mirrors.
+encryption.
 """
 
 from __future__ import annotations

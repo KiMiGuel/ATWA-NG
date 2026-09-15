@@ -54,12 +54,14 @@ THEME = {
 def apply(root) -> dict[str, tk_font.Font]:
     """Configure ttk styles + scalable fonts. Returns the font handles.
 
-    Base engine is ttkthemes' "equilux" (2026-09-08 user request) instead
+    Base engine is ttkthemes' "black" (2026-09-08 user request) instead
     of plain ttk's "clam" -- every color below is still driven by THEME,
-    so this doesn't reskin ATWA-NG to equilux's own gray palette, it just
-    swaps the underlying widget geometry/interaction rendering (flatter
+    so this doesn't reskin ATWA-NG to black's own palette, it just swaps
+    the underlying widget geometry/interaction rendering (flatter
     buttons, cleaner hover/press states) that clam can't produce on its
-    own, confirmed via a real side-by-side render before adopting it.
+    own. "equilux" was tried first and rejected in a real side-by-side
+    render: its pixmap-based button backgrounds didn't respect override
+    colors, and info-panel labels rendered with stray box highlights.
     Falls back to plain ttk + clam if ttkthemes isn't installed, so a
     missing optional dependency degrades the look rather than crashing
     the whole GUI."""
