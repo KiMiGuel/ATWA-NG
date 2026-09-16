@@ -137,7 +137,10 @@ def process_packet(raw: bytes, result: ScanResult, own_mac: str | None = None) -
         ap = result.aps.setdefault(bssid, AccessPoint(bssid=bssid))
         if is_new:
             ap.first_seen = now
-            manuf = conf.manufdb._get_manuf(bssid)
+            try:
+                manuf = conf.manufdb._get_manuf(bssid)
+            except Exception:  # noqa: BLE001 - private scapy API; a lookup failure must not break scanning
+                manuf = None
             if manuf and manuf.lower() != bssid.lower():
                 ap.manufacturer = manuf
         ap.last_seen = now
@@ -177,12 +180,23 @@ def process_packet(raw: bytes, result: ScanResult, own_mac: str | None = None) -
                 ap.signal = frame.signal_dbm
         return
     # Attribute client addresses to their AP via addr3 (BSSID) when known.
-    bssid = frame.addr3
-    if bssid and bssid in result.aps:
-        ap = result.aps[bssid]
+    frame_bssid: str | None = frame.addr3
+    client_candidates: tuple[str | None, ...] = (frame.addr1, frame.addr2)
+    if frame.to_ds and frame.from_ds:
+        # 4-address WDS/bridge frame: addr1/addr2 are the two bridge
+        # radios themselves (RA/TA), not a BSSID-vs-client pair -- the
+        # frame's actual original station addresses are addr3 (DA) and
+        # addr4 (SA). If either bridge radio is a BSSID we already know
+        # about, attribute the ORIGINAL SOURCE (addr4) as a client seen
+        # relayed through it, instead of misreading the other bridge
+        # radio's own MAC as a "client".
+        frame_bssid = frame.addr1 if frame.addr1 in result.aps else frame.addr2 if frame.addr2 in result.aps else None
+        client_candidates = (frame.addr4,) if frame.addr4 else ()
+    if frame_bssid and frame_bssid in result.aps:
+        ap = result.aps[frame_bssid]
         dbm = frame.signal_dbm
-        for addr in (frame.addr1, frame.addr2):
-            if addr and addr != BROADCAST and addr != bssid and (own_mac is None or addr.lower() != own_mac.lower()):
+        for addr in client_candidates:
+            if addr and addr != BROADCAST and addr != frame_bssid and (own_mac is None or addr.lower() != own_mac.lower()):
                 ap.clients.add(addr)
                 if dbm is not None and (addr not in ap.client_signal or dbm > ap.client_signal[addr]):
                     ap.client_signal[addr] = dbm
@@ -196,8 +210,19 @@ def process_packet(raw: bytes, result: ScanResult, own_mac: str | None = None) -
             if info is not None and info[1] and not info[0]:  # M1: ack set, mic not set
                 found = extract_pmkid(frame.raw)
                 if found:
-                    client = frame.addr1 if frame.addr2 == bssid else frame.addr2
-                    ap.pmkid = to_22000(found, bssid, client, ap.ssid)
+                    client = frame.addr1 if frame.addr2 == frame_bssid else frame.addr2
+                    ap.pmkid = to_22000(found, frame_bssid, client, ap.ssid)
+
+
+#: Default BPF filter for RawFrameSniffer -- kernel-level filtering (via
+#: L2listen's libpcap filter compile) instead of handing every control
+#: frame (RTS/CTS/ACK, the majority of frames on a busy channel) to
+#: userspace just to have dissect()/process_packet() throw them away.
+#: Keeps beacon/probe-response management frames (AP discovery) and all
+#: data frames (client traffic, EAPOL) -- everything process_packet()
+#: actually looks at; drops the rest (auth/deauth/assoc management,
+#: control frames).
+DEFAULT_SCAN_BPF_FILTER = "type mgt subtype beacon or type mgt subtype probe-resp or type data"
 
 
 class RawFrameSniffer:
@@ -209,15 +234,21 @@ class RawFrameSniffer:
     recv_raw() returns raw bytes without scapy dissecting them into a
     Packet object, letting prn() hand them to dissect() instead.
 
+    bpf_filter (optional): passed straight to L2listen()'s own `filter`
+    kwarg -- see DEFAULT_SCAN_BPF_FILTER, which scan() uses by default.
+    None (the constructor's own default) disables filtering entirely,
+    matching this class's pre-filter behavior for any other caller.
+
     Deliberately mirrors just the AsyncSniffer surface callers already
     depend on (start()/stop()/.thread.is_alive()/.exception) so the
     self-healing check wired into the GUI's scan loop (app.py
     _start_scan, radio.check_and_heal()) keeps working unchanged.
     """
 
-    def __init__(self, iface: str, prn):
+    def __init__(self, iface: str, prn, bpf_filter: str | None = None):
         self.iface = iface
         self.prn = prn
+        self.bpf_filter = bpf_filter
         self.exception: Exception | None = None
         self.thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -229,7 +260,7 @@ class RawFrameSniffer:
     def _run(self) -> None:
         sock = None
         try:
-            sock = conf.L2listen(iface=self.iface)
+            sock = conf.L2listen(iface=self.iface, filter=self.bpf_filter)
             sock.ins.settimeout(0.5)  # periodic wake-up so stop() is noticed promptly even with no traffic
             while not self._stop_event.is_set():
                 try:
@@ -284,6 +315,7 @@ def scan(
     sniffer = RawFrameSniffer(
         iface=iface,
         prn=lambda raw: process_packet(raw, result),
+        bpf_filter=DEFAULT_SCAN_BPF_FILTER,
     )
     sniffer.start()
     try:

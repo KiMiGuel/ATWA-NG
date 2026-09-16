@@ -118,6 +118,61 @@ def _pin_airocon(mac: NetworkAddress) -> int:
     )
 
 
+DEFAULT_WPS_PIN = "12345670"  # the single most common vendor-default WPS PIN, independent of OUI
+
+# SSID prefixes for Mexican ISP-branded routers observed shipping with
+# DEFAULT_WPS_PIN regardless of the underlying OEM (Huawei/ZTE ONT units
+# rebranded per-ISP) -- Telmex INFINITUM, Totalplay, and Izzi.
+_MEXICO_ISP_SSID_PREFIXES = ("INFINITUM", "TOTALPLAY", "IZZI")
+
+# Huawei HG8245/HG8247-family OUI prefixes, also commonly shipping
+# DEFAULT_WPS_PIN.
+_HUAWEI_OUIS = ("00:46:4B", "00:E0:FC", "28:6E:A4")
+
+
+def get_oui_pins(bssid: str, ssid: str | None = None) -> list[str]:
+    """Ordered, deduplicated list of PIN candidates worth trying before the
+    full 0000-9999 bruteforce sweep in attacks/wps.py's
+    wps_pin_bruteforce(), cheapest/most-likely first:
+
+    1. DEFAULT_WPS_PIN (12345670) -- tried unconditionally first since a
+       handful of extra attempts costs nothing next to an up-to-11,000
+       attempt sweep, and it's by far the most common vendor default
+       regardless of OUI.
+    2. Mexico ISP SSID match (INFINITUM/Totalplay/Izzi).
+    3. Known Huawei OUI match.
+    4. The pin32 MAC-derived PIN (last 4 bytes of the BSSID, mod
+       10,000,000, plus checksum) -- a common generic router-default
+       pattern independent of vendor, reusing WPSpin's existing pin32
+       algorithm rather than re-deriving the same math here.
+
+    Rules 2 and 3 both currently resolve to the same DEFAULT_WPS_PIN
+    value as rule 1 (the only vendor-specific evidence collected for this
+    project so far) -- kept as separate, named checks rather than folded
+    away, so a future rule with a genuinely different PIN slots in
+    without restructuring this function.
+    """
+    candidates = [DEFAULT_WPS_PIN]
+
+    ssid_upper = (ssid or "").upper()
+    if any(ssid_upper.startswith(prefix) for prefix in _MEXICO_ISP_SSID_PREFIXES):
+        candidates.append(DEFAULT_WPS_PIN)
+
+    oui = NetworkAddress(bssid).string[:8]  # "XX:XX:XX"
+    if oui in _HUAWEI_OUIS:
+        candidates.append(DEFAULT_WPS_PIN)
+
+    candidates.append(WPSpin().generate("pin32", bssid))
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for pin in candidates:
+        if pin not in seen:
+            seen.add(pin)
+            ordered.append(pin)
+    return ordered
+
+
 class WPSpin:
     """OneShot-style WPS PIN generator.
 

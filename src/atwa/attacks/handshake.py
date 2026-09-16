@@ -79,7 +79,10 @@ def _looks_like_m4(pkt) -> bool:
 
     Differences on the wire: M2 carries the station's RSN IE in its key
     data (non-empty), M4's key data is empty; and M4 sets the Secure bit
-    (0x0200 in key_info, keys already installed) while M2 doesn't.
+    (0x0200 in key_info, keys already installed) while M2 doesn't. Both
+    must hold together -- checking either alone (e.g. key_data_len == 0
+    on its own) misclassifies a genuine M2 with truncated/dropped RSNE
+    as M4, silently dropping it from the capture.
     """
     if not is_eapol(pkt):
         return False
@@ -91,7 +94,7 @@ def _looks_like_m4(pkt) -> bool:
         return False
     key_info = int.from_bytes(raw[1:3], "big")
     key_data_len = int.from_bytes(raw[93:95], "big")
-    return bool(key_info & 0x0200) or key_data_len == 0
+    return bool(key_info & 0x0200) and key_data_len == 0
 
 
 def _classify(pkt) -> int | None:

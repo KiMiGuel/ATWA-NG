@@ -167,6 +167,7 @@ class OneShot:
         )
         self.retsock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.retsock.bind(self.res_socket_file)
+        self.retsock.settimeout(5.0)
 
         self.pixie_creds = PixieCreds()
         self.connection_status = ConnectionStatus()
@@ -202,8 +203,11 @@ class OneShot:
 
     def send_and_receive(self, command: str) -> str:
         self.retsock.sendto(command.encode(), self.wpas_ctrl_path)
-        data, _ = self.retsock.recvfrom(4096)
-        return data.decode("utf-8", errors="replace")
+        try:
+            data, _ = self.retsock.recvfrom(4096)
+            return data.decode("utf-8", errors="replace")
+        except socket.timeout:
+            return "TIMEOUT"
 
     @staticmethod
     def _explain_wpas_not_ok(command: str, respond: str) -> str:
@@ -226,8 +230,6 @@ class OneShot:
             elif "Received M" in line:
                 n = int(line.split("Received M")[1])
                 self.connection_status.last_m_message = n
-                if n == 5:
-                    pass  # first half valid signal
             elif "Received WSC_NACK" in line:
                 self.connection_status.status = "WSC_NACK"
             elif "Enrollee terminated negotiation with Configuration Error" in line:
@@ -334,8 +336,12 @@ class OneShot:
                        pixiemode: bool = False, pbc_mode: bool = False) -> bool:
         self.pixie_creds.clear()
         self.connection_status.clear()
-        # Drain some buffered output
-        self._stdout().read(300)
+        # Drain some buffered output (non-blocking so it doesn't hang)
+        stdout = self._stdout()
+        fileno = stdout.fileno()
+        ready, _, _ = select.select([fileno], [], [], 0.5)
+        if ready:
+            stdout.read(300)
 
         if pbc_mode:
             cmd = f"WPS_PBC {bssid}" if bssid else "WPS_PBC"

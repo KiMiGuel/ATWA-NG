@@ -268,3 +268,108 @@ def test_parse_channel_range_rejects_empty():
 def test_parse_channel_range_rejects_garbage():
     with pytest.raises(ValueError):
         parse_channel_range("not-a-channel")
+
+
+# --- manufdb lookup failure (Phase 5.2, v2.4) -------------------------------
+# conf.manufdb._get_manuf() is a private scapy API with no stability
+# guarantee -- a raise there must not break scanning.
+
+
+def test_manuf_lookup_exception_leaves_manufacturer_none(monkeypatch):
+    import atwa.scan as scan_mod
+
+    def _raise(bssid):
+        raise RuntimeError("manuf db unavailable")
+
+    monkeypatch.setattr(scan_mod.conf.manufdb, "_get_manuf", _raise)
+
+    result = ScanResult()
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
+
+    assert result.aps["aa:bb:cc:dd:ee:ff"].manufacturer is None
+
+
+# --- 4-addr/WDS client attribution via addr4 (Phase 5.3, v2.4) -------------
+
+
+def _wds_data_frame(bridge_bssid: str, other_bridge_radio: str, original_src: str) -> bytes:
+    """A 4-addr (ToDS+FromDS) WDS data frame: addr1/addr2 are the two
+    bridge radios, addr4 is the frame's original source station."""
+    dot11 = Dot11(
+        FCfield="to_DS+from_DS", addr1=other_bridge_radio, addr2=bridge_bssid,
+        addr3="ff:ff:ff:ff:ff:ff", addr4=original_src,
+        type=2, subtype=0,
+    )
+    return bytes(RadioTap() / dot11)
+
+
+def test_wds_frame_attributes_addr4_as_client_of_known_bridge_bssid():
+    result = ScanResult()
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
+
+    process_packet(
+        _wds_data_frame(
+            bridge_bssid="aa:bb:cc:dd:ee:ff",
+            other_bridge_radio="99:99:99:99:99:99",
+            original_src="11:22:33:44:55:66",
+        ),
+        result,
+    )
+
+    ap = result.aps["aa:bb:cc:dd:ee:ff"]
+    assert ap.clients == {"11:22:33:44:55:66"}
+    assert "99:99:99:99:99:99" not in ap.clients  # the OTHER bridge radio, not a client
+
+
+def test_wds_frame_ignored_when_neither_bridge_radio_is_a_known_bssid():
+    result = ScanResult()
+    process_packet(bytes(craft_beacon(bssid="aa:bb:cc:dd:ee:ff", ssid="test", channel=6)), result)
+
+    process_packet(
+        _wds_data_frame(
+            bridge_bssid="00:11:22:33:44:55",
+            other_bridge_radio="99:99:99:99:99:99",
+            original_src="11:22:33:44:55:66",
+        ),
+        result,
+    )
+
+    assert result.aps["aa:bb:cc:dd:ee:ff"].clients == set()
+
+
+# --- RawFrameSniffer BPF filter (Phase 5.4, v2.4) ---------------------------
+
+
+def test_raw_frame_sniffer_passes_bpf_filter_to_l2listen(monkeypatch):
+    import atwa.scan as scan_mod
+
+    calls = []
+
+    def fake_l2listen(iface, filter=None):
+        calls.append(filter)
+        raise RuntimeError("stop the sniffer loop right after L2listen() is called")
+
+    monkeypatch.setattr(scan_mod.conf, "L2listen", fake_l2listen)
+
+    sniffer = scan_mod.RawFrameSniffer("wlan0mon", prn=lambda raw: None, bpf_filter="type data")
+    sniffer._run()  # run synchronously instead of via a thread for a deterministic test
+
+    assert calls == ["type data"]
+    assert isinstance(sniffer.exception, RuntimeError)  # confirms _run() actually reached L2listen()
+
+
+def test_raw_frame_sniffer_defaults_to_no_filter(monkeypatch):
+    import atwa.scan as scan_mod
+
+    calls = []
+
+    def fake_l2listen(iface, filter=None):
+        calls.append(filter)
+        raise RuntimeError("stop the sniffer loop right after L2listen() is called")
+
+    monkeypatch.setattr(scan_mod.conf, "L2listen", fake_l2listen)
+
+    sniffer = scan_mod.RawFrameSniffer("wlan0mon", prn=lambda raw: None)
+    sniffer._run()
+
+    assert calls == [None]

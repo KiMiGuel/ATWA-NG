@@ -20,8 +20,8 @@ from ..frames import BROADCAST
 from ..scan import AccessPoint
 from .handshake import HandshakeCapture, HandshakeStatus
 
-DEFAULT_BURST_SIZE = 4  # frames/round -- vs. deauth()'s own default of 64
-DEFAULT_REASON_CODES = (7,)  # single-element == today's fixed reason code
+DEFAULT_BURST_SIZE = 16  # frames/round -- vs. deauth()'s own default of 64
+DEFAULT_REASON_CODES = (1, 2, 3, 6, 7, 8, 15)  # multiple reason codes to cycle
 
 _STATUS_RANK = {HandshakeStatus.NONE: 0, HandshakeStatus.CHALLENGE: 1, HandshakeStatus.AUTHORIZED: 2}
 

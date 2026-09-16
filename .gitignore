@@ -47,6 +47,7 @@ source_cherrypick.c
 atwa_issues.md
 research-2026-08-30.md
 audit-*.md
+HANDOFF*.md
 .mcp.json
 
 # Old n2-ng v1 predecessor project's source/research (2026-09-04):

@@ -233,3 +233,15 @@ def test_dissect_wds_four_addr_header():
     assert frame.addr2 == BSSID
     assert is_eapol(frame)
     assert eapol_key_info(frame) == (False, True)
+    assert frame.to_ds is True
+    assert frame.from_ds is True
+    assert frame.addr4 == CLIENT
+
+
+def test_dissect_non_wds_frame_has_no_addr4():
+    pkt = craft_beacon(bssid=BSSID, ssid="TestNet", channel=6)
+    frame = dissect(bytes(pkt))
+    assert frame is not None
+    assert frame.to_ds is False
+    assert frame.from_ds is False
+    assert frame.addr4 is None

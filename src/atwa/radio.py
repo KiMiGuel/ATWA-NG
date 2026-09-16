@@ -266,30 +266,46 @@ def check_kill_interfering_processes() -> list[str]:
         if proc.returncode == 0:
             killed.append(name)
 
-    def alive(name: str) -> bool:
-        return subprocess.run(
-            ["pgrep", "-x", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=5, check=False,
-        ).returncode == 0
-
-    survivors = killed
-    if survivors:
-        deadline = time.monotonic() + 3.0
-        while survivors and time.monotonic() < deadline:
-            survivors = [name for name in survivors if alive(name)]
-            if survivors:
-                time.sleep(0.1)
-        for name in survivors:
-            # Refused to die on SIGTERM within the grace period -- SIGKILL
-            # can't be caught or ignored, then give it one more short wait.
-            subprocess.run(
-                ["pkill", "-9", "-x", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False,
-            )
-        deadline = time.monotonic() + 1.0
-        while survivors and time.monotonic() < deadline:
-            survivors = [name for name in survivors if alive(name)]
-            if survivors:
-                time.sleep(0.1)
+    survivors = _wait_until_dead(killed, 3.0)
+    for name in survivors:
+        # Refused to die on SIGTERM within the grace period -- SIGKILL
+        # can't be caught or ignored, then give it one more short wait.
+        subprocess.run(
+            ["pkill", "-9", "-x", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False,
+        )
+    _wait_until_dead(survivors, 1.0)
     return killed
+
+
+def _alive_names(names: list[str]) -> set[str]:
+    """Which of `names` still have a running process, checked with a single
+    `pgrep -x -l` call instead of one `pgrep` subprocess per name."""
+    if not names:
+        return set()
+    pattern = "|".join(re.escape(name) for name in names)
+    proc = subprocess.run(
+        ["pgrep", "-x", "-l", pattern], capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=5, check=False,
+    )
+    found = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            found.add(parts[1])
+    return found
+
+
+def _wait_until_dead(names: list[str], timeout: float) -> list[str]:
+    """Poll until none of `names` has a running process left, or `timeout`
+    seconds elapse. Returns whichever names are still alive at the end."""
+    survivors = list(names)
+    deadline = time.monotonic() + timeout
+    while survivors and time.monotonic() < deadline:
+        alive = _alive_names(survivors)
+        survivors = [name for name in survivors if name in alive]
+        if survivors:
+            time.sleep(0.1)
+    return survivors
 
 
 def disable_power_save(iface: str) -> bool:
@@ -354,6 +370,28 @@ def get_mode(iface: str) -> str:
     out = _run(["iw", "dev", iface, "info"])
     match = re.search(r"type\s+(\S+)", out)
     return match.group(1).lower() if match else "unknown"
+
+
+def set_txpower(iface: str, power_dbm: int) -> bool:
+    """Set TX power for iface in dBm. Returns True on success."""
+    try:
+        _run(["iw", "dev", iface, "set", "txpower", "fixed", str(power_dbm * 100)])
+        return True
+    except RadioError:
+        return False
+
+
+def get_max_txpower(iface: str) -> int | None:
+    """Return max TX power in dBm for iface, or None if undetermined."""
+    phy = _phy_for_iface(iface)
+    if phy is None:
+        return None
+    try:
+        out = _run(["iw", "phy", phy, "info"])
+    except RadioError:
+        return None
+    match = re.search(r"(\d+)\s*\.?\d*\s*dBm", out)
+    return int(match.group(1)) if match else None
 
 
 def get_channel(iface: str) -> int | None:

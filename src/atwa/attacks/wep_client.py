@@ -51,7 +51,7 @@ from .wep import (
 )
 
 # Minimum sessions needed before PTW is attempted for client attacks
-_MIN_SESSIONS_CAFFE = 5_000
+_MIN_SESSIONS_CAFFE = 25_000
 
 
 # ── Caffe Latte ───────────────────────────────────────────────────────────────

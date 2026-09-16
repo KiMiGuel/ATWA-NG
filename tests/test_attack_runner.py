@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import atwa.attacks.deauth as deauth_mod
 import atwa.attacks.handshake as handshake_mod
+import atwa.attacks.pmkid as pmkid_mod
 import atwa.radio as radio_mod
 import atwa.storage as storage_mod
 from atwa.attacks.handshake import HandshakeCapture
@@ -25,6 +26,9 @@ class FakeAP:
     pmf: str | None = "capable"
     clients: set[str] = field(default_factory=lambda: {"11:22:33:44:55:66"})
     client_signal: dict[str, int] = field(default_factory=dict)
+    beacon_count: int = 0
+    first_seen: float | None = None
+    last_seen: float | None = None
 
 
 def _make_runner(**overrides):
@@ -41,15 +45,18 @@ def _make_runner(**overrides):
     return AttackRunner(**defaults)
 
 
-def _patch_radio(monkeypatch, sent_deauth=1):
+def _patch_radio(monkeypatch, sent_deauth=1, pmkid_result=None):
     monkeypatch.setattr(radio_mod, "set_monitor_mode", lambda iface, randomize_mac=False: (iface, None))
     monkeypatch.setattr(radio_mod, "get_mode", lambda iface: "monitor")
     monkeypatch.setattr(radio_mod, "set_managed_mode", lambda iface, restore_mac=None: iface)
     monkeypatch.setattr(radio_mod, "ensure_channel", lambda iface, channel: True)
+    monkeypatch.setattr(radio_mod, "set_txpower", lambda iface, power_dbm: True)
+    monkeypatch.setattr(radio_mod, "get_max_txpower", lambda iface: 20)
     monkeypatch.setattr(
         deauth_mod, "deauth",
-        lambda iface, bssid, client, channel, count=64, reason=7, progress_fn=None: sent_deauth,
+        lambda iface, bssid, client, channel, count=64, reason=7, progress_fn=None, stop_event=None: sent_deauth,
     )
+    monkeypatch.setattr(pmkid_mod, "capture_pmkid", lambda *a, **k: pmkid_result)
     monkeypatch.setattr(storage_mod, "target_capture_dir", lambda essid, bssid, create=True: __import__("pathlib").Path("/tmp"))
 
 

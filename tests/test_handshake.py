@@ -196,6 +196,22 @@ def test_m3_plus_m4_not_mistaken_for_authorized(monkeypatch, tmp_path):
     assert cap.status(BSSID, CLIENT) is hs_module.HandshakeStatus.NONE
 
 
+def test_truncated_m2_not_mistaken_for_m4(monkeypatch, tmp_path):
+    """A real M2 with empty/dropped key_data (RSNE truncated in capture)
+    must stay classified as M2, not M4 -- key_data_len == 0 alone isn't
+    enough, the Secure bit must also be set. Regression test for
+    _looks_like_m4() misclassifying this as CHALLENGE-blocking."""
+    m1 = _eapol_frame(BSSID, CLIENT, 1)
+    dot11 = Dot11(type=2, subtype=0, addr1=BSSID, addr2=CLIENT, addr3=BSSID)
+    truncated_m2 = dot11 / EAPOL(version=1, type=3) / EAPOL_KEY(
+        key_ack=0, has_key_mic=1, secure=0, key_data=b"",
+    )
+
+    cap, outfile, _, _ = _run_capture(monkeypatch, tmp_path, [m1, truncated_m2])
+
+    assert cap.status(BSSID, CLIENT).value == "challenge"
+
+
 def test_full_m1_to_m4_capture_is_authorized(monkeypatch, tmp_path):
     frames = [_eapol_frame(BSSID, CLIENT, n) for n in (1, 2, 3, 4)]
 

@@ -80,4 +80,12 @@ def _cmd_eapol_hunt(args) -> int:
     print(out)
     # Propagate the child's own exit status -- a crashed helper used to
     # look identical to a clean "nothing found" run (always returned 0).
-    return proc.returncode if proc.returncode is not None and proc.returncode >= 0 else 0
+    # A negative returncode means it was killed by a signal (e.g. our own
+    # SIGKILL fallback above after it ignored SIGINT) -- map that to the
+    # conventional 128+signum shell exit code instead of falling through
+    # to 0, which would hide exactly the crash this is meant to surface.
+    if proc.returncode is None:
+        return 0
+    if proc.returncode < 0:
+        return 128 - proc.returncode
+    return proc.returncode

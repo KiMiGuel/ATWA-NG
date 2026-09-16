@@ -75,6 +75,9 @@ class Frame:
     addr1: str
     addr2: str
     addr3: str
+    addr4: str | None
+    to_ds: bool
+    from_ds: bool
     sequence_control: int
     signal_dbm: int | None
     body: bytes
@@ -123,12 +126,17 @@ def dissect(raw: bytes) -> Frame | None:
     if len(mac) < header_len:
         return None
 
+    addr4 = _mac_str(mac[24:30]) if (to_ds and from_ds) else None
+
     return Frame(
         frame_type=frame_type,
         subtype=subtype,
         addr1=_mac_str(mac[4:10]),
         addr2=_mac_str(mac[10:16]),
         addr3=_mac_str(mac[16:22]),
+        addr4=addr4,
+        to_ds=to_ds,
+        from_ds=from_ds,
         sequence_control=sequence_control,
         signal_dbm=signal_dbm,
         body=mac[header_len:],

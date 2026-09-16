@@ -15,11 +15,13 @@ CVE-2025-27558 covers the underlying class of bug.
 Scope: this ONLY works against a client already associated to an AP we
 control -- the frame has to look like Message 1/4 of that client's own
 in-progress or completed handshake with us. It has no effect on a client
-connected to someone else's real AP. There is no rogue-AP/PMF-secured-twin
-flow in this project yet to deliver it through against a real target
-(secure.py's downgrade_twin recommendation is still an unbuilt stub) --
-this module is the frame-construction/injection primitive on its own,
-ready to be wired into that flow once it exists.
+connected to someone else's real AP. Wired into a full attack chain by
+attacks/eviltwin.py's run_pmf_bypass_chain() (v2.4): a rogue PMF-required
+WPA2-PSK twin, wait for a client to associate, inject this malformed M1/4
+to force a disconnect, then capture the handshake the client redoes on
+reconnecting. (secure.py's downgrade_twin, built independently since this
+note last said the flow didn't exist yet, doesn't use this primitive --
+its rogue twin isn't PMF-required, so a plain deauth already works there.)
 """
 
 from __future__ import annotations

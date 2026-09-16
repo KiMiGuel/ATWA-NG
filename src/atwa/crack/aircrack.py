@@ -79,6 +79,7 @@ class AirCracker(Cracker):
         for the crack dialog's live output pane + real Stop button."""
         proc = subprocess.Popen(
             self._cmd(capfile, wordlist), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            start_new_session=True,  # own process group so terminate_tree() can kill it
         )
         proc_holder["proc"] = proc
         if proc.stdout is None:
