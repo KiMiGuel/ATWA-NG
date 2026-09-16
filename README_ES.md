@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.3.0-%2300c8ff?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.4.0-%2300c8ff?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
   <img src="https://img.shields.io/badge/status-active--development-orange?style=flat-square" alt="Status">
@@ -39,20 +39,22 @@ Cualquier otra herramienta te obliga a elegir: escanear *o* atacar. Escuchar *o*
 
 ATWA-NG no hace compromisos. Escucha con un radio y golpea con el otro — simultáneamente, de forma nativa, sin repartir tiempo, sin frames perdidos. Cada ataque en esta herramienta — PMKID, captura de handshake, WPS, WEP, Evil Twin — corre sobre una implementación real, hecha desde cero, no un wrapper de shell rezando porque un subproceso no se caiga. Tienes una sola interfaz, retroalimentación real, y capturas en las que puedes confiar desde el momento en que caen al disco.
 
+Y en cuanto tienes una captura, ATWA-NG no te deja solo con un archivo y buena suerte. Va directo al crackeo — **John the Ripper (jumbo)** como motor principal, **aircrack-ng** integrado como alterno — con un clic desde la misma ventana, o apúntalo a toda una carpeta de capturas y deja que las fusione, convierta formatos, y las crackee todas sin supervisión. Sin manejar `hcxpcapngtool`/`hashcat` a mano, sin adivinar formatos: capturar y crackear viven en una sola herramienta porque son un solo flujo de trabajo.
+
 Si alguna vez perdiste un handshake porque tu único adaptador parpadeó en el momento equivocado — esta es la herramienta que le pone fin a eso.
 
 ---
 
 ## 🚩 Insignia: PINCER — Ataque Dual-WiFi
 
-**Esta es la función que nadie más tiene.**
+**Esta es la función que nadie más tiene, y no es solo "dos radios en vez de uno" — es un ataque adaptativo que se pone más agresivo mientras más resiste el objetivo.**
 
 Requiere dos adaptadores Alfa específicos — un **AWUS036ACHM** (el que escucha) y un **AWUS1900** (el que ataca), detectados automáticamente por chipset. Conecta ambos. Fija un objetivo. Presiona **PINCER**. Desde ese instante:
 
-- **El Radio A nunca deja de escuchar.** Fijo en el canal del objetivo, con los oídos abiertos, esperando el handshake — tiempo completo, sin compartirse con otros trabajos.
-- **El Radio B nunca deja de golpear.** Rondas continuas de deauth contra el objetivo, tiempo completo, con su propio canal fijo separado.
+- **El Radio A nunca deja de escuchar.** Fijo en el canal del objetivo, con los oídos abiertos, esperando el handshake — tiempo completo, sin compartirse con otros trabajos. Y no solo vigila EAPOL: un segundo hilo de sniffing en el mismo radio compite en paralelo por un **PMKID** sin cliente, y en cuanto aparece uno, todo el ataque se detiene en seco y te entrega un archivo `.22000` listo para crackear — sin necesitar ni una sola ronda de deauth.
+- **El Radio B nunca deja de golpear — y escala.** El deauth arranca con una ráfaga conservadora de 8 frames y solo sube (16 → 32 → 64) después de tres rondas sin resultado, en vez de bombardear al objetivo desde el primer frame. Apunta específicamente a los dos clientes con señal más fuerte (no a un broadcast a ciegas), sincroniza las ráfagas justo después del beacon del propio AP — la ventana donde es más probable que los clientes estén revisando su handshake — y corre su propia potencia de TX a 20 dBm para más alcance.
 
-Ningún radio pausa, salta de canal, ni comparte tiempo para hacer el trabajo del otro. Ese es todo el truco, y es la razón por la que PINCER captura handshakes que los ataques de un solo adaptador se pierden: el que escucha *siempre* está escuchando exactamente cuando el deauth realmente llega. Dos adaptadores, dos trabajos, cero compromiso — un pincer de verdad, cerrando por los dos lados a la vez.
+Ningún radio pausa, salta de canal, ni comparte tiempo para hacer el trabajo del otro. Ese es todo el truco, y es la razón por la que PINCER captura handshakes que los ataques de un solo adaptador se pierden: el que escucha *siempre* está escuchando exactamente cuando el deauth realmente llega, y el deauth mismo solo escala tanto como el objetivo realmente lo obligue. Dos adaptadores, dos trabajos, cero compromiso — un pincer de verdad, cerrando por los dos lados a la vez.
 
 ---
 

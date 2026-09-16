@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ATWA-NG — The Last WiFi Pentesting Tool You'll Need</title>
-<meta name="description" content="ATWA-NG: hybrid 2-in-1 WiFi pentesting and cracking engine. PINCER runs two Alfa radios at once — one that never stops listening, one that never stops striking.">
+<meta name="description" content="ATWA-NG: hybrid 2-in-1 WiFi pentesting and cracking engine. PINCER runs two Alfa radios at once — one that never stops listening, one that never stops striking — with adaptive deauth escalation and a parallel PMKID short-circuit. Captures crack in the same tool via John the Ripper (jumbo) and aircrack-ng.">
 <link rel="icon" href="brand/icon-wifi.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -170,7 +170,7 @@
     <div class="logo">
       <img src="brand/icon-nav.png" alt="">
       <span class="word">ATWA<span>-NG</span></span>
-      <span class="badge-ver">v2.3</span>
+      <span class="badge-ver">v2.4</span>
     </div>
     <div class="links">
       <a href="#what">What it does</a>
@@ -226,7 +226,7 @@ atwa gui</pre>
       <div class="card">
         <span class="tag">2-IN-1</span>
         <h3>Attack + crack, one tool</h3>
-        <p>Capture and crack live in the same interface — no juggling a scanner, an attack script, and a separate cracker.</p>
+        <p>Capture and crack live in the same interface — <b style="color:var(--ink)">John the Ripper (jumbo)</b> as the primary engine, <b style="color:var(--ink)">aircrack-ng</b> wired in as an alternate. One click, or point it at a whole folder of captures and let it merge, convert, and crack the lot unattended.</p>
       </div>
       <div class="card">
         <span class="tag">NATIVE</span>
@@ -249,12 +249,12 @@ atwa gui</pre>
     <h2>PINCER — a real dual-radio attack</h2>
     <div class="pincer-flex">
       <div>
-        <p class="lead">PINCER runs two Alfa WiFi adapters at once — any two Alfa cards capable of monitor mode and packet injection, auto-detected by chipset. Plug both in, lock a target, hit PINCER. From that instant, neither radio ever pauses, hops, or time-shares to do the other one's job.</p>
+        <p class="lead">PINCER runs two Alfa WiFi adapters at once — any two Alfa cards capable of monitor mode and packet injection, auto-detected by chipset. Plug both in, lock a target, hit PINCER. From that instant, neither radio ever pauses, hops, or time-shares to do the other one's job — and it's not just "two radios instead of one," it's an attack that gets more aggressive the longer a target holds out.</p>
         <ul>
-          <li><b>Radio A never stops listening.</b> Parked on the target's channel, full-time, waiting for the handshake — not squeezed in between other jobs.</li>
-          <li><b>Radio B never stops striking.</b> Continuous deauth rounds against the target, on its own independent channel-lock.</li>
+          <li><b>Radio A never stops listening — and races for PMKID too.</b> Parked on the target's channel, full-time, waiting for the handshake. A second sniffer thread on the same radio hunts a clientless PMKID in parallel; the instant one shows up, the whole attack stops dead and hands you a crack-ready <code>.22000</code> file — no deauth round ever needed.</li>
+          <li><b>Radio B never stops striking — and it escalates.</b> Deauth starts at a conservative 8-frame burst and only ramps up (16 → 32 → 64) after three rounds produce nothing. It targets the two strongest-signal clients specifically, times bursts to land right after the AP's own beacon, and runs TX power at 20 dBm for range.</li>
           <li><b>No time-sharing, no dropped frames.</b> The listener is <i>always</i> listening exactly when the deauth actually lands — that's the whole trick.</li>
-          <li><b>A real pincer.</b> Two adapters, two jobs, closing on the target from both sides at once.</li>
+          <li><b>A real pincer.</b> Two adapters, two jobs, closing on the target from both sides at once, only escalating as hard as the target actually forces it to.</li>
         </ul>
       </div>
       <div class="hud bracketed">
