@@ -14,7 +14,6 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -57,6 +56,16 @@ def _version_parts(value: str) -> tuple[tuple[int, int | str], ...]:
     old fallback returned a bare ``((tag,),)`` string, so any non-numeric tag
     ("release-candidate", a stray "latest") raised TypeError against every
     normal version and took the whole update check down with it.
+
+    Both branches below trim trailing ``(0, 0)`` numeric components before
+    appending their terminator/suffix marker. Without that trim, a tag with
+    an explicit trailing zero (``"2.5.0-beta"``) has one more numeric
+    component than its equivalent without it (``"2.5-alpha"``), which shifts
+    the suffix marker's *position* by one -- so it can land on the same index
+    as the other tag's plain numeric ``(0, 0)``, comparing the suffix's
+    string value against that ``0`` and raising TypeError. Trimming both
+    branches the same way keeps equivalent numeric prefixes the same length,
+    so the marker always lines up against another marker.
     """
     cleaned = value.strip().lstrip("vV")
     match = re.match(r"^([0-9]+(?:\.[0-9]+)*)(.*)$", cleaned)
@@ -68,23 +77,19 @@ def _version_parts(value: str) -> tuple[tuple[int, int | str], ...]:
         return ((0, 0), (-1, 0), (0, cleaned))
     numbers = tuple(int(part) for part in match.group(1).split("."))
     suffix = match.group(2).lstrip("-+").lower()
+    parts = [(number, 0) for number in numbers]
+    # GitHub's historical tags include both ``v2.4`` and ``v2.4.0``.
+    # Treat omitted trailing zeroes as the same release version.
+    while len(parts) > 1 and parts[-1] == (0, 0):
+        parts.pop()
     if not suffix:
-        parts = [(number, 0) for number in numbers]
-        # GitHub's historical tags include both ``v2.4`` and ``v2.4.0``.
-        # Treat omitted trailing zeroes as the same release version.
-        while len(parts) > 1 and parts[-1] == (0, 0):
-            parts.pop()
         return tuple(parts) + ((1, 0),)
-    # The pre-release suffix is a (str, int) pair by design: the int marker
-    # makes it sort before the (1, 0) final-release terminator, and the str
-    # value orders 'alpha' < 'beta' < 'rc1' within the same marker. The
-    # annotation above cannot express that mixed shape, so it is asserted
-    # here rather than loosened to `tuple[tuple[int | str, int], ...]`,
-    # which would stop describing the numeric and terminator components.
-    return cast(
-        tuple[tuple[int, int | str], ...],
-        tuple((number, 0) for number in numbers) + ((0, 0), (suffix, 0)),
-    )
+    # Marker 0 sorts before the (1, 0) final-release terminator, and the str
+    # value orders 'alpha' < 'beta' < 'rc1' within that marker. Keeping the
+    # marker in the first slot (int) and the suffix in the second (str)
+    # matches the declared `tuple[int, int | str]` shape exactly, so no cast
+    # is needed here.
+    return tuple(parts) + ((0, 0), (0, suffix))
 
 
 def is_newer(latest: str, current: str) -> bool:
