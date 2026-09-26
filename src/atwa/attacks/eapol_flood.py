@@ -94,7 +94,10 @@ def eapol_flood(
                 log(f"EAPOL flood send failed after {sent} frame(s): {exc}")
                 return sent
             log(f"EAPOL-Start {i + 1}/{count} sent: {src} -> {bssid}")
-            if interval and i < count - 1:
+            # Unconditional sleep(interval), even at 0.0 -- see
+            # auth_flood.py's note: a real syscall forces a GIL yield every
+            # frame, which a falsy-guarded skip would not.
+            if i < count - 1:
                 time.sleep(interval)
     finally:
         sock.close()
