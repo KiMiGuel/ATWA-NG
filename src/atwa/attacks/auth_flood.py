@@ -81,7 +81,14 @@ def auth_flood(
                 log(f"auth flood send failed after {sent} frame(s): {exc}")
                 return sent
             log(f"auth request {i + 1}/{count} sent: {src} -> {bssid}")
-            if interval and i < count - 1:
+            # Always sleep, even at interval=0.0: this is a real
+            # time.sleep() syscall, not skipped like a falsy-guarded one
+            # would be, so it forces a GIL/scheduler yield every frame.
+            # Without it, a large count at interval=0 (CHAOS's own default)
+            # can run thousands of frames back-to-back with no yield point,
+            # starving a Tkinter GUI's polling loop on the same process --
+            # confirmed live, 2026-09-26 (CHAOS lag + a hang on Stop).
+            if i < count - 1:
                 time.sleep(interval)
     finally:
         sock.close()
