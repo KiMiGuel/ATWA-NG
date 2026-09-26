@@ -1,31 +1,31 @@
 # Graph Report - ATWA-NG  (2026-09-26)
 
 ## Corpus Check
-- 401 files · ~457,239 words
+- 401 files · ~457,437 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4394 nodes · 8854 edges · 366 communities (290 shown, 76 thin omitted)
+- 4395 nodes · 8828 edges · 370 communities (294 shown, 76 thin omitted)
 - Extraction: 87% EXTRACTED · 13% INFERRED · 0% AMBIGUOUS · INFERRED: 1113 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `72a2ac98`
+- Built from commit: `e137cdb2`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- radio.py
+- app.py
 - easside-ng.c
 - wesside-ng.c
 - attacks.py
-- wps.py
-- wep_client.py
+- frames.py
+- attack_runner.py
 - UnixSocket
 - atwa/scan.py
 - main
 - dcrack.py
-- app.py
+- omni.py
 - erase_line
 - crypto.c
 - memory.c
@@ -34,7 +34,7 @@
 - circular_buffer_init
 - App
 - ._run_bg
-- osdep.c
+- main
 - Connection
 - airolib-ng.c
 - ._log
@@ -42,7 +42,7 @@
 - MessageReader
 - AccessPoint
 - cygwin_tap.c
-- main
+- airbase-ng.c
 - aircrack-ng.c
 - besside-ng.c
 - storage.py
@@ -60,12 +60,12 @@
 - cygwin.c
 - dotCreate
 - int-test-common.sh
-- CsvReader
+- KismetCsvReader
 - john.py
 - network.c
 - ti_priv
 - Reader
-- BusObject
+- ObjectPath
 - freebsd.c
 - wpaclean.c
 - Signature
@@ -91,18 +91,18 @@
 - TypeImplementer
 - packet_reader_process_packet
 - openbsd.c
-- build_m2
+- messages.py
 - simd_cpuid.c
 - support/common.c
 - radiotap_iter.h
 - Form1
 - omnipeek.c
+- .derive
 - attempt_pin
-- messages.py
 - communications.c
 - netbsd.c
 - eapol_hunter.py
-- NDesk.DBus
+- wps.py
 - Notifications
 - oneshot.py
 - dragonblood.py
@@ -112,7 +112,7 @@
 - airdecloak-ng.c
 - BOOLEAN
 - print_work
-- support/common.h
+- wi_get_ifname
 - session.c
 - attack_continue
 - missing_wordlist_dictionary
@@ -120,8 +120,8 @@
 - lib_Airgraphviz.py
 - Coordinates
 - SignalGraph
-- Mapper
-- housekeeping.py
+- .Invoke
+- decrypt_wep
 - Settings
 - ieee80211_ie_wpa
 - WirelessDevice
@@ -140,7 +140,7 @@
 - DBus.cs
 - pwn
 - MAC_HMAC_SHA256_Vector
-- IBus
+- convert.py
 - NameFlag
 - wi_priv
 - packetGenerator
@@ -205,7 +205,7 @@
 - aes-128-cbc-gcrypt.c
 - aes-128-cbc-generic.c
 - ReleaseNameReply
-- ChannelHopper
+- ._lock_channel
 - DHKeypair
 - _park_miller_step
 - ieee80211_ap_chan_report_ie
@@ -222,7 +222,7 @@
 - darwin.c
 - dummy.c
 - pingreply.c
-- compute_r_hashes
+- besside-ng-crawler.c
 - john_bswap_32
 - ieee80211_action_ba_delba
 - ieee80211_frame_ack
@@ -260,7 +260,7 @@
 - eapol_dump.sh
 - attacks/__init__.py
 - crack/__init__.py
-- sanitize_essid
+- CsvReader
 - wep/__init__.py
 - wpa/__init__.py
 - centos_autotools.sh
@@ -308,6 +308,10 @@
 - test-wpaclean-0002.sh
 - Enum
 - Self
+- WirelessPanda
+- wps_pin_bruteforce
+- RawFrameSniffer
+- Packet
 
 ## God Nodes (most connected - your core abstractions)
 1. `App` - 130 edges
@@ -317,50 +321,50 @@
 5. `AccessPoint` - 42 edges
 6. `AttackRunner` - 35 edges
 7. `main()` - 35 edges
-8. `ensure_channel()` - 34 edges
-9. `Connection` - 34 edges
-10. `time_printf()` - 34 edges
+8. `Connection` - 34 edges
+9. `time_printf()` - 34 edges
+10. `MessageReader` - 33 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `get_average_signal_ap()` --calls--> `adds_u32()`  [INFERRED]
-  vendor/aircrack-ng/src/airdecloak-ng/airdecloak-ng.c → vendor/aircrack-ng/include/aircrack-ng/support/common.h
-- `dump_add_packet()` --calls--> `adds_uptr()`  [INFERRED]
-  vendor/aircrack-ng/src/airodump-ng/airodump-ng.c → vendor/aircrack-ng/include/aircrack-ng/support/common.h
-- `packet_reader__update_ap_info()` --calls--> `subs_u64()`  [INFERRED]
-  vendor/aircrack-ng/src/aircrack-ng/aircrack-ng.c → vendor/aircrack-ng/include/aircrack-ng/support/common.h
-- `dump_add_packet()` --calls--> `data_init()`  [INFERRED]
-  vendor/aircrack-ng/src/airodump-ng/airodump-ng.c → vendor/aircrack-ng/lib/ce-wep/uniqueiv.c
-- `dump_add_packet()` --calls--> `data_check()`  [INFERRED]
-  vendor/aircrack-ng/src/airodump-ng/airodump-ng.c → vendor/aircrack-ng/lib/ce-wep/uniqueiv.c
+- `ti_fd_darwin()` --calls--> `ti_priv()`  [INFERRED]
+  vendor/aircrack-ng/lib/osdep/darwin_tap.c → vendor/aircrack-ng/lib/osdep/osdep.c
+- `ti_name_darwin()` --calls--> `ti_priv()`  [INFERRED]
+  vendor/aircrack-ng/lib/osdep/darwin_tap.c → vendor/aircrack-ng/lib/osdep/osdep.c
+- `ti_set_ip_darwin()` --calls--> `ti_priv()`  [INFERRED]
+  vendor/aircrack-ng/lib/osdep/darwin_tap.c → vendor/aircrack-ng/lib/osdep/osdep.c
+- `ti_set_mac_darwin()` --calls--> `ti_priv()`  [INFERRED]
+  vendor/aircrack-ng/lib/osdep/darwin_tap.c → vendor/aircrack-ng/lib/osdep/osdep.c
+- `ti_set_mtu_darwin()` --calls--> `ti_priv()`  [INFERRED]
+  vendor/aircrack-ng/lib/osdep/darwin_tap.c → vendor/aircrack-ng/lib/osdep/osdep.c
 
 ## Import Cycles
 - None detected.
 
-## Communities (366 total, 76 thin omitted)
+## Communities (370 total, 76 thin omitted)
 
-### Community 0 - "radio.py"
-Cohesion: 0.04
-Nodes (103): auth_flood(), Open-system authentication flood: exhaust an AP's association table. Every…, Send count open-system Authentication requests to bssid, each from a fresh…, beacon_flood(), _random_ssid(), Beacon flood: broadcast fake APs to confuse client auto-connect / Wi-Fi…, A plausible-looking fake SSID -- distinguishable as noise on close inspection…, Broadcast count fake beacons, each from a fresh random locally-administered… (+95 more)
+### Community 0 - "app.py"
+Cohesion: 0.06
+Nodes (58): ATWA-NG GUI — Tkinter, wired to this project's own native attack functions…, ATWA-NG desktop GUI (Tkinter)., _alive_names(), apply_achm_txpower_patch(), ChannelHopper, check_and_heal(), check_kill_interfering_processes(), clear_channel_cache() (+50 more)
 
 ### Community 1 - "easside-ng.c"
 Cohesion: 0.06
 Nodes (77): load16(), mac2str(), add_crc32(), associated(), base_prga(), buddy_inet_check(), buddy_packet(), chan_hop() (+69 more)
 
 ### Community 2 - "wesside-ng.c"
-Cohesion: 0.07
-Nodes (72): pcap_t, elapsed_time_diff(), str2mac(), fnseq(), strlcat(), add_to_list(), time_t, u_char (+64 more)
+Cohesion: 0.09
+Nodes (60): elapsed_time_diff(), str2mac(), fnseq(), add_keystream(), anal(), PTW_tableentry, can_write(), check_arp_timeout() (+52 more)
 
 ### Community 3 - "attacks.py"
 Cohesion: 0.06
-Nodes (58): ArgumentParser, build_parser(), _cmd_chaos(), _cmd_deauth(), _cmd_downgrade_twin(), _cmd_dragonblood(), _cmd_handshake(), _cmd_omni() (+50 more)
+Nodes (62): ArgumentParser, build_parser(), _cmd_chaos(), _cmd_deauth(), _cmd_downgrade_twin(), _cmd_dragonblood(), _cmd_handshake(), _cmd_omni() (+54 more)
 
-### Community 4 - "wps.py"
-Cohesion: 0.05
-Nodes (63): _associate(), AttemptOutcome, AttemptResult, BruteforceResult, null_pin_attack(), pixie_attempt(), _probe_pin(), Dot11Elt (+55 more)
+### Community 4 - "frames.py"
+Cohesion: 0.07
+Nodes (50): capture_pmkid(), capture_pmkid_passive(), Clientless PMKID attack: authenticate to the AP and capture EAPOL message 1., Send an auth frame and sniff EAPOL M1; return a 22000 line or None. Uses…, Passively capture an AP-sourced EAPOL M1 carrying a PMKID. Unlike…, craft_assoc_req(), craft_auth(), craft_beacon() (+42 more)
 
-### Community 5 - "wep_client.py"
-Cohesion: 0.06
-Nodes (54): add_captured_frame_to_table(), caffe_latte(), chopchop_vendor(), hirte(), Event, Path, WEP client-side attacks: Caffe Latte, Hirte, and chopchop. These target WEP…, Hirte attack: same as Caffe Latte, targeting ad-hoc/IBSS WEP clients. In ad-hoc… (+46 more)
+### Community 5 - "attack_runner.py"
+Cohesion: 0.04
+Nodes (86): Packet, auth_flood(), Open-system authentication flood: exhaust an AP's association table. Every…, Send count open-system Authentication requests to bssid, each from a fresh…, beacon_flood(), _random_ssid(), Beacon flood: broadcast fake APs to confuse client auto-connect / Wi-Fi…, A plausible-looking fake SSID -- distinguishable as noise on close inspection… (+78 more)
 
 ### Community 6 - "UnixSocket"
 Cohesion: 0.06
@@ -368,27 +372,27 @@ Nodes (26): NDesk.DBus.Transports, DllImport, Exception, IntPtr, IDictionary, Ad
 
 ### Community 7 - "atwa/scan.py"
 Cohesion: 0.07
-Nodes (52): Format a PMKID as a hashcat/John 22000 line: PMKID*AP*CLIENT[*ESSID]., to_22000(), beacon_capability(), _channel_from_hz(), channel_of(), dissect(), eapol_key_info(), _eapol_payload() (+44 more)
+Nodes (54): extract_pmkid(), Pull the 16-byte PMKID from the RSN KDE of an EAPOL M1 frame, or None., Format a PMKID as a hashcat/John 22000 line: PMKID*AP*CLIENT[*ESSID]., to_22000(), beacon_capability(), _channel_from_hz(), channel_of(), dissect() (+46 more)
 
 ### Community 8 - "main"
 Cohesion: 0.07
-Nodes (53): check_shared_key(), get_80211ac_rate(), get_80211n_rate(), verifyssid(), wi_set_freq(), airodump_usage(), array_contains(), FILE (+45 more)
+Nodes (55): pid_t, check_shared_key(), get_80211ac_rate(), get_80211n_rate(), wi_set_freq(), airodump_usage(), array_contains(), FILE (+47 more)
 
 ### Community 9 - "dcrack.py"
 Cohesion: 0.07
 Nodes (36): SimpleHTTPRequestHandler, check_cap(), client(), cmd_crack(), cmd_remove(), cmd_status(), compress_file(), connect_db() (+28 more)
 
-### Community 10 - "app.py"
-Cohesion: 0.07
-Nodes (44): _classify(), HandshakeCapture, HandshakeStatus, _looks_like_m4(), Enum, Capture WPA 4-way handshake EAPOL frames until a crackable pair is seen.…, Capture quality for one (AP, client) pair., Tracks EAPOL messages 1-4 seen per (AP, client) pair. M4 is recorded (as 4)… (+36 more)
+### Community 10 - "omni.py"
+Cohesion: 0.09
+Nodes (29): _classify(), HandshakeCapture, HandshakeStatus, _looks_like_m4(), Enum, Capture WPA 4-way handshake EAPOL frames until a crackable pair is seen.…, Capture quality for one (AP, client) pair., Tracks EAPOL messages 1-4 seen per (AP, client) pair. M4 is recorded (as 4)… (+21 more)
 
 ### Community 11 - "erase_line"
-Cohesion: 0.11
-Nodes (48): read_sleep_cb, add_icv(), rand_init(), read_sleep(), send_packet(), ac_crypto_init(), API_EXPORT, getmac() (+40 more)
+Cohesion: 0.14
+Nodes (35): read_sleep_cb, add_icv(), rand_init(), rand_u8(), read_sleep(), send_packet(), check_crc_buf(), capture_ask_packet() (+27 more)
 
 ### Community 12 - "crypto.c"
-Cohesion: 0.09
-Nodes (45): calc_crc(), calc_tkip_mic(), calc_tkip_mic_key(), calc_tkip_mic_skip_eiv(), calc_tkip_ppk(), check_crc_buf(), decrypt_ccmp(), decrypt_tkip() (+37 more)
+Cohesion: 0.15
+Nodes (27): add_crc32_plain(), calc_crc(), calc_crc_buf(), calc_crc_plain(), calc_tkip_mic(), calc_tkip_mic_key(), calc_tkip_mic_skip_eiv(), calc_tkip_ppk() (+19 more)
 
 ### Community 13 - "memory.c"
 Cohesion: 0.06
@@ -396,11 +400,11 @@ Nodes (34): add_memory_link(), dump_out_mmx(), dump_out_mmx_msg(), dump_out_mmx_
 
 ### Community 14 - "online.py"
 Cohesion: 0.08
-Nodes (39): _associate(), _build_m2(), _craft_client_deauth(), _inject_radiotap(), online_guess(), OnlineGuessResult, Packet, RadioTap (+31 more)
+Nodes (41): _associate(), _build_m2(), _craft_client_deauth(), _inject_radiotap(), online_guess(), OnlineGuessResult, Packet, RadioTap (+33 more)
 
 ### Community 15 - "eviltwin.py"
 Cohesion: 0.10
-Nodes (37): deauth(), Send count deauth rounds from bssid to client. When client is a real MAC (not…, _assign_ip(), _dnsmasq_conf(), DowngradeTwinResult, _flush_ip(), _hostapd_conf(), _hostapd_conf_wpa2() (+29 more)
+Nodes (35): _assign_ip(), _dnsmasq_conf(), DowngradeTwinResult, _flush_ip(), _hostapd_conf(), _hostapd_conf_wpa2(), _hostapd_ssid_line(), OweDowngradeResult (+27 more)
 
 ### Community 16 - "circular_buffer_init"
 Cohesion: 0.17
@@ -414,29 +418,29 @@ Nodes (11): App, Event, Right-click a column header to show/hide it (deferred ea
 Cohesion: 0.15
 Nodes (7): Build an AttackRunner from current App state., Run a background task and report its lifecycle to the GUI. ``result_kind`` is…, Modal countdown confirm before firing an attack. Attacks are native calls, not…, The native from-scratch chopchop (ICV-correction math) was confirmed broken by…, Live per-password 4-way handshake attempt against the AP itself…, SAE (WPA3) timing side-channel wordlist pruning (CVE-2019-9494,…, Flagship dual-Alfa mode (STATUS.md 'Ideas/undecided', 2026-08-14 — one special…
 
-### Community 19 - "osdep.c"
-Cohesion: 0.10
-Nodes (36): pid_t, set_bitrate(), strlcpy(), file_open(), nbsd_get_channel(), nbsd_set_channel(), obsd_get_channel(), obsd_set_channel() (+28 more)
+### Community 19 - "main"
+Cohesion: 0.12
+Nodes (44): ac_crypto_init(), API_EXPORT, getmac(), getVersion(), maccmp(), read_prga(), set_bitrate(), file_open() (+36 more)
 
 ### Community 20 - "Connection"
-Cohesion: 0.08
-Nodes (22): Obsolete, Thread, Connection, Delegate, Dictionary, Stream, Connection, IsAuthenticated (+14 more)
+Cohesion: 0.09
+Nodes (18): NDesk.DBus, Thread, Connection, Delegate, Dictionary, MethodCall, Stream, Connection (+10 more)
 
 ### Community 21 - "airolib-ng.c"
 Cohesion: 0.17
 Nodes (32): sqlite3, sqlite3_context, sqlite3_stmt, sqlite3_value, close_free_cowpatty_hashdb(), open_cowpatty_hashdb(), read_next_cowpatty_record(), batch_process() (+24 more)
 
 ### Community 22 - "._log"
-Cohesion: 0.07
-Nodes (12): AccessPoint, Render an SSID for the tree. Real, non-UTF8 SSIDs decode fine (frames.py falls…, Column width = actual longest rendered value (header or any current row), not a…, Fires on both a real user click AND _render_targets()'s own…, Live KB readout of any existing capture data for the selected target. Reads…, Redundant with single-click since 2026-08-26 (select now locks too, see…, Stop hopping and park the adapter on ap's channel. Also starts a native packet…, Native AsyncSniffer-backed capture (lock_capture.LockCapture), restricted to… (+4 more)
+Cohesion: 0.12
+Nodes (5): Native AsyncSniffer-backed capture (lock_capture.LockCapture), restricted to…, Resume hopping the full channel range., Auto-unlock if the locked target hasn't been seen for CHANNEL_LOCK_TIMEOUT., Dedicated Stop button for the Captures panel -- the generic 'Stop Attack'…, Auto-deauth uses the selected client station, or the strongest observed client…
 
 ### Community 23 - "AttackRunner"
-Cohesion: 0.07
-Nodes (10): AttackRunner, Event, Run the coordinated multi-vector flood and return its summary. 2026-09-26: the…, Thin orchestration layer between the Tkinter App and the attack implementations…, SAE (WPA3) timing side-channel wordlist pruning (CVE-2019-9494) -- see…, None if deauth is worth attempting against ap, else the reason it isn't -- same…, Pick the primary attack for an AP profile → {"attack", "reason"}. Routing:…, recommend_attack() (+2 more)
+Cohesion: 0.05
+Nodes (15): deauth(), Deauthentication flood against an AP or a specific client., Send count deauth rounds from bssid to client. When client is a real MAC (not…, AttackRunner, Event, Run the coordinated multi-vector flood and return its summary. 2026-09-26: the…, Thin orchestration layer between the Tkinter App and the attack implementations…, SAE (WPA3) timing side-channel wordlist pruning (CVE-2019-9494) -- see… (+7 more)
 
 ### Community 24 - "MessageReader"
-Cohesion: 0.15
-Nodes (6): MethodCall, IDictionary, ObjectPath, Signature, Type, MessageReader
+Cohesion: 0.17
+Nodes (5): IDictionary, ObjectPath, Signature, Type, MessageReader
 
 ### Community 25 - "AccessPoint"
 Cohesion: 0.06
@@ -446,9 +450,9 @@ Nodes (34): List, AccessPoint, Authentication, Beacon, Beacons, BestLocation, Be
 Cohesion: 0.12
 Nodes (32): OVERLAPPED, DWORD, HDEVINFO, SP_DEVINFO_DATA, tif, start_reader(), stop_reader(), ti_close_cygwin() (+24 more)
 
-### Community 27 - "main"
-Cohesion: 0.14
-Nodes (33): pCF_t, rand_u8(), create_wep_packet(), encrypt_data(), ti_write(), addarp(), addESSID(), addESSIDfile() (+25 more)
+### Community 27 - "airbase-ng.c"
+Cohesion: 0.13
+Nodes (30): pCF_t, create_wep_packet(), ti_write(), addarp(), addESSID(), addESSIDfile(), addMACfile(), beacon_thread() (+22 more)
 
 ### Community 28 - "aircrack-ng.c"
 Cohesion: 0.13
@@ -459,12 +463,12 @@ Cohesion: 0.12
 Nodes (29): attack_get(), autodetect_channels(), autodetect_freq(), PTW_tableentry, channel_add(), check_ownable(), client_get(), client_update() (+21 more)
 
 ### Community 30 - "storage.py"
-Cohesion: 0.11
-Nodes (31): cap_to_22000(), ConverterUnavailableError, fix_capture(), hc22000_to_john(), merge_captures(), MergeUnavailableError, Path, RuntimeError (+23 more)
+Cohesion: 0.12
+Nodes (28): merge_22000_files(), merge_captures(), Merge 2+ captures into one via mergecap; return the merged file's path. By…, Dedupe+merge 22000 hash-line files, same rule as omni.py's _stage_crack…, cleanup_handshakes(), CleanupReport, _plan_targets(), Path (+20 more)
 
 ### Community 31 - "airventriloquist-ng.c"
-Cohesion: 0.12
-Nodes (32): calc_crc_buf(), alloc_new_station_in_db(), calcsum(), calcsum_for_protocol(), calcsum_tcp(), calcsum_udp(), deauth_station(), dns_name_end() (+24 more)
+Cohesion: 0.13
+Nodes (31): alloc_new_station_in_db(), calcsum(), calcsum_for_protocol(), calcsum_tcp(), calcsum_udp(), deauth_station(), dns_name_end(), encrypt_data_packet() (+23 more)
 
 ### Community 32 - "ieee80211.h"
 Cohesion: 0.06
@@ -483,16 +487,16 @@ Cohesion: 0.14
 Nodes (19): OmniOrchestrator, OmniReport, AccessPoint, Event, Path, Signal any in-progress stage loop (e.g. handshake rounds) to abort., Run the adaptive chain against ap; return the full report., Quick attack: PMKID first, deauth only if PMF allows it, no WPS/ONLINE. A… (+11 more)
 
 ### Community 36 - "MessageWriter"
-Cohesion: 0.18
-Nodes (6): MemoryStream, MessageHelper, IDictionary, Type, MessageWriter, MethodCall
+Cohesion: 0.16
+Nodes (7): MemoryStream, Exception, MessageHelper, IDictionary, Type, MessageWriter, MethodCall
 
 ### Community 37 - "perform_wpa_crack"
 Cohesion: 0.17
 Nodes (28): console_puts(), time_t, calctime(), console_utf8_enable(), erase_display(), hide_cursor(), move(), moveto() (+20 more)
 
 ### Community 38 - "Introspector"
-Cohesion: 0.12
-Nodes (12): BindingFlags, PropertyInfo, EventInfo, ICustomAttributeProvider, MethodInfo, ParameterInfo, StringBuilder, Type (+4 more)
+Cohesion: 0.13
+Nodes (11): BindingFlags, PropertyInfo, EventInfo, ICustomAttributeProvider, MethodInfo, ParameterInfo, StringBuilder, Type (+3 more)
 
 ### Community 39 - "avl_tree.c"
 Cohesion: 0.22
@@ -518,9 +522,9 @@ Nodes (15): dotCreate, interface, format the client with a color and a label ret
 Cohesion: 0.12
 Nodes (21): check_airmon_ng_deps_present(), check_arg_is_number(), check_radios_present(), check_tools_compiled(), clean_tcpdump(), cleanup(), get_hwsim_interface_name(), is_pid_running() (+13 more)
 
-### Community 45 - "CsvReader"
-Cohesion: 0.09
-Nodes (18): WirelessPanda.Readers, CSVFileFormat, CSVFileFormat, Unknown, v0X, v1X, CsvReader, DATE_FORMAT (+10 more)
+### Community 45 - "KismetCsvReader"
+Cohesion: 0.15
+Nodes (9): WirelessPanda.Readers, KismetCsvReader, ALT_DATE_FORMAT, DATE_FORMAT, ReaderType, NetXMLReader, ALT_DATE_FORMAT, DATE_FORMAT (+1 more)
 
 ### Community 46 - "john.py"
 Cohesion: 0.10
@@ -538,9 +542,9 @@ Nodes (25): tif, ti_close_linux(), ti_do_free(), ti_do_open_linux(), ti_fd_linux
 Cohesion: 0.11
 Nodes (17): DataColumn, AccessPoint, DataSet, DateTime, Hashtable, List, Station, Reader (+9 more)
 
-### Community 50 - "BusObject"
-Cohesion: 0.11
-Nodes (14): IMessage, RealProxy, Delegate, EventInfo, Exception, MethodBase, Type, BusObject (+6 more)
+### Community 50 - "ObjectPath"
+Cohesion: 0.08
+Nodes (18): IMessage, Obsolete, RealProxy, Delegate, EventInfo, Type, BusObject, BusName (+10 more)
 
 ### Community 51 - "freebsd.c"
 Cohesion: 0.11
@@ -559,12 +563,12 @@ Cohesion: 0.17
 Nodes (25): mac2string(), for_us(), found_mac(), found_new_client(), found_new_network(), found_ssid(), grab_hidden_ssid(), has_mac_filter() (+17 more)
 
 ### Community 55 - "eap.py"
-Cohesion: 0.16
-Nodes (23): craft_eap_failure(), craft_eap_identity_response(), craft_wsc_msg(), craft_wsc_msg_fragment(), _eap_packet(), _eapol_wrap_eap(), fragment_wsc_vendor_payload(), is_frag_ack() (+15 more)
+Cohesion: 0.13
+Nodes (27): Send a WSC message (M2/M4/M6), fragmenting per the WSC spec and waiting for a…, _send_wsc_message(), craft_eap_failure(), craft_eap_identity_response(), craft_eapol_start(), craft_wsc_msg(), craft_wsc_msg_fragment(), _eap_packet() (+19 more)
 
 ### Community 56 - "DType"
 Cohesion: 0.08
-Nodes (22): Protocol, DType, Array, Boolean, Byte, DictEntry, DictEntryBegin, DictEntryEnd (+14 more)
+Nodes (24): ArgDirection, In, Out, DType, Array, Boolean, Byte, DictEntry (+16 more)
 
 ### Community 57 - "linux.c"
 Cohesion: 0.12
@@ -583,8 +587,8 @@ Cohesion: 0.13
 Nodes (16): ABC, AirCracker, AircrackNoHandshakeError, AircrackUnavailableError, _clean(), RuntimeError, aircrack-ng cracker backend — works directly on a .cap/.pcap file with a known…, Raised when the aircrack-ng binary is not found. (+8 more)
 
 ### Community 61 - "aircrack-ptw-lib.c"
-Cohesion: 0.17
-Nodes (18): PTW_attackstate, rc4state, sorthelper, rand_u32(), PTW_tableentry, correct(), doComputation(), doRound() (+10 more)
+Cohesion: 0.19
+Nodes (17): PTW_attackstate, rc4state, sorthelper, PTW_tableentry, correct(), doComputation(), doRound(), getdrv() (+9 more)
 
 ### Community 62 - "ieee80211_wme_tspec"
 Cohesion: 0.09
@@ -615,12 +619,12 @@ Cohesion: 0.15
 Nodes (13): get_oui_pins(), NetworkAddress, _pin24(), _pin28(), _pin32(), _pin_airocon(), _pin_asus(), _pin_dlink() (+5 more)
 
 ### Community 69 - "tests.h"
-Cohesion: 0.14
-Nodes (12): calc_mic(), calc_ptk(), main(), main(), main(), main(), main(), main() (+4 more)
+Cohesion: 0.13
+Nodes (13): calc_mic(), calc_ptk(), encrypt_ccmp(), main(), main(), main(), main(), main() (+5 more)
 
 ### Community 70 - "FieldCode"
-Cohesion: 0.11
-Nodes (20): IDictionary, EndianFlag, Big, Little, FieldCode, Destination, ErrorName, Interface (+12 more)
+Cohesion: 0.09
+Nodes (21): IDictionary, EndianFlag, Big, Little, FieldCode, Destination, ErrorName, Interface (+13 more)
 
 ### Community 71 - "SaslClient"
 Cohesion: 0.12
@@ -642,9 +646,9 @@ Nodes (17): packet_reader_t, data_check(), data_init(), data_wipe(), uniqueiv_ch
 Cohesion: 0.14
 Nodes (15): Queue, EXPORT, do_free(), do_obsd_open(), get_80211(), get_battery_state(), get_radiotap_info(), obsd_close() (+7 more)
 
-### Community 76 - "build_m2"
-Cohesion: 0.15
-Nodes (18): authenticator(), key_wrap_encrypt(), Authenticator = first 64 bits of HMAC-SHA256(AuthKey, prev_msg || curr_msg)., AES-128-CBC encrypt with PKCS#7 padding; random IV prepended (WSC layout: IV ||…, build_assoc_wps_ie(), build_m2(), build_m4(), build_m6() (+10 more)
+### Community 76 - "messages.py"
+Cohesion: 0.11
+Nodes (28): authenticator(), key_wrap_decrypt(), key_wrap_encrypt(), proof_hash(), WPS crypto primitives: DH group 5, the WSC key-derivation chain, and the…, E-Hash/R-Hash = HMAC-SHA256(AuthKey, S-nonce || PSK || PKE || PKR)., Authenticator = first 64 bits of HMAC-SHA256(AuthKey, prev_msg || curr_msg)., AES-128-CBC encrypt with PKCS#7 padding; random IV prepended (WSC layout: IV ||… (+20 more)
 
 ### Community 77 - "simd_cpuid.c"
 Cohesion: 0.24
@@ -666,17 +670,17 @@ Nodes (10): Button, Example1, DataGridView, EventArgs, Form, IContainer, Label, 
 Cohesion: 0.23
 Nodes (15): __int64, callback(), CYGWIN_DLL_CLOSE(), CYGWIN_DLL_INIT(), CYGWIN_DLL_INJECT(), CYGWIN_DLL_SET_CHAN(), CYGWIN_DLL_SNIFF(), do_cleanup() (+7 more)
 
-### Community 82 - "attempt_pin"
-Cohesion: 0.14
-Nodes (16): attempt_pin(), Run one full association + M1..M7 cycle for a single 8-digit PIN guess.…, DerivedKeys, dhkey(), kdk(), psk_half(), WPS crypto primitives: DH group 5, the WSC key-derivation chain, and the…, Split an 8-digit PIN string into (first-half ASCII, second-half ASCII). (+8 more)
+### Community 82 - ".derive"
+Cohesion: 0.29
+Nodes (6): DerivedKeys, kdk(), KDK = HMAC-SHA256(DHKey, N1 || EnrolleeMAC || N2)., WSC's KDF: iterated HMAC-SHA256(key, i(BE32) || label || output_bits(BE32))., AuthKey/KeyWrapKey/EMSK split from the 640-bit KDF output., wps_kdf()
 
-### Community 83 - "messages.py"
-Cohesion: 0.17
-Nodes (16): key_wrap_decrypt(), Reverse of key_wrap_encrypt: split IV, decrypt, strip PKCS#7 padding., Native WPS (Wi-Fi Simple Config) protocol: TLV, crypto, message state machine., is_m3(), is_m5(), is_m7(), M1Info, M3Info (+8 more)
+### Community 83 - "attempt_pin"
+Cohesion: 0.15
+Nodes (17): attempt_pin(), Run one full association + M1..M7 cycle for a single 8-digit PIN guess.…, psk_half(), Split an 8-digit PIN string into (first-half ASCII, second-half ASCII)., PSK1/PSK2 = first 128 bits of HMAC-SHA256(AuthKey, half_ascii)., split_pin(), is_m3(), is_m5() (+9 more)
 
 ### Community 84 - "communications.c"
-Cohesion: 0.19
-Nodes (17): add_crc32_plain(), calc_crc_plain(), is_dhcp_discover(), is_ipv6(), attack_check(), dump_initialize(), dump_initialize_multi_format(), get_channel() (+9 more)
+Cohesion: 0.20
+Nodes (16): is_dhcp_discover(), is_ipv6(), attack_check(), dump_initialize(), dump_initialize_multi_format(), get_channel(), get_tagged_data(), msleep() (+8 more)
 
 ### Community 85 - "netbsd.c"
 Cohesion: 0.15
@@ -686,29 +690,29 @@ Nodes (14): EXPORT, do_free(), do_nbsd_open(), get_80211(), get_battery_state(),
 Cohesion: 0.16
 Nodes (17): ansi_ljust(), box_row(), change_channel(), channel_hopper(), Colors, print_banner(), print_handshake_summary(), Background thread that changes WiFi channels every 5 minutes. Cycles through… (+9 more)
 
-### Community 87 - "NDesk.DBus"
-Cohesion: 0.13
-Nodes (8): Attribute, NDesk.DBus, org.freedesktop.DBus, ArgumentAttribute, InterfaceAttribute, ArgDirection, In, Out
+### Community 87 - "wps.py"
+Cohesion: 0.10
+Nodes (27): _associate(), AttemptOutcome, AttemptResult, null_pin_attack(), pixie_attempt(), Dot11Elt, Enum, Native WPS PIN attack: association + EAP-WSC exchange + split-half bruteforce. (+19 more)
 
 ### Community 88 - "Notifications"
-Cohesion: 0.15
-Nodes (8): org.freedesktop, NewStationNotify, IDictionary, Notifications, ServerInformation, String, MainClass, Notification
+Cohesion: 0.19
+Nodes (6): org.freedesktop, IDictionary, Notifications, ServerInformation, String, Notification
 
 ### Community 89 - "oneshot.py"
 Cohesion: 0.15
 Nodes (10): Enum, ConnectionStatus, _get_hex(), _normalize_mac(), Outcome, PixieCreds, wpa_supplicant-based WPS backend ported from OneShot. This is intentionally…, Extract hexdump payload from a ``wpa_supplicant -K -d`` line. (+2 more)
 
 ### Community 90 - "dragonblood.py"
-Cohesion: 0.17
-Nodes (16): DragonbloodResult, hunting_and_pecking_iterations(), _is_quadratic_residue(), _kdf_hash_length(), _mac_bytes(), _measure_sae_commit_rtt(), Dragonblood: SAE (WPA3) hunting-and-pecking timing side-channel (CVE-2019-9494,…, How many hunting-and-pecking loop iterations {password, mac_a, mac_b} takes to… (+8 more)
+Cohesion: 0.19
+Nodes (14): DragonbloodResult, hunting_and_pecking_iterations(), _is_quadratic_residue(), _kdf_hash_length(), _mac_bytes(), _measure_sae_commit_rtt(), Dragonblood: SAE (WPA3) hunting-and-pecking timing side-channel (CVE-2019-9494,…, How many hunting-and-pecking loop iterations {password, mac_a, mac_b} takes to… (+6 more)
 
 ### Community 91 - ".__init__"
 Cohesion: 0.14
 Nodes (6): Point display_var at name_var's current bare iface name's SHORT display string…, Rough driver-name -> vendor label, purely so wlan0/wlan1 in the toolbar are…, Refresh adapter_mac_var from the currently-selected adapter's MAC. Kept out of…, Window/taskbar icon from the approved logo mark. Best-effort -- a…, StringVar, Tk
 
 ### Community 92 - "ustrlen"
-Cohesion: 0.20
-Nodes (12): ustrlen(), calc_pmk(), API_EXPORT, MAC_HMAC_SHA1(), MAC_HMAC_SHA1_Vector(), API_EXPORT, Digest_SHA1_Vector(), KDF_PBKDF2_SHA1() (+4 more)
+Cohesion: 0.17
+Nodes (13): ustrlen(), calc_pmk(), API_EXPORT, MAC_HMAC_SHA1(), MAC_HMAC_SHA1_Vector(), API_EXPORT, Digest_SHA1_Vector(), KDF_PBKDF2_SHA1() (+5 more)
 
 ### Community 93 - "ieee80211_radiotap_iterator"
 Cohesion: 0.12
@@ -726,9 +730,9 @@ Nodes (16): BOOLEAN, CFC_filter_consecutive_sn(), CFC_filter_consecutive_sn_ap()
 Cohesion: 0.13
 Nodes (16): check_cb, timer_cb, FILE, cleanup(), cracker_check(), cracker_kill(), print_hex(), print_list() (+8 more)
 
-### Community 97 - "support/common.h"
-Cohesion: 0.16
-Nodes (13): adds_u32(), adds_uptr(), get_line_from_buffer(), ltrim(), rand_u16(), rtrim(), strchr_n(), subs_u64() (+5 more)
+### Community 97 - "wi_get_ifname"
+Cohesion: 0.11
+Nodes (20): adds_u32(), adds_uptr(), get_line_from_buffer(), ltrim(), rand_u16(), rand_u32(), rtrim(), strchr_n() (+12 more)
 
 ### Community 98 - "session.c"
 Cohesion: 0.23
@@ -751,20 +755,20 @@ Cohesion: 0.13
 Nodes (14): apColor(), clientColor(), dotClose(), dotWrite(), encryptionColor(), graphvizLinker(), Write all the information obtained to a configuration file, Create a subgraph based on the incoming values TODO: Figure out what this does… (+6 more)
 
 ### Community 103 - "Coordinates"
-Cohesion: 0.14
-Nodes (7): WirelessPanda, Hashtable, Coordinates, Altitude, Latitude, Longitude, Speed
+Cohesion: 0.22
+Nodes (6): Hashtable, Coordinates, Altitude, Latitude, Longitude, Speed
 
 ### Community 104 - "SignalGraph"
 Cohesion: 0.19
 Nodes (7): Font, apply(), Visual theme: ATWA-NG's electric-blue-on-black identity. 2026-08-27: reworked…, Configure ttk styles + scalable fonts. Returns the font handles. Base engine is…, Small reusable Tk widgets for the GUI., Rolling line graph of a locked target's RSSI over time. Pure Canvas drawing…, SignalGraph
 
-### Community 105 - "Mapper"
-Cohesion: 0.36
-Nodes (6): IEnumerable, MemberInfo, List, MethodInfo, Type, Mapper
+### Community 105 - ".Invoke"
+Cohesion: 0.19
+Nodes (11): Attribute, IEnumerable, MemberInfo, MethodBase, List, MethodInfo, ParameterInfo, Type (+3 more)
 
-### Community 106 - "housekeeping.py"
-Cohesion: 0.22
-Nodes (12): merge_22000_files(), Dedupe+merge 22000 hash-line files, same rule as omni.py's _stage_crack…, cleanup_handshakes(), CleanupReport, _plan_targets(), Path, Bounded, per-target capture housekeeping. Capture directories are organized by…, Merge files within each target, never across targets. ``dry_run=True`` (the… (+4 more)
+### Community 106 - "decrypt_wep"
+Cohesion: 0.18
+Nodes (18): decrypt_tkip(), decrypt_wep(), encrypt_wep(), encrypt_data(), addFrag(), delFrag(), getCompleteFrag(), timeoutFrag() (+10 more)
 
 ### Community 107 - "Settings"
 Cohesion: 0.19
@@ -811,8 +815,8 @@ Cohesion: 0.19
 Nodes (8): pin_checksum(), OneShot-style WPS PIN generator. Algorithms are keyed by ID (e.g. ``'pin24'``,…, Generate an 8-digit PIN (with checksum) for ``algo`` and ``mac``., Return algorithm IDs whose MAC masks match ``mac``., Return PIN entries for algorithms suggested by the MAC OUI., Return the single most likely PIN, or ``None``., Standard WPS checksum for a 7-digit (0-9999999) PIN core., WPSpin
 
 ### Community 118 - "Bus"
-Cohesion: 0.15
-Nodes (6): Dictionary, Bus, Session, Starter, System, UniqueName
+Cohesion: 0.10
+Nodes (7): Dictionary, Bus, Session, Starter, System, UniqueName, IBus
 
 ### Community 119 - "freebsd_tap.c"
 Cohesion: 0.22
@@ -827,8 +831,8 @@ Cohesion: 0.27
 Nodes (10): perform_unit_testing(), perform_unit_testing_for(), test_crypto_engine_arm_neon(), test_crypto_engine_generic(), test_crypto_engine_ppc_altivec(), test_crypto_engine_ppc_power8(), test_crypto_engine_x86_avx(), test_crypto_engine_x86_avx2() (+2 more)
 
 ### Community 122 - "DBus.cs"
-Cohesion: 0.21
-Nodes (5): Argument, IDictionary, Introspectable, Peer, Properties
+Cohesion: 0.18
+Nodes (6): Argument, org.freedesktop.DBus, IDictionary, Introspectable, Peer, Properties
 
 ### Community 123 - "pwn"
 Cohesion: 0.21
@@ -837,6 +841,10 @@ Nodes (12): fd_set, time_diff(), add_cracker_fds(), astate2str(), check_cracker_
 ### Community 124 - "MAC_HMAC_SHA256_Vector"
 Cohesion: 0.24
 Nodes (9): uint_fast16_t, API_EXPORT, MAC_HMAC_SHA256(), MAC_HMAC_SHA256_Vector(), API_EXPORT, Digest_SHA256_PRF_Bits(), Digest_SHA256_Vector(), WPA_PUT_LE16() (+1 more)
+
+### Community 125 - "convert.py"
+Cohesion: 0.21
+Nodes (15): cap_to_22000(), ConverterUnavailableError, fix_capture(), hc22000_to_john(), MergeUnavailableError, Path, RuntimeError, Capture file utilities: convert to 22000 (John's wpapsk format), repair, and… (+7 more)
 
 ### Community 126 - "NameFlag"
 Cohesion: 0.20
@@ -1094,9 +1102,9 @@ Nodes (5): API_EXPORT, Cipher_AES_CTX, Cipher_AES_Encrypt(), Cipher_AES_Encrypt_
 Cohesion: 0.40
 Nodes (4): ReleaseNameReply, NonExistent, NotOwner, Released
 
-### Community 191 - "ChannelHopper"
-Cohesion: 0.40
-Nodes (3): ChannelHopper, Round-robin channel hopper with a fixed dwell time., Advance to the next channel, set it, and sleep for the dwell time. Not every…
+### Community 191 - "._lock_channel"
+Cohesion: 0.15
+Nodes (7): AccessPoint, Render an SSID for the tree. Real, non-UTF8 SSIDs decode fine (frames.py falls…, Column width = actual longest rendered value (header or any current row), not a…, Fires on both a real user click AND _render_targets()'s own…, Live KB readout of any existing capture data for the selected target. Reads…, Redundant with single-click since 2026-08-26 (select now locks too, see…, Stop hopping and park the adapter on ap's channel. Also starts a native packet…
 
 ### Community 192 - "DHKeypair"
 Cohesion: 0.40
@@ -1154,9 +1162,9 @@ Nodes (3): StartReply, AlreadyRunning, Success
 Cohesion: 0.60
 Nodes (3): internet_chksum(), receive_packet(), reply_icmp_echo()
 
-### Community 208 - "compute_r_hashes"
-Cohesion: 0.50
-Nodes (4): proof_hash(), E-Hash/R-Hash = HMAC-SHA256(AuthKey, S-nonce || PSK || PKE || PKR)., compute_r_hashes(), R-Hash1/R-Hash2 = proof_hash keyed on our (possibly wrong) PIN-half guess.
+### Community 208 - "besside-ng-crawler.c"
+Cohesion: 0.25
+Nodes (12): pcap_t, strlcat(), add_to_list(), time_t, u_char, free_bsslist(), get_eapol_bssids(), is_in_list() (+4 more)
 
 ### Community 209 - "john_bswap_32"
 Cohesion: 0.67
@@ -1206,20 +1214,32 @@ Nodes (4): extract_handshake_data(), get_ssid_for_bssid(), Retrieve cached SSID 
 Cohesion: 0.50
 Nodes (4): get_beacon_for_bssid(), Retrieve cached beacon packet for a given BSSID. Args: bssid: AP MAC address…, Save a complete handshake session to a PCAP file. Includes a beacon frame if…, save_handshake_to_pcap()
 
+### Community 251 - "CsvReader"
+Cohesion: 0.22
+Nodes (9): CSVFileFormat, CSVFileFormat, Unknown, v0X, v1X, CsvReader, DATE_FORMAT, FileFormat (+1 more)
+
+### Community 366 - "WirelessPanda"
+Cohesion: 0.22
+Nodes (3): NewStationNotify, WirelessPanda, MainClass
+
+### Community 367 - "wps_pin_bruteforce"
+Cohesion: 0.29
+Nodes (7): BruteforceResult, _probe_pin(), Split-half PIN sweep: 0000-9999 first, then 000-999 (checksum derives digit 8).…, An 8-digit PIN guess for the first-half sweep (last 3 core digits fixed at 0)., wps_pin_bruteforce(), pin_checksum(), Compute the 8th (checksum) digit for a 7-digit PIN core.
+
 ## Knowledge Gaps
-- **461 isolated node(s):** `centos_autotools.sh script`, `i_sfd`, `i_signal`, `i_service`, `i_length` (+456 more)
+- **461 isolated node(s):** `ieee80211_radiotap_header`, `Colors`, `Altitude`, `Latitude`, `Longitude` (+456 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **76 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Connection` connect `Connection` to `MessageWriter`, `UnixSocket`, `SaslClient`, `FieldCode`, `openbsd.c`, `BusObject`, `NDesk.DBus`, `MessageReader`, `MatchRule`?**
-  _High betweenness centrality (0.189) - this node is a cross-community bridge._
-- **Why does `NDesk.DBus` connect `NDesk.DBus` to `Introspector`, `UnixSocket`, `FieldCode`, `BusObject`, `Connection`, `Notifications`, `DBus.cs`, `MatchRule`?**
-  _High betweenness centrality (0.084) - this node is a cross-community bridge._
-- **Why does `App` connect `App` to `._on_tree_heading_release`, `._run_capture_task`, `attacks.py`, `._build_body`, `check_for_update`, `SignalGraph`, `app.py`, `Settings`, `check_all`, `._run_bg`, `._log`, `AttackRunner`, `.__init__`?**
-  _High betweenness centrality (0.056) - this node is a cross-community bridge._
+- **Why does `Connection` connect `Connection` to `MessageWriter`, `UnixSocket`, `SaslClient`, `FieldCode`, `openbsd.c`, `ObjectPath`, `MessageReader`, `MatchRule`?**
+  _High betweenness centrality (0.187) - this node is a cross-community bridge._
+- **Why does `NDesk.DBus` connect `Connection` to `DType`, `UnixSocket`, `FieldCode`, `.Invoke`, `ObjectPath`, `Notifications`, `DBus.cs`, `MatchRule`?**
+  _High betweenness centrality (0.078) - this node is a cross-community bridge._
+- **Why does `strlcpy()` connect `wi_get_ifname` to `airserv-ng.c`, `main`, `wesside-ng.c`, `perform_wpa_crack`, `main`, `simd_cpuid.c`, `besside-ng-crawler.c`, `main`, `airdecloak-ng.c`?**
+  _High betweenness centrality (0.059) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `App` (e.g. with `AttackRunner` and `Settings`) actually correct?**
   _`App` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 70 inferred relationships involving `wi_priv()` (e.g. with `cygwin_fd()` and `cygwin_get_channel()`) actually correct?**
