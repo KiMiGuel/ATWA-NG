@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Build output
+build/
+dist/
+bin/
+atwa.spec
+cli.spec
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+Pycharm/
+
+# Captures and cracked credentials — never commit
+*.pcap
+*.pcapng
+*.cap
+*.hccapx
+*.22000
+
+# graphify-out/ IS tracked (the graph travels with the repo). Only its
+# regenerable caches and dated backup snapshots are ignored.
+graphify-out/cache/
+graphify-out/20*/
+
+# Only the repo-root graphify-out/ is tracked; nested ones are stray.
+*/graphify-out/

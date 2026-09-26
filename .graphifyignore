@@ -1,0 +1,21 @@
+# Code-only scope for the committed graph: source code, nothing else.
+# Excludes prose/packaging (README, USAGE, pyproject, docs) and tests
+# (not shipped). vendor/ is kept -- it is code the cracking side depends on.
+tests/
+docs/
+README.md
+README_ES.md
+USAGE.md
+pyproject.toml
+AGENTS.md
+CLAUDE.md
+STATUS.md
+CHECKPOINT.md
+.gitignore
+.graphifyignore
+.venv/
+graphify-out/
+__pycache__/
+*.egg-info/
+build/
+dist/

@@ -1,0 +1,62 @@
+"""Sudo self-relaunch: detect non-root, prompt for a password in a Tk
+dialog, re-exec under sudo.
+
+Explicitly passes XAUTHORITY through to the re-exec'd root process, not
+just DISPLAY. Without it, root
+can't open a window on the invoking user's X session at all (confirmed
+live, 2026-08-19 — needed a manual `xhost +SI:localuser:root` workaround
+to get a sudo-launched instance on screen). Passing the real XAUTHORITY
+cookie authenticates properly without touching X access control at all.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def ensure_root(demo: bool) -> None:
+    """No-op if already root or in --demo mode (demo never touches
+    hardware). Otherwise prompts for a sudo password and re-execs
+    `python -m atwa.cli gui` as root, replacing this process's exit code
+    with the re-exec'd one."""
+    if demo or os.geteuid() == 0:
+        return
+
+    import tkinter as tk
+    from tkinter import simpledialog
+
+    root = tk.Tk()
+    root.withdraw()
+    password = simpledialog.askstring(
+        "ATWA-NG requires root", "Enter sudo password:", show="*", parent=root,
+    )
+    root.destroy()
+    if not password:
+        print("Root privileges are required.", file=sys.stderr)
+        sys.exit(1)
+
+    env = dict(os.environ)
+    xauthority = Path.home() / ".Xauthority"
+    if xauthority.exists():
+        env["XAUTHORITY"] = str(xauthority)
+
+    args = ["sudo", "-S", sys.executable, "-m", "atwa.cli", "gui"]
+    proc = subprocess.Popen(
+        args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env,
+    )
+    try:
+        out, err = proc.communicate(input=password + "\n", timeout=3600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        err = (err or "") + "\nroot GUI launch timed out after 3600 seconds"
+        sys.stdout.write(out)
+        sys.stderr.write(err)
+        sys.exit(124)
+    sys.stdout.write(out)
+    sys.stderr.write(err)
+    sys.exit(proc.returncode)

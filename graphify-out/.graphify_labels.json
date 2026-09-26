@@ -1,0 +1,20 @@
+{
+  "0": "test_chaos.py",
+  "1": "test_dissect_radiotap_channel.py",
+  "2": "test_live_findings_2026_09_25.py",
+  "3": "README_ES.md",
+  "4": "cli.py",
+  "5": "App",
+  "6": "test_injection_test.py",
+  "7": "AttackRunner",
+  "8": "._run_capture_task",
+  "9": "test_attack_runner.py",
+  "10": "._sync_iface_display",
+  "11": "AccessPoint",
+  "12": "._build_body",
+  "13": "._log",
+  "14": "._on_tree_heading_release",
+  "15": "._lock_channel",
+  "16": ".__init__",
+  "17": "._auto_deauth_run"
+}

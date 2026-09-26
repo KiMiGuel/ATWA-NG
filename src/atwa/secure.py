@@ -1,0 +1,254 @@
+"""Security-profile parsing (RSN/WPA IEs, PMF) and attack recommendation,
+sourced directly from beacon/probe-response IEs rather than parsed scan
+output.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from .dissect import CAP_PRIVACY, Frame, beacon_capability, walk_ies
+from .wps.tlv import (
+    ATTR_AP_SETUP_LOCKED,
+    ATTR_DEVICE_NAME,
+    ATTR_MANUFACTURER,
+    ATTR_MODEL_NAME,
+    ATTR_MODEL_NUMBER,
+    WPS_VENDOR_OUI_TYPE,
+    decode_tlvs,
+)
+
+WPA_VENDOR_OUI = b"\x00\x50\xf2\x01"  # Microsoft OUI + WPA type 1
+WPS_VENDOR_OUI = WPS_VENDOR_OUI_TYPE
+OWE_TRANSITION_OUI_TYPE = b"\x50\x6f\x9a\x1c"  # WFA OUI (50:6F:9A) + OWE Transition Mode type 0x1C
+
+# RSN AKM suite types (last byte of 00:0F:AC:<type>)
+AKM_PSK = 2
+AKM_SAE = 8
+AKM_OWE = 18  # Enhanced Open -- authentication-free, PMK from an anonymous
+              # Diffie-Hellman exchange, no PSK/password exists to attack
+
+# RSN pairwise/group cipher suite selectors (last byte of 00:0F:AC:<type>).
+# Corrected 2026-09-25 after a live beacon from a real Huawei/Totalplay AP
+# (22:87:ec:67:42:b0) advertised CCMP as selector 4 and the parser reported
+# "unknown". The old check was `1 -> TKIP`, `2 -> CCMP`, which is wrong on
+# both counts: 1 is WEP-40 and 2 is TKIP, so every genuine TKIP network was
+# reported as CCMP while genuine CCMP -- what essentially every modern AP
+# uses -- was never matched at all and fell through to "unknown".
+CS_WEP40 = 1
+CS_TKIP = 2
+CS_CCMP = 4
+CS_WEP104 = 5
+CS_BIP = 6  # 00:0F:AC:06, used for management frames / Group addressed data
+
+RSN_CAP_MFPC = 0x40  # management frame protection capable
+RSN_CAP_MFPR = 0x80  # management frame protection required
+
+
+def _rsn_info(elt_info: bytes) -> tuple[set[int], int, set[int]] | None:
+    """Parse an RSN IE body → (akm_types, rsn_capabilities, pairwise_ciphers)."""
+    try:
+        pos = 2  # version
+        pos += 4  # group cipher
+        pairwise_count = int.from_bytes(elt_info[pos : pos + 2], "little")
+        pairwise_ciphers = {elt_info[pos + 2 + 4 * i + 3] for i in range(pairwise_count)}
+        pos += 2 + 4 * pairwise_count
+        akm_count = int.from_bytes(elt_info[pos : pos + 2], "little")
+        pos += 2
+        akms = {elt_info[pos + 4 * i + 3] for i in range(akm_count)}
+        pos += 4 * akm_count
+        caps = int.from_bytes(elt_info[pos : pos + 2], "little") if pos + 2 <= len(elt_info) else 0
+        return akms, caps, pairwise_ciphers
+    except (IndexError, ValueError):
+        return None
+
+
+def security_profile(frame: Frame, ies: Iterable[tuple[int, bytes]] | None = None) -> dict:
+    """Derive {security, pmf} from a beacon/probe-response frame.
+
+    security: open | WEP | WPA | WPA2 | WPA3 | transition | OWE
+    pmf: none | capable | required | unknown (unknown = WPA2 without caps,
+    deauth still worth attempting).
+    """
+    privacy = bool(beacon_capability(frame) & CAP_PRIVACY)
+
+    rsn = None
+    for ie_id, info in (ies if ies is not None else walk_ies(frame.body[12:])):
+        if ie_id == 48:
+            rsn = _rsn_info(bytes(info))
+    # WPA1 vendor IE (ID 221, OUI 00:50:f2:01): not every vendor IE
+    # shows up as a clean walkable element in a real capture, so detect
+    # it in the raw frame bytes directly instead of relying on walk_ies.
+    raw = frame.raw
+    wpa_vendor = False
+    idx = raw.find(WPA_VENDOR_OUI)
+    while idx != -1:
+        if idx >= 2 and raw[idx - 2] == 221:
+            wpa_vendor = True
+            break
+        idx = raw.find(WPA_VENDOR_OUI, idx + 1)
+
+    if not privacy and rsn is None and not wpa_vendor:
+        return {"security": "open", "pmf": "none"}
+    if rsn is None:
+        if wpa_vendor:
+            return {"security": "WPA", "pmf": "unknown"}
+        return {"security": "WEP", "pmf": "none"}
+
+    akms, caps, pairwise_ciphers = rsn
+    if CS_CCMP in pairwise_ciphers:
+        pairwise_cipher = "CCMP"
+    elif CS_TKIP in pairwise_ciphers:
+        pairwise_cipher = "TKIP"
+    elif CS_BIP in pairwise_ciphers:
+        pairwise_cipher = "BIP"
+    elif CS_WEP40 in pairwise_ciphers or CS_WEP104 in pairwise_ciphers:
+        pairwise_cipher = "WEP"
+    else:
+        pairwise_cipher = "unknown"
+    sae = AKM_SAE in akms
+    psk = AKM_PSK in akms
+    owe = AKM_OWE in akms
+    if sae and psk:
+        security = "transition"
+    elif sae:
+        security = "WPA3"
+    elif owe:
+        # Was previously falling through to "WPA2" -- AKM 18 was never
+        # checked at all, so every OWE beacon got misclassified as a
+        # PSK-crackable network it isn't (OWE has no password to attack).
+        security = "OWE"
+    else:
+        security = "WPA2"
+
+    if caps & RSN_CAP_MFPR:
+        pmf = "required"
+    elif caps & RSN_CAP_MFPC:
+        pmf = "capable"
+    else:
+        pmf = "unknown" if security == "WPA2" else "none"
+    return {"security": security, "pmf": pmf, "pairwise_cipher": pairwise_cipher}
+
+
+def wps_profile(frame: Frame) -> dict | None:
+    """Extract WPS IE data from a beacon/probe-response.
+
+    Returns None if the frame carries no WPS vendor IE (OUI 00:50:F2,
+    type 04). Otherwise returns a dict:
+
+        {
+            "state": "enabled" | "locked",
+            "manufacturer": str | None,
+            "model_name": str | None,
+            "model_number": str | None,
+            "device_name": str | None,
+        }
+
+    This closes the reconnaissance gap vs. `wash`: in addition to the AP
+    Setup Locked flag, we now surface manufacturer/model/device-name TLVs
+    when the AP advertises them.
+
+    Same raw-byte-search approach as the WPA1 vendor IE check above:
+    not every vendor IE shows up as a clean walkable element in a real
+    capture, so search the frame bytes for the OUI+type signature
+    directly rather than relying on walk_ies. The IE's own length byte
+    (idx-1) bounds the WSC-TLV blob before handing it to the same
+    decode_tlvs() the M1..M7 exchange uses (WFA vendor IE 221 and a
+    beacon's WPS IE share the same [type(2) len(2) value] attribute
+    format)."""
+    raw = frame.raw
+    idx = raw.find(WPS_VENDOR_OUI)
+    while idx != -1:
+        if idx >= 2 and raw[idx - 2] == 221:
+            elt_len = raw[idx - 1]
+            tlv_end = idx + elt_len
+            if tlv_end <= len(raw):
+                attrs = decode_tlvs(raw[idx + 4 : tlv_end])
+                locked = attrs.get(ATTR_AP_SETUP_LOCKED, b"\x00") != b"\x00"
+                return {
+                    "state": "locked" if locked else "enabled",
+                    "manufacturer": _decode_str(attrs.get(ATTR_MANUFACTURER)),
+                    "model_name": _decode_str(attrs.get(ATTR_MODEL_NAME)),
+                    "model_number": _decode_str(attrs.get(ATTR_MODEL_NUMBER)),
+                    "device_name": _decode_str(attrs.get(ATTR_DEVICE_NAME)),
+                }
+        idx = raw.find(WPS_VENDOR_OUI, idx + 1)
+    return None
+
+
+def owe_transition_info(frame: Frame) -> dict | None:
+    """Extract the OWE Transition Mode vendor-specific IE from an OWE
+    beacon/probe-response, if present.
+
+    Per the Wi-Fi Alliance OWE transition-mode spec (the format hostapd's
+    own OWE support generates): element ID 221 (vendor-specific), OUI
+    50:6F:9A, type 0x1C, followed by BSSID (6 bytes), SSID length
+    (1 byte), SSID (variable), then optional band/channel-info bytes
+    this function doesn't need. An OWE AP running in transition mode
+    advertises this to point clients at its paired OPEN BSS -- the only
+    lever recommend_attack() has for OWE (no PSK exists to crack, so
+    there's nothing else to attack).
+
+    Same raw-byte-search approach as the WPA1/WPS vendor IEs above:
+    not every vendor IE shows up as a clean walkable element in a real
+    capture, so search the frame bytes for the OUI+type signature
+    directly rather than relying on walk_ies.
+
+    Returns {"bssid": str, "ssid": str | None} or None if no such IE is
+    present (a non-transition OWE AP has no open pair to downgrade to,
+    and this hasn't been verified against a real OWE-transition capture
+    yet -- built from the documented spec/hostapd format, not a
+    live-verified byte layout)."""
+    raw = frame.raw
+    idx = raw.find(OWE_TRANSITION_OUI_TYPE)
+    while idx != -1:
+        if idx >= 2 and raw[idx - 2] == 221:
+            elt_len = raw[idx - 1]
+            elt_end = idx + elt_len
+            body = raw[idx + len(OWE_TRANSITION_OUI_TYPE) : elt_end]
+            if len(body) >= 7:
+                bssid = ":".join(f"{b:02x}" for b in body[:6])
+                ssid_len = body[6]
+                ssid_bytes = body[7 : 7 + ssid_len]
+                ssid = ssid_bytes.decode("utf-8", errors="replace") if ssid_bytes else None
+                return {"bssid": bssid, "ssid": ssid}
+        idx = raw.find(OWE_TRANSITION_OUI_TYPE, idx + 1)
+    return None
+
+
+def _decode_str(value: bytes | None) -> str | None:
+    """Decode a WSC UTF-8 attribute value, returning None if missing/empty."""
+    if not value:
+        return None
+    try:
+        return value.decode("utf-8").strip() or None
+    except UnicodeDecodeError:
+        return None
+
+
+def recommend_attack(ap) -> dict:
+    """Pick the primary attack for an AP profile → {"attack", "reason"}.
+
+    Routing: PMKID when PMF blocks deauth, downgrade twin for
+    transition mode, deauth+handshake otherwise.
+    """
+    security = getattr(ap, "security", None)
+    pmf = getattr(ap, "pmf", None)
+    if security == "open":
+        return {"attack": "none", "reason": "Open network — no PSK handshake to capture; client/roaming and transition-mode behavior can still be audited."}
+    if security == "OWE":
+        owe_ssid = getattr(ap, "owe_transition_ssid", None)
+        owe_bssid = getattr(ap, "owe_transition_bssid", None)
+        if owe_bssid:
+            return {
+                "attack": "owe_downgrade",
+                "reason": f"OWE (Enhanced Open) transition mode: paired open network {owe_ssid!r} advertised ({owe_bssid}) — downgrade forces clients back to cleartext.",
+            }
+        return {"attack": "none", "reason": "OWE (Enhanced Open): no PSK exists to attack — PMK comes from an anonymous per-session DH exchange. No paired open SSID advertised (not in transition mode), so no downgrade lever exists either."}
+    if security == "WEP":
+        return {"attack": "wep_replay", "reason": "WEP: ARP-request replay to force IVs, then PTW crack."}
+    if pmf == "required":
+        return {"attack": "pmkid", "reason": "PMF required (802.11w): deauth blocked — clientless PMKID still works; else online SAE guessing."}
+    if security == "transition":
+        return {"attack": "downgrade_twin", "reason": "WPA3 transition mode: rogue WPA2-only twin forces fallback to crackable WPA2 handshake (PMKID also viable)."}
+    return {"attack": "deauth_handshake", "reason": "Deauth connected clients to force a 4-way handshake capture; PMKID is a quiet clientless alternative."}
