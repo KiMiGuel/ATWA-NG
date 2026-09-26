@@ -88,6 +88,8 @@ class PixieCreds:
     e_nonce: str = ""
 
     def clear(self) -> None:
+        # SAFETY: PixieCreds has no subclass anywhere in this codebase, so
+        # self.__init__() always dispatches to this exact __init__.
         self.__init__()  # type: ignore[misc]
 
     def complete(self) -> bool:
@@ -108,6 +110,8 @@ class ConnectionStatus:
     nack_detail: str = ""
 
     def clear(self) -> None:
+        # SAFETY: ConnectionStatus has no subclass anywhere in this codebase,
+        # so self.__init__() always dispatches to this exact __init__.
         self.__init__()  # type: ignore[misc]
 
     @property

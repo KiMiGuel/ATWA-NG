@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
   <img src="https://img.shields.io/badge/subcommands-24-00c8ff?style=flat-square" alt="24 subcomandos">
-  <img src="https://img.shields.io/badge/tests-430%20passing-success?style=flat-square" alt="430 tests">
+  <img src="https://img.shields.io/badge/tests-431%20passing-success?style=flat-square" alt="431 tests">
 </p>
 
 <p align="center">

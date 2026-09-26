@@ -34,3 +34,39 @@ atwa = ["gui/assets/*.png"]
 [[tool.mypy.overrides]]
 module = ["dpkt", "dpkt.*", "ttkthemes", "ttkthemes.*"]
 ignore_missing_imports = true
+
+# preset "recommended": escape-hatch rules (Any/cast/dict-value misuse) block at
+# error; architectural/policy rules (monkeypatch, isinstance branching, getattr,
+# object params, shape-in-name) report at warn instead of error. First run found
+# 355 pre-existing architectural findings, nearly all no-module-mocking hits in
+# tests/ (monkeypatch.setattr is this suite's normal pytest style) -- promote to
+# "strict" once those are migrated or accepted.
+[tool.anti-slop]
+preset = "recommended"
+include = ["src", "tests"]
+exclude = [
+  ".agent/**",
+  ".agents/**",
+  ".claude/**",
+  ".codex/**",
+  ".continue/**",
+  ".cursor/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".roo/**",
+  ".windsurf/**",
+  "tools/anti_slop/**",
+]
+
+[tool.anti-slop.rules]
+no-any-parameters = "error"
+no-any-returns = "error"
+no-any-type-aliases = "error"
+no-chained-casts = "error"
+no-conditional-empty-dict-spread = "error"
+no-dynamic-dispatch = "error"
+no-known-value-widening = "error"
+no-unsafe-dict-values = "error"
+no-widen-then-cast = "error"
+require-safety-comment = "error"
