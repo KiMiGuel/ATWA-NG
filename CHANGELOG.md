@@ -3,11 +3,10 @@
 ## [2.5.7] - 2026-09-26
 
 ### Fixed
-- GUI and Ctrl-C froze during floods run with `interval=0`.
-- Update check crashed on pre-release and non-numeric version tags.
-
-### Added
-- `anti_slop` linter for type-safety and architectural rules.
+- GUI stalled during long floods at `interval=0`, most visibly in CHAOS at
+  high tiers.
+- Update check crashed when comparing a zero-padded pre-release tag against
+  an unpadded one (`2.5.0-beta` vs `2.5-alpha`).
 
 ## [2.5.6] - 2026-09-26
 
