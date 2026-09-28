@@ -23,6 +23,8 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import textwrap
 
 from .cli_commands.attacks import (
     _cmd_chaos,
@@ -49,15 +51,137 @@ from .cli_commands.scan import (
     _cmd_wps_recon,
 )
 
+# --- help presentation -------------------------------------------------
+# Stock argparse crams all 23 subcommand names into one `{a,b,c,...}`
+# metavar and prints it twice, then hangs every description off a block
+# that is hard to scan. The formatter below fixes the layout only:
+# command name left, description right, both wrapped to the terminal.
+#
+# Colour is deliberately NOT done here. Python 3.14's argparse colourises
+# help natively and already honours NO_COLOR plus TTY detection; adding
+# our own ANSI on top produced doubled escape sequences.
+
+
+def _term_width() -> int:
+    """Terminal width, clamped so descriptions never wrap into slivers."""
+    try:
+        cols = shutil.get_terminal_size().columns
+    except OSError:
+        cols = 80
+    return max(60, min(cols, 100))
+
+
+class _AtwaHelpFormatter(argparse.HelpFormatter):
+    """Two-column help layout with a column sized to the widest entry."""
+
+    def __init__(self, prog: str, width: int | None = None) -> None:
+        # `color` is deliberately not a parameter. ArgumentParser applies it
+        # afterwards via formatter._set_color(), and the keyword only exists
+        # on Python 3.14+ while this project supports 3.10+.
+        super().__init__(prog, width=_term_width() if width is None else width)
+        self._desc_col = 22
+
+    def set_desc_col(self, column: int) -> None:
+        self._desc_col = max(12, min(column, 28))
+
+    def _row(self, inv: str, help_text: str | None) -> str:
+        """Render one `name  description` row, wrapping under the column."""
+        if not help_text or not help_text.strip():
+            return f"  {inv}\n"
+        pad = " " * max(self._desc_col - 2 - len(inv), 2)
+        help_width = max(self._width - self._desc_col, 24)
+        lines = textwrap.wrap(" ".join(help_text.split()), help_width) or [""]
+        head = f"  {inv}{pad}{lines[0]}\n"
+        tail = "".join(f"{' ' * self._desc_col}{line}\n" for line in lines[1:])
+        return head + tail
+
+    def _format_action(self, action: argparse.Action) -> str:
+        subactions = list(self._iter_indented_subactions(action))
+
+        if isinstance(action, argparse._SubParsersAction):
+            # Suppress the bare `COMMAND` placeholder -- the subcommand list
+            # below is the real content, so the metavar row is just noise.
+            out = ""
+            if action.help:
+                out = self._row("COMMAND", action.help)
+            return out + "".join(self._format_action(s) for s in subactions)
+
+        # argparse only expands a non-empty help string; positionals declared
+        # without `help=` carry None, and _expand_help would fail on it.
+        help_text = action.help and self._expand_help(action)
+        return self._row(self._format_action_invocation(action), help_text)
+
+
+class _AtwaParser(argparse.ArgumentParser):
+    """Parser that lays help out through _AtwaHelpFormatter.
+
+    Subclassing rather than passing `formatter_class` to a single parser
+    matters: `add_subparsers` inherits this class, so `atwa <cmd> --help`
+    is laid out the same way as the top-level help.
+
+    The description column is measured once per parser, up front. It cannot
+    be measured in `add_arguments`, because argparse defers every
+    `_format_action` call until after all groups have been added -- a
+    per-group value there would be overwritten before anything is rendered.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("formatter_class", _AtwaHelpFormatter)
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    def format_help(self) -> str:
+        # Subcommand parsers inherit this class but not the main parser's
+        # group titles, so normalise argparse's defaults here. The top-level
+        # COMMANDS title is already custom and is left alone.
+        for group in self._action_groups:
+            if group.title == "positional arguments":
+                group.title = "ARGUMENTS"
+            elif group.title == "options":
+                group.title = "OPTIONS"
+        return super().format_help()
+
+    def _get_formatter(self) -> _AtwaHelpFormatter:
+        # Built here rather than via super() so the concrete type is known
+        # without a cast. This mirrors ArgumentParser._get_formatter, which
+        # applies colour after construction -- both the call and the `color`
+        # attribute only exist on Python 3.14+.
+        formatter = _AtwaHelpFormatter(prog=self.prog)
+        set_color = getattr(formatter, "_set_color", None)
+        if set_color is not None:
+            set_color(getattr(self, "color", None))
+
+        widest = 0
+        for action in self._actions:
+            if action.help is argparse.SUPPRESS:
+                continue
+            get_subactions = getattr(action, "_get_subactions", None)
+            if get_subactions is not None:
+                # Subcommand entries live here; the parent's own metavar
+                # ("COMMAND") is a placeholder and must not drive the width.
+                for sub in get_subactions():
+                    widest = max(widest, len(formatter._format_action_invocation(sub)))
+            else:
+                widest = max(widest, len(formatter._format_action_invocation(action)))
+        formatter.set_desc_col(widest + 4)
+        return formatter
+
 
 def build_parser() -> argparse.ArgumentParser:
     from . import __version__
 
-    parser = argparse.ArgumentParser(
-        prog="atwa", description="ATWA-NG — Airwave Teardown Wireless Auditing-NextGen"
+    parser = _AtwaParser(
+        prog="atwa",
+        description="ATWA-NG — Airwave Teardown Wireless Auditing-NextGen",
+        epilog="Run 'atwa <command> --help' for options of a single command.",
     )
+    parser._optionals.title = "OPTIONS"
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="COMMAND",
+        title="COMMANDS",
+    )
 
     p = sub.add_parser("scan", help="channel-hopping AP/client scan")
     p.add_argument("iface")
@@ -261,6 +385,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "Without this gap the vectors contaminate each "
                         "other's reported effects.")
     p.set_defaults(func=_cmd_chaos)
+
+    # argparse emits the optionals group before the subcommand group, which
+    # buries the command list a user came for under two flag rows. Parsing
+    # reads `_actions`, not `_action_groups`, so reordering only affects help.
+    if parser._action_groups and parser._action_groups[-1] is not parser._optionals:
+        parser._action_groups.remove(parser._optionals)
+        parser._action_groups.append(parser._optionals)
 
     return parser
 
