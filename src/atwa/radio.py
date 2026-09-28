@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 import re
-import struct
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -180,59 +179,12 @@ def set_mac(iface: str, mac: str) -> None:
     _run(["ip", "link", "set", iface, "address", mac])
 
 
-# AWUS036ACHM (mt76x0u) txpower fix: EEPROM offset 0x52 → 0x1e raises
-# 5GHz output from a stuck 4 dBm to the real 17 dBm per-channel baseline.
-# Only applies to mt76x0u adapters; no-op (with a log) if debugfs isn't
-# accessible (non-root, debugfs not mounted, or different adapter variant).
-_ACHM_EEPROM_OFFSET = 0x52
-_ACHM_EEPROM_VALUE = 0x1E
-
-
 def _phy_for_iface(iface: str) -> str | None:
     link = Path(f"/sys/class/net/{iface}/phy80211")
     try:
         return link.resolve().name if link.is_symlink() else None
     except OSError:
         return None
-
-
-def apply_achm_txpower_patch(iface: str) -> bool:
-    """Apply the mt76x0u EEPROM txpower patch for iface. Returns True if
-    patch was written (or was already in place), False if iface is not an
-    mt76x0u or debugfs is inaccessible (non-fatal — caller just logs)."""
-    if get_driver(iface) not in ALFA_SCAN_DRIVERS:
-        return False
-    phy = _phy_for_iface(iface)
-    if not phy:
-        return False
-    eeprom = Path(f"/sys/kernel/debug/ieee80211/{phy}/mt76/eeprom")
-    # mount debugfs if not already mounted
-    debugfs_root = Path("/sys/kernel/debug")
-    if not debugfs_root.is_mount():
-        try:
-            subprocess.run(
-                ["mount", "-t", "debugfs", "none", str(debugfs_root)],
-                capture_output=True,
-                check=False,
-                timeout=10,
-                stdin=subprocess.DEVNULL,
-            )
-        except subprocess.TimeoutExpired:
-            return False
-    if not eeprom.exists():
-        return False
-    try:
-        with open(eeprom, "rb") as fh:
-            fh.seek(_ACHM_EEPROM_OFFSET)
-            current = fh.read(1)
-        if current and current[0] == _ACHM_EEPROM_VALUE:
-            return True  # already patched
-        with open(eeprom, "r+b") as fh:
-            fh.seek(_ACHM_EEPROM_OFFSET)
-            fh.write(struct.pack("B", _ACHM_EEPROM_VALUE))
-        return True
-    except OSError:
-        return False
 
 
 def fix_antenna_mask(iface: str) -> bool:
@@ -362,19 +314,111 @@ def disable_power_save(iface: str) -> bool:
         return False  # not every driver exposes power_save control
 
 
+def set_regdomain_us(iface: str) -> bool:
+    """Set the regulatory domain to US (United States) for maximum TX power.
+
+    The US domain allows up to 30 dBm (1W) on most channels, which is the
+    highest commonly-available regulatory limit. This is essential for
+    deauth/injection/Evil Twin attacks where TX power directly determines
+    whether frames reach the target. Returns True on success."""
+    try:
+        _run(["iw", "reg", "set", "US"])
+        return True
+    except RadioError:
+        return False
+
+
+_active_monitor_cache: dict[str, bool] = {}
+
+
+def supports_active_monitor(iface: str) -> bool:
+    """Whether iface's PHY advertises NL80211_MNTR_FLAG_ACTIVE support (`iw
+    phy <phy> info`'s "Device supports active monitor" line) -- most
+    adapters don't. Same phy-info-parsing pattern as fix_antenna_mask();
+    cached per iface like _driver_cache (get_driver()'s own docstring:
+    doesn't change without a hot-unplug/replug), including the negative
+    result -- unlike a one-off capability check elsewhere in this file,
+    this runs on every single attack call via set_monitor_active(), so
+    the common case (a PHY that doesn't support it at all) is exactly
+    the case that most needs to skip a fresh `iw phy info` subprocess
+    call every time."""
+    if iface in _active_monitor_cache:
+        return _active_monitor_cache[iface]
+    phy = _phy_for_iface(iface)
+    if not phy:
+        supported = False
+    else:
+        try:
+            out = _run(["iw", "phy", phy, "info"])
+        except RadioError:
+            supported = False
+        else:
+            supported = "device supports active monitor" in out.lower()
+    _active_monitor_cache[iface] = supported
+    return supported
+
+
+def clear_active_monitor_cache(iface: str | None = None) -> None:
+    """Clear the supports_active_monitor() cache. Useful in tests."""
+    if iface is None:
+        _active_monitor_cache.clear()
+    else:
+        _active_monitor_cache.pop(iface, None)
+
+
+def set_monitor_active(iface: str, active: bool) -> bool:
+    """Toggle the monitor interface's `active` flag (NL80211_MNTR_FLAG_ACTIVE),
+    which makes the adapter ACK unicast frames it receives while in monitor
+    mode -- off by default, since `set_monitor_mode()` never sets it. This
+    is `iw dev <iface> set monitor <active|none>`, a DIFFERENT command from
+    `set type monitor` -- `set type` never accepted a `flags` argument for
+    an existing interface (that only exists on `iw phy ... interface add`,
+    for creating a brand new virtual interface); confirmed live 2026-09-28
+    on the mt76x0u radio (`iw dev wlan1 set monitor active` succeeds,
+    `iw dev wlan1 set type monitor flags active` is not a valid form).
+    Also confirmed live: `set monitor` fails with "Device or resource
+    busy" while the interface is up, same as any type/flag change, hence
+    the same down/.../up cycle as `set_monitor_mode()`.
+
+    Skips the whole cycle (no-op, returns False) when the PHY doesn't
+    advertise the capability at all -- the common case; no point flapping
+    an interface most drivers will just reject the flag on anyway.
+    Non-fatal end to end -- unlike set_monitor_mode(), this is called
+    unconditionally on every attack's happy path (not just drift
+    recovery), and every one of its six call sites in attacks/*.py
+    invokes it outside their own try block. A transient failure of the
+    down/up cycle itself (not just the flag-set command) must not raise
+    RadioError, or it would break the "always returns a count, never
+    raises" contract those six functions guarantee on every other
+    failure path -- and cli.py's main() has no top-level exception
+    handler, so an uncaught RadioError here would crash the CLI with a
+    raw traceback instead of the usual graceful zero-count return."""
+    if not supports_active_monitor(iface):
+        return False
+    try:
+        _run(["ip", "link", "set", iface, "down"])
+    except RadioError:
+        return False
+    try:
+        _run(["iw", "dev", iface, "set", "monitor", "active" if active else "none"])
+        return True
+    except RadioError:
+        return False
+    finally:
+        try:
+            _run(["ip", "link", "set", iface, "up"])
+        except RadioError:
+            pass
+
+
 def set_monitor_mode(
     iface: str,
     randomize_mac: bool = False,
-    patch_txpower: bool = True,
 ) -> tuple[str, str | None]:
     """Put iface into monitor mode (down → [randomize MAC] → type monitor
     → up). Returns (iface, permanent_mac_or_None) — caller should hang
     onto permanent_mac and pass it to set_managed_mode's restore_mac to
-    put the real MAC back later.
-
-    patch_txpower: auto-apply the ACHM EEPROM fix for mt76x0u adapters
-    (no-op for other drivers). Pass False in unit tests to skip the
-    debugfs dependency."""
+    put the real MAC back later."""
     check_kill_interfering_processes()
     permanent_mac = get_permanent_mac(iface) if randomize_mac else None
     _run(["ip", "link", "set", iface, "down"])
@@ -384,8 +428,7 @@ def set_monitor_mode(
         _run(["iw", "dev", iface, "set", "type", "monitor"])
     finally:
         _run(["ip", "link", "set", iface, "up"])
-    if patch_txpower:
-        apply_achm_txpower_patch(iface)
+    set_regdomain_us(iface)
     fix_antenna_mask(iface)
     disable_power_save(iface)
     return iface, permanent_mac

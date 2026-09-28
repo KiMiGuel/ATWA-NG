@@ -23,6 +23,7 @@ from ..radio import (
     ensure_monitor_mode,
     get_mode,
     random_locally_administered_mac,
+    set_monitor_active,
 )
 
 
@@ -75,34 +76,38 @@ def beacon_flood(
         log(f"WARNING: {iface} is in '{mode}' mode, not monitor -- beacon frames cannot transmit")
         return 0
 
+    set_monitor_active(iface, True)
     try:
-        sock = conf.L2socket(iface=iface)
-    except OSError as exc:
-        log(f"beacon flood socket open failed: {exc}")
-        return 0
+        try:
+            sock = conf.L2socket(iface=iface)
+        except OSError as exc:
+            log(f"beacon flood socket open failed: {exc}")
+            return 0
 
-    beacon_channel = channel or 1
-    sent = 0
-    try:
-        for i in range(count):
-            if stop_event is not None and stop_event.is_set():
-                log(f"beacon flood stopped after {sent} frame(s) -- stop requested")
-                return sent
-            bssid = random_locally_administered_mac()
-            ssid = ssids[i % len(ssids)] if ssids else _random_ssid()
-            pkt = craft_beacon(bssid=bssid, ssid=ssid, channel=beacon_channel)
-            try:
-                sock.send(pkt)
-                sent += 1
-            except OSError as exc:
-                log(f"beacon flood send failed after {sent} frame(s): {exc}")
-                return sent
-            log(f"fake beacon {i + 1}/{count} sent: bssid={bssid} ssid={ssid!r}")
-            # Unconditional sleep(interval), even at 0.0 -- see
-            # auth_flood.py's note: a real syscall forces a GIL yield every
-            # frame, which a falsy-guarded skip would not.
-            if i < count - 1:
-                time.sleep(interval)
+        beacon_channel = channel or 1
+        sent = 0
+        try:
+            for i in range(count):
+                if stop_event is not None and stop_event.is_set():
+                    log(f"beacon flood stopped after {sent} frame(s) -- stop requested")
+                    return sent
+                bssid = random_locally_administered_mac()
+                ssid = ssids[i % len(ssids)] if ssids else _random_ssid()
+                pkt = craft_beacon(bssid=bssid, ssid=ssid, channel=beacon_channel)
+                try:
+                    sock.send(pkt)
+                    sent += 1
+                except OSError as exc:
+                    log(f"beacon flood send failed after {sent} frame(s): {exc}")
+                    return sent
+                log(f"fake beacon {i + 1}/{count} sent: bssid={bssid} ssid={ssid!r}")
+                # Unconditional sleep(interval), even at 0.0 -- see
+                # auth_flood.py's note: a real syscall forces a GIL yield every
+                # frame, which a falsy-guarded skip would not.
+                if i < count - 1:
+                    time.sleep(interval)
+        finally:
+            sock.close()
+        return sent
     finally:
-        sock.close()
-    return sent
+        set_monitor_active(iface, False)

