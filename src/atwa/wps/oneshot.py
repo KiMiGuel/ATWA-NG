@@ -477,7 +477,6 @@ class OneShot:
                 set_monitor_mode(
                     self.interface,
                     randomize_mac=False,
-                    patch_txpower=False,
                 )
             except RadioError:
                 pass

