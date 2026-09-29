@@ -43,9 +43,18 @@ def cap_to_22000(capfile: str, outfile: str) -> str:
             "hcxpcapngtool not found; install hcxtools to convert .cap/.pcap "
             "captures to 22000 format"
         )
+    # hcxpcapngtool opens its output in APPEND mode and only deletes it if
+    # it ends up empty (hcxpcapngtool.c: fopen(..., "a") + size==0 remove)
+    # -- so with a pre-existing output from an earlier run, the exists/size
+    # check below passed even when THIS run converted nothing, and john
+    # then cracked network A's stale hashes as if they came from the new
+    # capture (confirmed against the installed binary). Start clean so the
+    # guard means what it says; also stops duplicate lines piling up on
+    # every re-run of the same capture.
+    Path(outfile).unlink(missing_ok=True)
     proc = subprocess.run(
         ["hcxpcapngtool", "-o", outfile, capfile], capture_output=True, text=True,
-        timeout=120, check=False,  # bounded, same as fix_capture/merge_captures below
+        errors="replace", timeout=120, check=False,  # bounded, same as fix_capture/merge_captures below
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hcxpcapngtool failed: {proc.stderr.strip()}")
@@ -70,9 +79,14 @@ def hc22000_to_john(hashfile: str, outfile: str) -> str:
         raise ConverterUnavailableError(
             "hcxhashtool not found; install hcxtools to convert 22000 hashes for John"
         )
+    # Same append-mode trap as cap_to_22000 above: hcxhashtool fopen()s the
+    # --john output with "a" and only removes it when empty, so a stale
+    # file from a previous run made this check pass while converting
+    # nothing -- fresh file in, honest check out.
+    Path(outfile).unlink(missing_ok=True)
     proc = subprocess.run(
         ["hcxhashtool", "-i", hashfile, f"--john={outfile}"], capture_output=True, text=True,
-        timeout=120, check=False,  # bounded, same as fix_capture/merge_captures below
+        errors="replace", timeout=120, check=False,  # bounded, same as fix_capture/merge_captures below
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hcxhashtool failed: {proc.stderr.strip()}")

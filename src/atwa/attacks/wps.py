@@ -288,14 +288,22 @@ def _send_until_m3(
 
     def _resend():
         with lock:
-            if "frame" in result:
+            if "frame" in result or stopped.is_set():
                 return
         _send_wsc_message(iface, bssid, client, identifier, eap.WSC_OP_MSG, m2, version=version)
         last_resend[0] = time.monotonic()
         # Schedule the next resend unless the exchange has completed.
         nonlocal timer
         with lock:
-            if "frame" not in result:
+            # `stopped` must be re-checked here, not just "frame": cancel()
+            # is a no-op once _resend has already begun executing, so a
+            # timeout/stop racing an in-flight resend used to schedule a
+            # fresh timer the cancelled handle could never reach -- and
+            # this callback neither consults stopped nor stop_event, so the
+            # orphan chain resprayed stale WSC M2 frames every
+            # resend_interval for the life of the process (one per timed-
+            # out attempt across an 11k-pin sweep).
+            if "frame" not in result and not stopped.is_set():
                 timer = threading.Timer(resend_interval, _resend)
                 timer.daemon = True
                 timer.start()
@@ -321,8 +329,12 @@ def _send_until_m3(
             time.sleep(0.05)
     finally:
         stopped.set()
-        if timer is not None:
-            timer.cancel()
+        with lock:
+            # Under the lock, so an in-flight _resend either observes
+            # `stopped` when it re-checks or is yet to create its timer --
+            # one of the two always holds, no orphan chain slips through.
+            if timer is not None:
+                timer.cancel()
         try:
             sniffer.stop()
         except Exception:  # noqa: BLE001, S110 - stop can race with the sniffer's own timeout teardown

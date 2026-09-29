@@ -13,7 +13,13 @@ import subprocess
 
 from .base import Cracker
 
-_KEY_FOUND_RE = re.compile(r"KEY FOUND!\s*\[\s*(.+?)\s*\]")
+# aircrack prints `KEY FOUND! [ <passphrase> ]` (raw passphrase, vendored
+# aircrack-ng.c printf). Anchored to end-of-line with a greedy-toward-it
+# match so a passphrase CONTAINING ']' ("a]b" prints as "[ a]b ]") isn't
+# lazily truncated to "a" -- the closing bracket is the one at line end.
+# Leading/trailing spaces inside the brackets are still stripped
+# (unrecoverable from this output; john's pot is the lossless source).
+_KEY_FOUND_RE = re.compile(r"KEY FOUND!\s*\[\s*(.*?)\s*\]\s*$", re.MULTILINE)
 # aircrack-ng exits 0 even on "wordlist exhausted, no match" — not a
 # useful signal on its own. "0 potential targets" is what it prints when
 # the given BSSID has no usable handshake in the capture at all (real,
@@ -64,7 +70,8 @@ class AirCracker(Cracker):
 
     def crack(self, hashfile: str, wordlist: str, timeout: float = 3600.0) -> dict[str, str]:
         """hashfile is a .cap/.pcap/.pcapng path here, not a 22000 hash file."""
-        proc = subprocess.run(self._cmd(hashfile, wordlist), capture_output=True, text=True, check=False, timeout=timeout)
+        proc = subprocess.run(self._cmd(hashfile, wordlist), capture_output=True, text=True,
+                              errors="replace", check=False, timeout=timeout)
         cleaned = _clean(proc.stdout)
         if _NO_TARGETS_RE.search(cleaned):
             raise AircrackNoHandshakeError(
@@ -79,6 +86,7 @@ class AirCracker(Cracker):
         for the crack dialog's live output pane + real Stop button."""
         proc = subprocess.Popen(
             self._cmd(capfile, wordlist), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            errors="replace",  # non-UTF-8 ESSIDs are echoed by aircrack's TUI
             start_new_session=True,  # own process group so terminate_tree() can kill it
         )
         proc_holder["proc"] = proc

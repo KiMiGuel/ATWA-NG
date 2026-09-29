@@ -114,10 +114,6 @@ class ConnectionStatus:
         # so self.__init__() always dispatches to this exact __init__.
         self.__init__()  # type: ignore[misc]
 
-    @property
-    def first_half_valid(self) -> bool:
-        return self.last_m_message > 5
-
 
 def _get_hex(line: str) -> str:
     """Extract hexdump payload from a ``wpa_supplicant -K -d`` line."""
@@ -180,7 +176,6 @@ class OneShot:
         self.pixie_creds = PixieCreds()
         self.connection_status = ConnectionStatus()
         self.generator = WPSpin()
-        self.last_pwr = ""
 
     def _init_wpa_supplicant(self) -> None:
         cmd = [
@@ -302,8 +297,6 @@ class OneShot:
             pass
         elif pbc_mode and "selected BSS " in line:
             self.connection_status.bssid = line.split("selected BSS ")[-1].split()[0].upper()
-        elif self.bssid in line and "level=" in line:
-            self.last_pwr = line.split("level=")[1].split()[0]
         return True
 
     def _stdout(self):

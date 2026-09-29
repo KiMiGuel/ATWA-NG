@@ -26,17 +26,24 @@ def extract_pmkid(eapol_raw: bytes) -> bytes | None:
         kde = eapol_raw[idx + 2 : idx + 2 + length]
         if len(kde) >= 20 and kde[:4] == b"\x00\x0f\xac\x04":
             return kde[4:20]
-        idx += 2
+        idx += 1
 
 
 def to_22000(pmkid: bytes, bssid: str, client: str, essid: str | None = None) -> str:
-    """Format a PMKID as a hashcat/John 22000 line: PMKID*AP*CLIENT[*ESSID]."""
+    """Format a PMKID as a hashcat/John 22000 line: `WPA*01*PMKID*AP*CLIENT*ESSID***`.
+
+    The ``WPA*01*`` magic and the trailing empty ANONCE/EAPOL/MESSAGEPAIR
+    fields are both mandatory, verified against hcxtools: without them
+    ``hcxhashtool`` reports "no hashes loaded", so john conversion, the GUI
+    hash inspector (``startswith("WPA*01*")``) and housekeeping's merge all
+    silently drop the line while we still claim a PMKID capture. The bare
+    ``pmkid*ap*client*essid`` shape this used to emit is the deprecated
+    16800 layout, not 22000.
+    """
     mac_ap = bssid.replace(":", "")
     mac_cl = client.replace(":", "")
-    line = f"{pmkid.hex()}*{mac_ap}*{mac_cl}"
-    if essid:
-        line += f"*{essid.encode().hex()}"
-    return line
+    essid_hex = essid.encode().hex() if essid else ""
+    return f"WPA*01*{pmkid.hex()}*{mac_ap}*{mac_cl}*{essid_hex}***"
 
 
 def capture_pmkid_passive(
@@ -134,12 +141,21 @@ def capture_pmkid(
         log(f"channel set to {channel}")
     found: list[str] = []
     bssid_lower = bssid.lower()
+    client_lower = client.lower()
 
     def handler(pkt) -> None:
         # Only trust EAPOL genuinely sourced from the target AP -- any
         # other AP's M1 on-channel would otherwise get its PMKID written
         # under THIS bssid, producing a wrong-hash 22000 line.
         if not pkt.addr2 or pkt.addr2.lower() != bssid_lower:
+            return
+        # ...and only an M1 addressed TO OUR client. PMKID = PMK-derived
+        # over the *recipient* station's MAC, so an M1 for some other
+        # station (reassoc/roam, routine on a busy AP) written under our
+        # client MAC can never verify against any password -- a phantom
+        # success. The passive variant and online._wait_for_m1 filter the
+        # same way.
+        if not pkt.addr1 or pkt.addr1.lower() != client_lower:
             return
         if not is_eapol(pkt):
             return
