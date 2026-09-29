@@ -159,12 +159,13 @@ class AttackRunner:
         """Run the coordinated multi-vector flood and return its summary.
 
         2026-09-26: the GUI twin of `atwa chaos`. It returns
-        `ChaosResult.summary()`, which lists only the vectors that produced
-        an observable effect -- deliberately not "sent N frames", because
-        that is a transmission count and not evidence anything happened
-        (the first bench run inverted its own verdicts on exactly that
-        mistake; see chaos.py's own note). Broadcast unless a client is
-        given; default vectors/tiers match the CLI's no-flag run.
+        `ChaosResult.summary()`, which lists the vectors that actually
+        transmitted together with the effect measured for them in the lab
+        -- deliberately not "sent N frames", because that is a
+        transmission count and not evidence anything happened (the first
+        bench run inverted its own verdicts on exactly that mistake; see
+        chaos.py's own note). Broadcast unless a client is given;
+        default vectors/tiers match the CLI's no-flag run.
         """
         from ..chaos import chaos
         from ..frames import BROADCAST
@@ -215,7 +216,13 @@ class AttackRunner:
         if not cap.messages:
             return "no EAPOL traffic seen"
         statuses = [cap.status(a, c).value for a, c in cap.messages]
-        return f"{len(cap.messages)} pair(s), statuses={statuses}, saved to {out_file}"
+        # Machine-readable marker FIRST, before the path: the caller's
+        # success check must not substring-match the whole string, because
+        # the path embeds the user-controlled SSID (an "Authorized_Users"
+        # network used to pop a false "AUTHORIZED handshake captured"
+        # dialog on a CHALLENGE-only capture).
+        marker = "AUTHORIZED — " if "authorized" in statuses else ""
+        return f"{marker}{len(cap.messages)} pair(s), statuses={statuses}, saved to {out_file}"
 
     def smart(self, ap) -> str:
         return self._omni_style(ap, "run_smart")
@@ -475,6 +482,7 @@ class AttackRunner:
         capture_stop = threading.Event()
         listener: threading.Thread | None = None
         pmkid_sniffer: threading.Thread | None = None
+        watch_stop: threading.Event | None = None
 
         # Both mode-sets live INSIDE the try: if the second set_monitor_mode
         # raises, the finally below must still restore the first radio.
@@ -609,12 +617,17 @@ class AttackRunner:
                 listener.join(timeout=5)
             if pmkid_sniffer is not None:
                 pmkid_sniffer.join(timeout=5)
-            watch_stop.set()
         finally:
             # Always release both raw sockets before changing the interface
             # mode. This also handles exceptions during setup or a deauth
             # round, where the normal post-loop join is skipped.
             capture_stop.set()
+            # The size-watcher has its OWN event (nothing else stops it) and
+            # previously got set only inside the try -- a RadioError mid-
+            # deauth leaked it into an infinite 1s poll queueing stale
+            # capture_size updates for a dead attack forever.
+            if watch_stop is not None:
+                watch_stop.set()
             if listener is not None:
                 listener.join(timeout=5)
             if pmkid_sniffer is not None:

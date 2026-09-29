@@ -88,7 +88,10 @@ class ChaosResult:
 
     @property
     def effective(self) -> list[VectorResult]:
-        """Cells that produced an observed effect -- the actual results."""
+        """Cells worth reporting: those that transmitted (carrying their
+        vector's lab-measured effect note) plus error cells. A cell where
+        nothing went out keeps the default "none observed" and is
+        excluded -- sent-frames alone are never evidence of effect."""
         return [r for r in self.results if r.effect != "none observed"]
 
     def summary(self) -> str:
@@ -96,10 +99,16 @@ class ChaosResult:
             return "no vectors ran"
         head = (f"CHAOS {self.bssid} on {self.iface}: "
                 f"{len(self.results)} vector(s), {self.total_frames} frames, "
-                f"{self.elapsed:.1f}s")
+                f"{self.elapsed:.1f}s"
+                + (" (stopped early)" if self.stopped_early else ""))
         hits = self.effective
         if not hits:
-            return head + "\n  no vector produced an observable effect"
+            # Frames went out but nothing was recorded as observed: a real
+            # outcome (the lab's "no association effect" rows). No frames at
+            # all is the other, diagnostic case -- usually monitor mode.
+            if self.total_frames:
+                return head + "\n  no vector produced an observable effect"
+            return head + "\n  no frames went out on any vector (check monitor mode)"
         lines = [head]
         for r in hits:
             lines.append(f"  {r.vector} @{r.tier}: {r.effect}"
@@ -178,33 +187,46 @@ def chaos(
         tiers=list(tiers),
     )
 
-    for tier in tiers:
-        for name in vectors:
-            if stop.is_set():
-                result.stopped_early = True
-                log("chaos: stop requested, halting remaining vectors")
-                return result
-            log(f"chaos: {name} @ {tier} frames")
-            try:
-                sent, note = _run_vector(
-                    name, iface=iface, bssid=bssid, client=client,
-                    count=tier, channel=channel, progress_fn=None,
-                    stop_event=stop,
-                )
-                result.results.append(
-                    VectorResult(vector=name, tier=tier, frames=sent,
-                                 effect=note, ok=True)
-                )
-            except Exception as exc:  # noqa: BLE001 - one vector failing must not abort the suite
-                result.results.append(
-                    VectorResult(vector=name, tier=tier, frames=0,
-                                 effect="error", ok=False,
-                                 detail=f"{type(exc).__name__}: {exc}")
-                )
-                log(f"chaos: {name} failed: {exc}")
-            if stop.wait(inter_vector_delay):
-                result.stopped_early = True
-                return result
-
-    result.elapsed = time.monotonic() - t0
-    return result
+    try:
+        for tier in tiers:
+            for name in vectors:
+                if stop.is_set():
+                    result.stopped_early = True
+                    log("chaos: stop requested, halting remaining vectors")
+                    return result
+                log(f"chaos: {name} @ {tier} frames")
+                try:
+                    sent, note = _run_vector(
+                        name, iface=iface, bssid=bssid, client=client,
+                        count=tier, channel=channel, progress_fn=None,
+                        stop_event=stop,
+                    )
+                    result.results.append(
+                        VectorResult(
+                            vector=name, tier=tier, frames=sent,
+                            # A note may only ride on a cell that actually
+                            # transmitted: deauth/auth_flood return 0 instead of
+                            # raising when the iface isn't in monitor mode, and
+                            # an "association teardown" note on 0 frames is
+                            # exactly the sent-=evidence-of-effect error this
+                            # module's docstring forbids.
+                            effect=note if sent else "none observed",
+                            ok=True,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - one vector failing must not abort the suite
+                    result.results.append(
+                        VectorResult(vector=name, tier=tier, frames=0,
+                                     effect="error", ok=False,
+                                     detail=f"{type(exc).__name__}: {exc}")
+                    )
+                    log(f"chaos: {name} failed: {exc}")
+                if stop.wait(inter_vector_delay):
+                    result.stopped_early = True
+                    return result
+        return result
+    finally:
+        # Every return path above passes through here: early stops
+        # used to leave elapsed at 0.0, printing a misleading "0.0s"
+        # summary after a Stop.
+        result.elapsed = time.monotonic() - t0

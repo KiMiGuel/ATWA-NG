@@ -214,13 +214,22 @@ def _cmd_wps_pixie(args) -> int:
 
 
 def _cmd_wps_oneshot(args) -> int:
-    with OneShot(args.iface, bssid=args.bssid, verbose=args.verbose) as shot:
-        if args.pbc:
-            result = shot.single_connection(args.bssid, pbc_mode=True)
-        elif args.pin:
-            result = shot.single_connection(args.bssid, pin=args.pin)
-        else:
-            result = shot.pixie_dust_attack(args.bssid)
+    try:
+        with OneShot(args.iface, bssid=args.bssid, verbose=args.verbose) as shot:
+            if args.pbc:
+                result = shot.single_connection(args.bssid, pbc_mode=True)
+            elif args.pin:
+                result = shot.single_connection(args.bssid, pin=args.pin)
+            else:
+                result = shot.pixie_dust_attack(args.bssid)
+    except RuntimeError as exc:
+        # _read_events raises RuntimeError("wpa_supplicant event read timed
+        # out...") when the BSSID never reaches a WPS terminal state (a
+        # non-WPS AP, say) -- every other failure path returns a structured
+        # OneShotResult, but this one escaped to the top level as a raw
+        # traceback after a full 120s wait.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     if result.outcome is Outcome.SUCCESS:
         print(f"SUCCESS bssid={result.bssid} ssid={result.ssid!r} pin={result.pin!r} key={result.psk!r}")
@@ -325,7 +334,10 @@ def _cmd_chaos(args) -> int:
         print("\ninterrupted", file=sys.stderr)
         return 1
     print(result.summary())
-    if not result.results:
+    # --help promises "exit 1 when nothing ran": all six vectors erroring
+    # (e.g. a nonexistent iface) yields non-empty `results` of pure error
+    # cells, which the old `if not result.results` check counted as a run.
+    if not any(r.ok and r.frames for r in result.results):
         return 1
     return 0
 
