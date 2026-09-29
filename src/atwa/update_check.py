@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 
 REPOSITORY = "KiMiGuel/ATWA-NG"
 RELEASES_API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+TAGS_API_URL = f"https://api.github.com/repos/{REPOSITORY}/tags"
 USER_AGENT = "ATWA-NG-update-check"
 
 
@@ -106,9 +107,9 @@ def is_newer(latest: str, current: str) -> bool:
 def check_for_update(
     current: str,
     timeout: float = 3.0,
-    api_url: str = RELEASES_API_URL,
+    api_url: str = TAGS_API_URL,
 ) -> UpdateResult:
-    """Query GitHub's latest published release.
+    """Query GitHub's latest tag.
 
     ``timeout`` is intentionally bounded: update checking is advisory and
     must not delay a CLI invocation or hold up the GUI.
@@ -125,10 +126,12 @@ def check_for_update(
     try:
         with urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        latest = str(payload.get("tag_name") or "").strip()
-        release_url = str(payload.get("html_url") or "").strip() or None
+        if not isinstance(payload, list) or not payload:
+            raise ValueError("GitHub tags response was empty")
+        latest = str(payload[0].get("name") or "").strip()
+        release_url = f"https://github.com/{REPOSITORY}/releases/tag/{latest}"
         if not latest:
-            raise ValueError("GitHub release response did not contain tag_name")
+            raise ValueError("GitHub tags response did not contain a tag name")
         return UpdateResult(
             current=current,
             latest=latest,

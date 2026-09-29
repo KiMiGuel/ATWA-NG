@@ -309,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--demo", action="store_true")
     p.set_defaults(func=_cmd_gui)
 
-    p = sub.add_parser("update-check", help="check GitHub for a newer published ATWA-NG release")
+    p = sub.add_parser("update", help="check GitHub for a newer ATWA-NG release")
     p.add_argument("--timeout", type=float, default=3.0, help="network timeout in seconds (default: 3)")
     p.set_defaults(func=_cmd_update_check)
 
