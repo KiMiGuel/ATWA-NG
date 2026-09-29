@@ -2,10 +2,12 @@
 
 The check is deliberately small and dependency-free: it uses only Python's
 standard library, has a short timeout, and never runs on the Tk or radio hot
-path. A published GitHub release is the release signal; tags alone are not
-queried because they do not carry a user-facing release URL or publication
-state. The repository workflow is therefore: bump pyproject.toml, commit,
-push, create/publish a GitHub release, and tag the release.
+path. The pushed *tags* API is the release signal (since 2.5.9, commit
+ca74470): the workflow tags a version before the GitHub Release gets
+published, and ``/releases/latest`` only reflects published releases -- so
+it lagged the actual push and left users stuck on the old version. Tags
+reflect a push immediately; the release URL we hand back becomes live as
+soon as the matching GitHub Release is published.
 """
 
 from __future__ import annotations
@@ -16,11 +18,11 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REPOSITORY = "KiMiGuel/ATWA-NG"
-RELEASES_API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 TAGS_API_URL = f"https://api.github.com/repos/{REPOSITORY}/tags"
 USER_AGENT = "ATWA-NG-update-check"
 
@@ -41,58 +43,48 @@ class UpdateResult:
     checked_at: float = 0.0
 
 
-def _version_parts(value: str) -> tuple[tuple[int, int | str], ...]:
-    """Parse a release version for comparison without external dependencies.
+def _version_parts(value: str) -> tuple[tuple[int, ...], int, str]:
+    """Parse a release version into a totally-ordered comparison key.
 
-    Numeric components compare numerically; a pre-release suffix sorts before
-    the corresponding final release. Unknown suffixes are retained as strings
-    so malformed-but-readable GitHub tags do not crash the checker.
+    The key is ``(numbers, kind, suffix)``:
 
-    The returned keys are deliberately heterogeneous -- every component is a
-    ``(marker, value)`` pair whose *marker* is an int, and comparison is
-    expected to resolve on the marker before it ever reaches the value. That
-    invariant is what makes the comparison total across the mixed int/str
-    shapes, so the unparseable-tag fallback below must keep its second
-    component's marker strictly below every well-formed version's first
-    marker (0), otherwise two different tag shapes can end up comparing an
-    ``int`` against a ``str`` and raise TypeError mid-check. 2026-09-25: the
-    old fallback returned a bare ``((tag,),)`` string, so any non-numeric tag
-    ("release-candidate", a stray "latest") raised TypeError against every
-    normal version and took the whole update check down with it.
+    * ``numbers`` -- the numeric components with trailing zeros
+      canonicalised away, so ``2.4`` == ``2.4.0`` while ``2.5.3.1`` >
+      ``2.5.3``. Canonicalising is what lets variable-length versions
+      compare correctly without any marker/terminator machinery: Python's
+      own tuple ordering gives ``(2,4) == (2,4,0)``'s canonical form and
+      ``(2,5,3) < (2,5,3,1)``.
+    * ``kind`` -- 0 for a pre-release, 1 for a final release, so a final
+      always sorts above its own pre-releases (``2.4.0-rc1`` < ``2.4.0``)
+      and ``suffix`` is only ever compared against another string.
+    * ``suffix`` -- the lowercased pre-release label (``rc1``, ``beta``).
 
-    Both branches below trim trailing ``(0, 0)`` numeric components before
-    appending their terminator/suffix marker. Without that trim, a tag with
-    an explicit trailing zero (``"2.5.0-beta"``) has one more numeric
-    component than its equivalent without it (``"2.5-alpha"``), which shifts
-    the suffix marker's *position* by one -- so it can land on the same index
-    as the other tag's plain numeric ``(0, 0)``, comparing the suffix's
-    string value against that ``0`` and raising TypeError. Trimming both
-    branches the same way keeps equivalent numeric prefixes the same length,
-    so the marker always lines up against another marker.
+    Unparseable tags sort below every well-formed version: their key starts
+    with the same empty ``numbers`` tuple a canonical ``0.0.0`` has, so
+    ordering falls to ``kind`` -- ``-1`` sits below both final (1) and
+    pre-release (0), and two unparseable tags only ever compare
+    ``suffix`` vs ``suffix`` -- never int-vs-str, so a malformed tag can
+    never raise TypeError mid-check (that regression shipped once
+    already, 2026-09-25). (A ``-1`` *number component* would NOT have
+    worked: the empty tuple of ``0.0.0`` sorts below every non-empty
+    tuple, so ``0.0.0`` would have compared older than garbage.)
+
+    Replaced a flatter ``(marker, value)`` scheme whose terminator shared
+    its shape with real numeric components: after the trailing-zero trim,
+    ``3.0.1`` compared *older* than ``3.0.0`` because the final-release
+    terminator slid ahead of the newer version's zero minor component.
     """
     cleaned = value.strip().lstrip("vV")
     match = re.match(r"^([0-9]+(?:\.[0-9]+)*)(.*)$", cleaned)
     if not match:
-        # Sorts below every parseable version (marker -1 < 0), so an
-        # unreadable GitHub tag can never masquerade as a newer release.
-        # Marker -1 also means the string component is only ever compared
-        # against another unparseable tag, i.e. str-vs-str -- never str-vs-int.
-        return ((0, 0), (-1, 0), (0, cleaned))
-    numbers = tuple(int(part) for part in match.group(1).split("."))
+        return ((), -1, cleaned)
+    numbers = [int(part) for part in match.group(1).split(".")]
+    while numbers and numbers[-1] == 0:
+        numbers.pop()
     suffix = match.group(2).lstrip("-+").lower()
-    parts = [(number, 0) for number in numbers]
-    # GitHub's historical tags include both ``v2.4`` and ``v2.4.0``.
-    # Treat omitted trailing zeroes as the same release version.
-    while len(parts) > 1 and parts[-1] == (0, 0):
-        parts.pop()
     if not suffix:
-        return tuple(parts) + ((1, 0),)
-    # Marker 0 sorts before the (1, 0) final-release terminator, and the str
-    # value orders 'alpha' < 'beta' < 'rc1' within that marker. Keeping the
-    # marker in the first slot (int) and the suffix in the second (str)
-    # matches the declared `tuple[int, int | str]` shape exactly, so no cast
-    # is needed here.
-    return tuple(parts) + ((0, 0), (0, suffix))
+        return (tuple(numbers), 1, "")
+    return (tuple(numbers), 0, suffix)
 
 
 def is_newer(latest: str, current: str) -> bool:
@@ -145,21 +137,49 @@ def check_for_update(
         return UpdateResult(current=current, error=str(exc), checked_at=checked_at)
 
 
+def _find_checkout() -> Path | None:
+    """Locate the ATWA-NG git checkout this module was imported from.
+
+    ``git pull`` and ``pip install -e .`` must run THERE, never in the
+    process CWD: launched from any other directory, the old code pulled
+    whatever unrelated repo the user happened to be sitting in and then
+    installed *that* project into the environment. Walks up from this file
+    (editable ``src/`` layout: src/atwa/update_check.py -> repo root) and
+    only accepts a directory that is a git repo *and* carries this
+    project's pyproject.toml.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / ".git").exists() and (parent / "pyproject.toml").exists():
+            try:
+                if 'name = "atwa"' in (parent / "pyproject.toml").read_text():
+                    return parent
+            except OSError:
+                continue
+    return None
+
+
 def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
     """Pull the latest ATWA-NG code from GitHub and re-install.
 
     The package is installed in editable mode from the local clone, so
-    `git pull` is the correct update mechanism. After pulling, re-install
-    so the installed package metadata (version, entry points) refreshes.
+    `git pull` is the correct update mechanism -- run inside that clone
+    (resolved by :func:`_find_checkout`), not the caller's CWD. After
+    pulling, re-install so the installed package metadata (version, entry
+    points) refreshes.
 
     Returns (success, message). Never raises -- update failures are
     reported to the caller, not raised past it.
     """
+    checkout = _find_checkout()
+    if checkout is None:
+        return False, "ATWA-NG source checkout not found next to the installed package; update manually with git pull"
     try:
         proc = subprocess.run(
             ["git", "pull"],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
+            cwd=str(checkout),
             timeout=timeout,
             check=False,
         )
@@ -176,6 +196,8 @@ def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
             [sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
+            cwd=str(checkout),
             timeout=timeout,
             check=False,
         )
