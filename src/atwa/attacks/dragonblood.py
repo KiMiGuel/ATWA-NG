@@ -172,13 +172,18 @@ def _measure_sae_commit_rtt(iface: str, bssid: str, client_mac: str, timeout: fl
     content-matched."""
     found: list[float] = []
     sent_at = [0.0]
+    bssid_lower = bssid.lower()
 
     def handler(pkt) -> None:
         dot11 = pkt.getlayer(Dot11)
         auth = pkt.getlayer(Dot11Auth)
         if dot11 is None or auth is None:
             return
-        if dot11.addr2 != bssid or auth.algo != SAE_AUTH_ALGO or auth.status != 0:
+        # scapy renders dissected MACs lowercase; the CLI takes bssid as a
+        # free-form positional, so "AA:BB:CC:DD:EE:FF" used to drop every
+        # reply here and timing_prune_wordlist logged "AP may not support
+        # SAE" instead of measuring -- a plausible-looking wrong verdict.
+        if not dot11.addr2 or dot11.addr2.lower() != bssid_lower or auth.algo != SAE_AUTH_ALGO or auth.status != 0:
             return
         found.append(time.perf_counter() - sent_at[0])
 

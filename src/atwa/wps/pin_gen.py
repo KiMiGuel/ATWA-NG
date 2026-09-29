@@ -248,10 +248,14 @@ class WPSpin:
             "B4944E",
         ),
         "pin28": ("200BC7", "4846FB", "D46AA8", "F84ABF"),
+        # 801F02 (Edimax) belongs to BOTH pin24 and pin32 in upstream
+        # OneShot's table; living only in pin24 here made get_likely()
+        # return the Edimax static PIN first for those APs -- spending one
+        # of the lockout-limited WPS attempts on the wrong guess.
         "pin32": (
             "000726", "D8FEE3", "FC8B97", "1062EB", "1C5F2B", "48EE0C",
             "802689", "908D78", "E8CC18", "2CAB25", "10BF48", "14DAE9",
-            "3085A9", "50465D", "5404A6", "C86000", "F46D04",
+            "3085A9", "50465D", "5404A6", "C86000", "F46D04", "801F02",
         ),
         "pinDLink": (
             "14D64D", "1C7EE5", "28107B", "84C9B2", "A0AB1B", "B8A386",

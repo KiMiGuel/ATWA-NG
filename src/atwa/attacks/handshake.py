@@ -44,10 +44,19 @@ class HandshakeCapture:
     material; status() below deliberately ignores 4."""
 
     messages: dict[tuple[str, str], set[int]] = field(default_factory=dict)
+    # Monotonic memo: `messages` sets only ever gain members, so a pair's
+    # status can only climb -- AUTHORIZED, once reached, can never regress.
+    # stop_filter evaluates this on every sniffed frame (thousands/sec on a
+    # busy band), so the flag keeps it O(1) instead of re-classifying every
+    # pair per packet. Maintained solely by add(); nothing else mutates
+    # `messages` (enforced by that being the only write site).
+    authorized_found: bool = field(default=False, init=False, repr=False)
 
     def add(self, ap: str, client: str, msg_no: int) -> None:
         """Record a handshake message number for a pair."""
         self.messages.setdefault((ap, client), set()).add(msg_no)
+        if not self.authorized_found and self.status(ap, client) is HandshakeStatus.AUTHORIZED:
+            self.authorized_found = True
 
     def status(self, ap: str, client: str) -> HandshakeStatus:
         """Classify a pair's capture quality."""
@@ -93,8 +102,36 @@ def _looks_like_m4(pkt) -> bool:
     return bool(key_info & 0x0200) and key_data_len == 0
 
 
+def _key_info_raw(pkt) -> int | None:
+    """Raw big-endian Key Information word of an EAPOL-Key frame, or None."""
+    if not is_eapol(pkt):
+        return None
+    eapol = pkt.getlayer(EAPOL)
+    if eapol is None:
+        return None
+    raw = bytes(eapol.payload)
+    if len(raw) < 3:
+        return None
+    return int.from_bytes(raw[1:3], "big")
+
+
+# Key Information bit 3: 1 = pairwise key (4-way handshake), 0 = group key.
+PAIRWISE_KEY_TYPE = 0x0008
+
+
 def _classify(pkt) -> int | None:
-    """Return handshake message number (1-4) or None."""
+    """Return handshake message number (1-4) or None.
+
+    Group-key (GTK rekey) frames are ignored via the Key Type bit: the
+    group handshake's message 1 carries the exact ACK=1/MIC=1 profile that
+    maps to "M3" below, so recording it would escalate a CHALLENGE pair to
+    AUTHORIZED on an AP-confirmation that never happened and stop the
+    sniff early on a capture hcxpcapngtool then finds empty (group frames
+    carry no ANonce).
+    """
+    key = _key_info_raw(pkt)
+    if key is None or not key & PAIRWISE_KEY_TYPE:
+        return None
     info = eapol_key_info(pkt)
     if info is None:
         return None
@@ -151,6 +188,12 @@ def capture_handshake(
     # for any downstream tool (aircrack-ng, hcxpcapngtool, Wireshark) to
     # parse. Monitor-mode sniffs always come back RadioTap-wrapped, so the
     # correct type is DLT_IEEE802_11_RADIO, always, not a guess.
+    # The "discard when nothing was captured" logic below may only delete a
+    # file THIS call created: the writer opens append=True, so outfile can
+    # already hold a good capture from a previous run (OMNI reuses
+    # <bssid>.pcap across re-runs). Deleting that because the current round
+    # saw no reconnect would destroy real captured material.
+    outfile_existed = outfile is not None and Path(outfile).exists()
     writer = PcapWriter(outfile, linktype=DLT_IEEE802_11_RADIO, append=True, sync=True) if outfile else None
     beacon_written = False
 
@@ -206,8 +249,10 @@ def capture_handshake(
         # capture folder fill up with empty files from every failed round.
         # CHALLENGE-only captures (M1+M2, no M3) are NOT trash -- they're
         # still real, potentially crackable material -- so this only fires
-        # when cap.messages is completely empty.
-        if outfile:
+        # when cap.messages is completely empty. Never touch a file that
+        # existed before this call — that guard is what keeps a re-run with
+        # no reconnect from deleting the previous run's capture.
+        if outfile and not outfile_existed:
             try:
                 Path(outfile).unlink()
                 log(f"discarded empty capture file ({outfile})")

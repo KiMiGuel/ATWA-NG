@@ -27,9 +27,16 @@ from ..radio import ensure_channel
 from ..wep.crypto import recover_keystream
 from ..wep.ptw import PTWVoteTable
 
-# LLC/SNAP header + EtherType for ARP — the known-plaintext prefix every
-# WEP ARP-based attack relies on (research/wep_attacks_dim02.md, dim06).
-ARP_KNOWN_PREFIX = bytes.fromhex("aaaa030000000806")
+# LLC/SNAP + EtherType for ARP, plus the invariant bytes of the ARP
+# header: htype=0001 (Ethernet), ptype=0800 (IPv4), hlen=06, plen=04,
+# oper high byte=00 (both 0x0001 request and 0x0002 reply start 00).
+# 15 known bytes -- every position p of PTW's sigma vote reads plaintext
+# byte p+2, so this covers ALL 13 WEP-104 key positions. The old 8-byte
+# LLC-only prefix left positions 6-12 without real bytes and WEP-104
+# could never be recovered (only WEP-40's 5 positions fit); aircrack-ng
+# guards the same condition by skipping sessions that don't cover the
+# key length. research/wep_attacks_dim02.md, dim06.
+ARP_KNOWN_PREFIX = bytes.fromhex("aaaa03000000080600010800060400")
 
 # Known ARP-request size signature: 802.11 capture length (from
 # the Dot11 header onward, i.e. excluding RadioTap) for a WEP-encrypted

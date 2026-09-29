@@ -102,10 +102,20 @@ class PTWVoteTable:
             return False
         self._seen_ivs.add(iv)
 
-        padded = keystream + b"\x00" * max(0, IV_BYTES + self.num_positions - len(keystream))
-        sigma_guesses = _guess_sigma(iv, padded, self.num_positions)
-        for pos, sigma_val in enumerate(sigma_guesses):
-            self.votes[pos][sigma_val] += weight
+        # Vote ONLY positions backed by real keystream bytes: position p of
+        # _guess_sigma reads keystream byte p+2 (and nothing else). The old
+        # code padded short harvests with 0x00 and voted every position
+        # anyway, so with the live 8-byte ARP prefix positions 6+ voted
+        # fabricated sigmas -- chance-level noise that drowned the true
+        # counts, keeping the correct tuple out of top_k forever and
+        # making WEP-104 recovery impossible (verified numerically: 8-byte
+        # harvest never returns a 13-byte key; 15-byte does, instantly).
+        # aircrack-ng skips such sessions outright instead of padding.
+        valid = min(self.num_positions, max(0, len(keystream) - 2))
+        if valid > 0:
+            sigma_guesses = _guess_sigma(iv, keystream, valid)
+            for pos, sigma_val in enumerate(sigma_guesses):
+                self.votes[pos][sigma_val] += weight
         self.sessions.append(Session(iv=iv, keystream=keystream))
         return True
 

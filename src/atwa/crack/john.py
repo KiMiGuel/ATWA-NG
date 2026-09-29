@@ -146,11 +146,13 @@ class JohnCracker(Cracker):
         return hc22000_to_john(hashfile, hashfile + ".john")
 
     def crack(self, hashfile: str, wordlist: str, rules: str = "", timeout: float = 3600.0) -> dict[str, str]:
-        """Convert hashfile for John, run it with wordlist, parse `--show`."""
+        """Convert hashfile for John, run it with wordlist, parse the pot."""
         john_file = self._prepare(hashfile)
         fork = _fork_count()
+        session = _session_name()
+        pot = f"{session}.pot"
         cmd = [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}",
-               "--progress-every=5", f"--session={_session_name()}"]
+               "--progress-every=5", f"--session={session}", f"--pot={pot}"]
         if fork > 1:
             cmd.append(f"--fork={fork}")
         cmd.extend(_rules_args(rules))
@@ -159,6 +161,7 @@ class JohnCracker(Cracker):
             cmd,
             capture_output=True,
             text=True,
+            errors="replace",  # non-UTF-8 ESSIDs are echoed by john (raw bytes)
             check=False,
             timeout=timeout,
         )
@@ -169,7 +172,7 @@ class JohnCracker(Cracker):
                 f"john rejected {john_file} outright (0 hashes loaded) even after "
                 f"hcxhashtool conversion — not a wrong wordlist. Try aircrack-ng instead."
             )
-        return self.show(john_file)
+        return self.show(john_file, pot)
 
     def run_streaming(self, hashfile: str, wordlist: str, on_line, proc_holder: dict, rules: str = "") -> dict[str, str]:
         """Like crack(), but streams stdout line-by-line to on_line(str) as it
@@ -178,8 +181,10 @@ class JohnCracker(Cracker):
         thread — a real Stop button that actually terminates the process."""
         john_file = self._prepare(hashfile)
         fork = _fork_count()
+        session = _session_name()
+        pot = f"{session}.pot"
         cmd = [self.binary, f"--format={self.fmt}", f"--wordlist={wordlist}",
-               "--progress-every=5", f"--session={_session_name()}"]
+               "--progress-every=5", f"--session={session}", f"--pot={pot}"]
         if fork > 1:
             cmd.append(f"--fork={fork}")
         cmd.extend(_rules_args(rules))
@@ -190,6 +195,7 @@ class JohnCracker(Cracker):
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            errors="replace",  # non-UTF-8 ESSIDs are echoed by john (raw bytes)
             stdin=subprocess.DEVNULL,
             start_new_session=True,  # own process group so terminate_tree() can kill --fork children
         )
@@ -208,7 +214,7 @@ class JohnCracker(Cracker):
                 f"john rejected {john_file} outright (0 hashes loaded) even after "
                 f"hcxhashtool conversion — not a wrong wordlist. Try aircrack-ng instead."
             )
-        return self.show(john_file)
+        return self.show(john_file, pot)
 
     def benchmark(self, seconds: int = 3) -> str:
         """Run John's own --test benchmark for this format and return its
@@ -223,20 +229,59 @@ class JohnCracker(Cracker):
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=seconds + 30)
         return (proc.stdout + proc.stderr).strip()
 
-    def show(self, hashfile: str) -> dict[str, str]:
-        """Parse `john --show` output into {hash_id: plaintext}."""
-        proc = subprocess.run(
-            [self.binary, f"--format={self.fmt}", "--show", hashfile],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
+    @staticmethod
+    def show(hashfile: str, pot: str) -> dict[str, str]:
+        """Map this run's cracked passwords from john's POT file.
+
+        This used to parse `john --show`, which prints
+        `login:plaintext:<rest of the original hash line>` -- so every
+        reported "password" had john's metadata tail glued on (IV, MAC,
+        ESSID hex, "converted by hcxhashtool"; verified against a real
+        capture on this machine): a value that associates nowhere, saved
+        verbatim to creds.json. POT lines are `ciphertext:plaintext`
+        with a colon-free ciphertext, so one left-split yields the exact
+        PSK even when the PSK itself contains ':'.
+
+        Keyed by the hashfile login (ESSID): duplicate logins carrying
+        the same password collapse; a differing one gets a `#n` suffix so
+        neither network's result overwrites the other. Pure file parsing
+        -- no john subprocess needed to read a pot.
+        """
         results: dict[str, str] = {}
-        for line in proc.stdout.splitlines():
-            # Split ONCE: a cracked PSK may itself contain ':' -- taking
-            # parts[1] of a full split silently truncates those passwords.
+        try:
+            pot_text = Path(pot).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return results  # no pot written -> nothing cracked
+        try:
+            Path(pot).unlink(missing_ok=True)
+        except OSError:
+            pass  # derived file; leaving it behind costs nothing
+        pot_entries: list[tuple[str, str]] = []
+        for line in pot_text.splitlines():
             parts = line.split(":", 1)
-            if len(parts) >= 2 and not line.endswith("password hashes cracked"):
-                results[parts[0]] = parts[1]
+            if len(parts) == 2 and parts[0] and parts[1]:
+                pot_entries.append((parts[0], parts[1]))
+        if not pot_entries:
+            return results
+        dup_counts: dict[str, int] = {}
+        try:
+            hash_lines = Path(hashfile).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return results
+        for line in hash_lines:
+            if ":" not in line:
+                continue
+            login, payload = line.split(":", 1)
+            for ct, pw in pot_entries:
+                if not payload.startswith(ct):
+                    continue
+                key = login
+                if key in results:
+                    if results[key] == pw:
+                        break  # same network listed twice -- keep one entry
+                    dup = dup_counts.get(login, 1) + 1
+                    dup_counts[login] = dup
+                    key = f"{login}#{dup}"
+                results[key] = pw
+                break
         return results
