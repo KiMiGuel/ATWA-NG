@@ -1058,10 +1058,18 @@ class App:
             self.root.after(100, self._drain_queue)
 
     def _show_update_available(self, result):
+        from ..update_check import apply_update
+
         message = f"ATWA-NG {result.latest} is available (installed: {result.current})."
         if result.release_url:
             message += f"\n\n{result.release_url}"
-        messagebox.showinfo("ATWA-NG update available", message)
+        if messagebox.askyesno("ATWA-NG update available", message + "\n\nInstall now?"):
+            self._queue.put(("log", "Applying update..."))
+            success, msg = apply_update()
+            if success:
+                self._queue.put(("info", f"Update successful: {msg}\nRestart ATWA-NG to use the new version."))
+            else:
+                self._queue.put(("error", f"Update failed: {msg}"))
 
     def _append_log(self, msg: str):
         self.log_text.configure(state=tk.NORMAL)

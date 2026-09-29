@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
@@ -141,3 +142,29 @@ def check_for_update(
         )
     except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         return UpdateResult(current=current, error=str(exc), checked_at=checked_at)
+
+
+def apply_update(timeout: float = 60.0) -> tuple[bool, str]:
+    """Pull the latest ATWA-NG code from GitHub.
+
+    The package is installed in editable mode from the local clone, so
+    `git pull` is the correct update mechanism.
+
+    Returns (success, message). Never raises -- update failures are
+    reported to the caller, not raised past it.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "pull"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"git pull timed out after {timeout}s"
+    except OSError as exc:
+        return False, f"git pull failed: {exc}"
+    if proc.returncode != 0:
+        return False, f"git pull failed: {proc.stderr.strip()}"
+    return True, proc.stdout.strip() or "already up to date"

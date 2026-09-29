@@ -311,6 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("update", help="check GitHub for a newer ATWA-NG release")
     p.add_argument("--timeout", type=float, default=3.0, help="network timeout in seconds (default: 3)")
+    p.add_argument("--apply", action="store_true", help="automatically install the update if one is available")
     p.set_defaults(func=_cmd_update_check)
 
     p = sub.add_parser("crack", help="crack a 22000/cap file with John")
