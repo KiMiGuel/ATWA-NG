@@ -33,7 +33,11 @@ def _run(cmd: list[str]) -> str:
 def detect_interfaces() -> list[str]:
     """Return names of wireless interfaces reported by `iw dev`."""
     out = _run(["iw", "dev"])
-    return re.findall(r"Interface\s+(\S+)", out)
+    ifaces = set(re.findall(r"Interface\s+(\S+)", out))
+    for entry in Path("/sys/class/net").iterdir():
+        if (entry / "wireless").exists() or (entry / "phy80211").exists():
+            ifaces.add(entry.name)
+    return sorted(ifaces)
 
 
 _driver_cache: dict[str, str | None] = {}
