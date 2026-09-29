@@ -1317,11 +1317,15 @@ class App:
         if not iface:
             messagebox.showwarning("ATWA-NG", "Select an adapter first.")
             return
+        # Read here, on the Tk thread: a cross-thread .get() is the same
+        # undefined Tcl call a cross-thread .set() is (the rule stated at
+        # the queue.put below applies to reads too).
+        randomize_mac = self.randomize_mac_var.get()
 
         def work():
             from ..radio import get_mac, set_monitor_mode
 
-            mon, permanent_mac = set_monitor_mode(iface, randomize_mac=self.randomize_mac_var.get())
+            mon, permanent_mac = set_monitor_mode(iface, randomize_mac=randomize_mac)
             mac = get_mac(mon)
             self.mon_iface = mon
             self.own_mac = mac
@@ -1433,6 +1437,16 @@ class App:
 
             try:
                 while self._scanning.is_set() and generation == self._scan_generation:
+                    if self.mon_iface is None:
+                        # Stop Monitor was pressed during the scan: the old
+                        # sniffer dies with the interface and start_sniffer()
+                        # would reopen RawFrameSniffer(iface=None) -- scapy's
+                        # L2listen then silently opens its DEFAULT interface
+                        # (or fails into a 0.5s retry loop), leaving the GUI
+                        # "scanning" while none of this target's frames are
+                        # being seen.
+                        self._log("scan stopped: monitor mode was turned off")
+                        break
                     now = time.monotonic()
                     if now - last_health_check >= HEALTH_CHECK_INTERVAL:
                         last_health_check = now
@@ -1884,7 +1898,17 @@ class App:
         self.channel_lock_var.set(f"🔒 Locked to CH {ap.channel}")
         self.lock_status_label.configure(fg=self.THEME["accent"])
         self._log(f"Locked to channel {ap.channel} for {ap.ssid or '<hidden>'} ({ap.bssid})")
-        if self.mon_iface and "demo" not in self.mon_iface:
+        if self._busy:
+            # A row click while an attack runs must stay passive. Routing it
+            # through _run_bg popped the "Another background operation..."
+            # warning at the operator for doing nothing, and
+            # _start_lock_capture still fired on a channel the refused
+            # ensure_channel work never set -- lock state, lock capture and
+            # radio channel drifted apart. The hopper is paused during busy
+            # and _scan_channels above means it resumes on THIS channel when
+            # the attack ends.
+            self._log(f"channel switch deferred until the running attack ends ({ap.bssid})")
+        elif self.mon_iface and "demo" not in self.mon_iface:
             def work():
                 from ..radio import ensure_channel
 
@@ -2156,8 +2180,9 @@ class App:
             "six vectors (beacon, EAPOL, auth, deauth, CSA, TKIP-MIC) at three "
             "escalating tiers (100/1000/5000 frames), with a 2s settle between "
             "each vector so the effects don't contaminate each other.\n\n"
-            "Multi-vector DoS; runs for about a minute or more. Reports only "
-            "the vectors that produced an observable effect -- not frames sent. "
+            "Multi-vector DoS; runs for about a minute or more. Reports which "
+            "vectors actually transmitted and the effect expected of them "
+            "(from lab measurement) -- not raw frame counts. "
             "Stop Attack aborts it between vectors.",
         ):
             return
@@ -2183,7 +2208,11 @@ class App:
 
         def work():
             result = self._runner().handshake(ap)
-            if "authorized" in result.lower():
+            # Prefix marker, NOT a substring scan of the whole result: the
+            # result embeds the capture path, which contains the
+            # user-controlled SSID -- "Authorized_Users" as an SSID used to
+            # pop a success dialog for a CHALLENGE-only capture.
+            if result.startswith("AUTHORIZED"):
                 self._queue.put(("info", f"AUTHORIZED handshake captured for {ap.bssid} ({ap.ssid or '<hidden>'}).\n{result}"))
             return result
 
@@ -2360,6 +2389,18 @@ class App:
             messagebox.showwarning("ATWA-NG", "Another attack is already running. Use Stop Attack first.")
             self.auto_deauth_var.set(False)
             return
+        if ap.channel is None:
+            # The run thread only knows this after it starts; validated HERE
+            # so the operator gets a real message and the checkbox resets,
+            # instead of a dead thread with the box still on and the log
+            # claiming a start (dissect.channel_of documents live APs with
+            # channel=None).
+            messagebox.showwarning(
+                "ATWA-NG",
+                f"No channel known for {ap.bssid} yet — select the target again once a scan reports its channel.",
+            )
+            self.auto_deauth_var.set(False)
+            return
         from ..attacks.logic import select_client
 
         target = select_client(ap, client)
@@ -2428,7 +2469,6 @@ class App:
         stop_event: threading.Event,
     ):
         assert self.mon_iface is not None
-        assert ap.channel is not None
         import time as _time
 
         from ..attacks.deauth import deauth
@@ -2440,42 +2480,52 @@ class App:
         from ..attacks.logic import best_status, run_deauth_flow, select_client
         from ..storage import target_capture_dir
 
-        if ap.pmf == "required":
-            self._log("auto-deauth: PMF required — deauth would be dropped, skipping round loop entirely")
-            self._queue.put(("auto_deauth_done", None))
-            return
-
-        max_rounds = 6
-        out_dir = target_capture_dir(ap.ssid, ap.bssid)
-        out_file = out_dir / f"autodeauth_{int(_time.time())}.pcap"
-        cap = HandshakeCapture()
-
-        def listen():
-            capture_handshake(
-                self.mon_iface, ap.bssid, channel=ap.channel,
-                timeout=interval * max_rounds + 10, outfile=str(out_file),
-                stop_event=stop_event, progress_fn=self._log, cap=cap,
-            )
-
-        def safe_deauth(iface, bssid, client, count, channel, reason, progress_fn=None):
-            # auto-deauth's loop must survive per-round errors (e.g. a
-            # radio.RadioError from deauth()'s own ensure_monitor_mode()
-            # call if the interface drops mid-run) -- run_deauth_flow
-            # itself doesn't wrap deauth_fn, so this does.
-            try:
-                return deauth(iface, bssid, client=client, count=count, channel=channel, reason=reason, progress_fn=progress_fn, stop_event=stop_event)
-            except Exception as exc:  # noqa: BLE001
-                (progress_fn or self._log)(f"auto-deauth round failed: {exc}")
-                return 0
-
-        # Marks mon_iface busy so the background scan loop (_start_scan)
-        # stops opening its own competing sniff() socket on the same
-        # interface for the duration of this run — this bypasses _run_bg
-        # (toggle checkbox, not a one-shot attack), so it never set
-        # self._busy before, letting the scan loop's per-hop socket churn
-        # starve both the deauth TX and the handshake-capture RX.
+        # busy FIRST, before anything that can fail: a missing channel (the
+        # old assert), a PMF skip or target_capture_dir raising OSError all
+        # used to die OUTSIDE the try, so neither busy=False nor
+        # auto_deauth_done were ever queued -- checkbox stayed on, the log
+        # already claimed a start, and no deauth ever fired.
         self._queue.put(("busy", True))
+        listener: threading.Thread | None = None
+        watch_stop: threading.Event | None = None
         try:
+            if ap.channel is None:
+                self._log(f"auto-deauth: no channel known for {ap.bssid} -- select the target again after a scan")
+                return
+
+            if ap.pmf == "required":
+                self._log("auto-deauth: PMF required — deauth would be dropped, skipping round loop entirely")
+                return
+
+            max_rounds = 6
+            out_dir = target_capture_dir(ap.ssid, ap.bssid)
+            out_file = out_dir / f"autodeauth_{int(_time.time())}.pcap"
+            cap = HandshakeCapture()
+
+            def listen():
+                capture_handshake(
+                    self.mon_iface, ap.bssid, channel=ap.channel,
+                    timeout=interval * max_rounds + 10, outfile=str(out_file),
+                    stop_event=stop_event, progress_fn=self._log, cap=cap,
+                )
+
+            def safe_deauth(iface, bssid, client, count, channel, reason, progress_fn=None):
+                # auto-deauth's loop must survive per-round errors (e.g. a
+                # radio.RadioError from deauth()'s own ensure_monitor_mode()
+                # call if the interface drops mid-run) -- run_deauth_flow
+                # itself doesn't wrap deauth_fn, so this does.
+                try:
+                    return deauth(iface, bssid, client=client, count=count, channel=channel, reason=reason, progress_fn=progress_fn, stop_event=stop_event)
+                except Exception as exc:  # noqa: BLE001
+                    (progress_fn or self._log)(f"auto-deauth round failed: {exc}")
+                    return 0
+
+            # Marks mon_iface busy so the background scan loop (_start_scan)
+            # stops opening its own competing sniff() socket on the same
+            # interface for the duration of this run — this bypasses _run_bg
+            # (toggle checkbox, not a one-shot attack), so it never set
+            # self._busy before, letting the scan loop's per-hop socket churn
+            # starve both the deauth TX and the handshake-capture RX.
             listener = threading.Thread(target=listen, daemon=True)
             listener.start()
             watch_stop = threading.Event()
@@ -2494,8 +2544,16 @@ class App:
                 stop_event=stop_event, progress_fn=self._log,
             )
 
-            listener.join(timeout=5)
-            watch_stop.set()
+            # CHALLENGE-only success does NOT trip capture_handshake's
+            # AUTHORIZED-only stop_filter, so the listener would otherwise
+            # keep its raw socket + PcapWriter open for the rest of the
+            # ~interval*rounds+10 window after join(timeout) gave up --
+            # all while busy was already cleared and the scan loop (or the
+            # next attack) was free to open a competing socket on this
+            # same interface. This run is over; tell the listener now.
+            stop_event.set()
+            if listener is not None:
+                listener.join(timeout=10)
             status = best_status(cap)
             if status is HandshakeStatus.AUTHORIZED:
                 self._log(f"auto-deauth: AUTHORIZED handshake captured -> {out_file}")
@@ -2504,6 +2562,14 @@ class App:
             else:
                 self._log("auto-deauth: stopped or exhausted rounds, no handshake material captured")
         finally:
+            # Same stop/join on EVERY path -- including an exception
+            # mid-flow, which previously skipped watch_stop.set() entirely
+            # (leaked size-watcher) and left the listener running.
+            stop_event.set()
+            if listener is not None:
+                listener.join(timeout=10)
+            if watch_stop is not None:
+                watch_stop.set()
             self._queue.put(("busy", False))
             self._queue.put(("auto_deauth_done", None))
             self._auto_deauth_client = None
@@ -2721,15 +2787,19 @@ class App:
     # ------------------------------------------------------------------
     # Captures tab
     # ------------------------------------------------------------------
-    def _capture_files(self):
+    def _capture_files(self, root: str):
+        """List capture files under ``root`` (a directory). The caller
+        resolves capture_dir_var ON THE Tk THREAD and passes the value in:
+        reading a Tk var from this function's usual worker thread is the
+        same cross-thread Tcl access a .set() would be."""
         from pathlib import Path
 
-        root = Path(self.capture_dir_var.get())
-        if not root.exists():
+        root_path = Path(root)
+        if not root_path.exists():
             return []
         suffixes = {".cap", ".pcap", ".pcapng", ".22000"}
         files = []
-        for path in root.rglob("*"):
+        for path in root_path.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in suffixes:
                 continue
             try:
@@ -2748,10 +2818,11 @@ class App:
         if self._captures_refreshing:
             return
         self._captures_refreshing = True
+        capture_root = self.capture_dir_var.get()  # Tk-thread read, value passed down
 
         def work():
             try:
-                files = self._capture_files()
+                files = self._capture_files(capture_root)
             except Exception:  # noqa: BLE001 - never let a bad dir kill the thread silently
                 files = []
             self._queue.put(("captures_ready", files))
@@ -2976,31 +3047,57 @@ class App:
                 for error in repair_errors:
                     lines.append(f"Repair failed: {error}")
 
-            deleted, delete_errors = [], []
-            for p in dict.fromkeys(delete_candidates):
+            # NO unlink here. Deletion is a separate, reviewed step (see
+            # _on_inspect_all_done): "no PMKID/handshake material" is a
+            # WPA-only lens -- a WEP capture, a probe survey or a beacon
+            # set reads exactly the same way -- and this button is named
+            # "Inspect", not "Delete". Auto-unlinking here erased real
+            # evidence before the result dialog even opened.
+            return (lines, repaired, list(dict.fromkeys(delete_candidates)))
+
+        self._run_capture_task("Inspect all captures", work, result_kind="inspect_all_done")
+
+    def _on_inspect_all_done(self, payload):
+        lines, repaired, candidates = payload
+        self._show_scroll_dialog("Inspect All", "\n".join(lines))
+        if candidates:
+            names = "\n".join(Path(p).name for p in candidates)
+            choice = self._show_scroll_dialog(
+                "Delete captures without WPA material?",
+                f"{len(candidates)} file(s) contain no PMKID/handshake material:\n\n"
+                f"{names}\n\n"
+                "Warning: this test only understands WPA -- WEP captures, probe "
+                "surveys and beacon sets look the same. Only delete files you do "
+                "not need. This cannot be undone.",
+                buttons=("Delete", "Keep"),
+            )
+            if choice == "Delete":
+                self._delete_unusable_captures(candidates)
+        if repaired:
+            self._refresh_captures()
+
+    def _delete_unusable_captures(self, paths: list[str]) -> None:
+        """Second half of Inspect All: unlink only what the operator just
+        reviewed and explicitly confirmed."""
+
+        def work():
+            deleted, errors = [], []
+            for p in dict.fromkeys(paths):
                 try:
                     Path(p).unlink()
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
-                    delete_errors.append(f"{Path(p).name}: {exc}")
+                    errors.append(f"{Path(p).name}: {exc}")
                 else:
                     deleted.append(p)
-            if deleted or delete_errors:
-                lines.append(f"Cleanup step: deleted {len(deleted)} unusable file(s)")
-            for error in delete_errors:
-                lines.append(f"Delete failed: {error}")
-            return (lines, repaired, deleted)
+            for error in errors:
+                self._progress_fn(f"delete failed: {error}")
+            self._progress_fn(f"deleted {len(deleted)} capture(s), {len(errors)} error(s)")
+            self._queue.put(("ui", self._refresh_captures))
+            return f"{len(deleted)} unusable capture(s) deleted"
 
-        self._run_capture_task("Inspect all captures", work, result_kind="inspect_all_done")
-
-    def _on_inspect_all_done(self, payload):
-        lines, repaired, deleted = payload
-        self._show_scroll_dialog("Inspect All", "\n".join(lines))
-        if repaired or deleted:
-            self._refresh_captures()
-        if deleted:
-            self.status_var.set(f"Deleted {len(deleted)} unusable capture(s)")
+        self._run_capture_task("Delete unusable captures", work)
 
     def _capture_convert(self):
         paths = self._selected_capture_paths()
@@ -3190,6 +3287,10 @@ class App:
         from ..crack.john import JohnCracker, JohnUnavailableError
         from ..storage import bssids_from_paths, unique_path
 
+        # Tk-thread reads; the worker below must not touch Tk vars.
+        capture_root = self.capture_dir_var.get()
+        john_rules = self.john_rules_var.get()
+
         def work():
             from pathlib import Path
 
@@ -3205,7 +3306,7 @@ class App:
                 merged_lines = merge_22000_files(all_paths)
                 bssids = bssids_from_paths(all_paths)
                 bssid_label = next(iter(bssids)).replace(":", "-") if len(bssids) == 1 else "unknown-bssid"
-                output_dir = Path(self.capture_dir_var.get())
+                output_dir = Path(capture_root)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 hashfile = str(unique_path(output_dir / f"merged_{bssid_label}.22000"))
                 Path(hashfile).write_text("\n".join(merged_lines) + "\n")
@@ -3215,7 +3316,7 @@ class App:
                 return str(exc)
             self._crack_proc_holder.clear()
             results = cracker.run_streaming(hashfile, wordlist, self._progress_fn, self._crack_proc_holder,
-                                             rules=self.john_rules_var.get())
+                                             rules=john_rules)
             if not results:
                 return "no passwords recovered"
             self._queue.put(("info", "\n".join(f"{k}: {v}" for k, v in results.items())))
@@ -3317,10 +3418,28 @@ class App:
         """Preview then run housekeeping.cleanup_handshakes — merges each
         target's captures/hashes down to one file, then all targets into
         one master, deleting originals only after each merge is written.
-        Destructive, so this always previews (dry_run) before asking."""
+        Destructive, so this always previews (dry_run) before asking.
+        The dry-run plan rglobs the ENTIRE capture tree — the exact walk
+        that used to freeze the GUI when _refresh_captures ran it on the Tk
+        thread (fix documented there), so the plan runs off-thread here
+        too and only the dialog is queued back to the Tk thread."""
         from ..housekeeping import cleanup_handshakes
 
-        plan = cleanup_handshakes(dry_run=True, root=self.capture_dir_var.get())
+        capture_root = self.capture_dir_var.get()  # Tk-thread read
+
+        def plan_and_confirm():
+            try:
+                plan = cleanup_handshakes(dry_run=True, root=capture_root)
+            except OSError as exc:
+                self._queue.put(("error", f"cleanup plan failed: {exc}"))
+                return
+            self._queue.put(("ui", lambda: self._confirm_cleanup(plan, capture_root)))
+
+        threading.Thread(target=plan_and_confirm, daemon=True).start()
+
+    def _confirm_cleanup(self, plan, capture_root: str) -> None:
+        from ..housekeeping import cleanup_handshakes
+
         if not plan.targets:
             messagebox.showinfo("ATWA-NG", "No target folders with captures to clean up.")
             return
@@ -3341,7 +3460,7 @@ class App:
             return
 
         def work():
-            report = cleanup_handshakes(dry_run=False, root=self.capture_dir_var.get())
+            report = cleanup_handshakes(dry_run=False, root=capture_root)
             self._queue.put(("info", report.summary()))
             self._queue.put(("ui", self._refresh_captures))
             return f"{len(report.deleted)} file(s) deleted, {len(report.removed_dirs)} folder(s) removed"
@@ -3510,6 +3629,28 @@ class App:
             self._log(f"could not save settings: {exc}")
 
     def _on_close(self):
+        # Stop running work FIRST, before any radio teardown:
+        # - auto-deauth listens to ITS OWN stop event (not self._stop_event),
+        #   so it kept firing deauth bursts during set_managed_mode below and
+        #   could re-flip the adapter to monitor AFTER it was restored --
+        #   leaving the radio in the wrong state on exit;
+        # - a crack subprocess runs in its own session (start_new_session)
+        #   and nothing else signals it on shutdown, orphaning it on CPU.
+        self._stop_attack()
+        crack_proc = self._crack_proc_holder.get("proc")
+        if crack_proc is not None and crack_proc.poll() is None:
+            # _stop_attack escalates in a daemon thread with a 3s grace --
+            # but the process exits right after root.destroy(), killing that
+            # thread before SIGKILL. Finish it synchronously here; grace is
+            # short because we are closing.
+            from ..crack.john import terminate_tree
+
+            try:
+                terminate_tree(crack_proc, grace=1.0)
+            except Exception:  # noqa: BLE001, S110 - shutdown cleanup is best-effort
+                pass
+        if self._auto_deauth_thread is not None:
+            self._auto_deauth_thread.join(timeout=2.0)
         self._scanning.clear()
         self._stop_event.set()
         self._stop_lock_capture()

@@ -33,8 +33,24 @@ def _cmd_gui(args) -> int:
     """ATWA-NG's own desktop GUI (src/atwa/gui/). All its imports are
     relative (`from ..radio import ...` etc.) pointing at this
     package's own modules — see gui/app.py."""
+    try:
+        import tkinter as tk
+    except ImportError:
+        # Headless/minimal installs often ship Python without python3-tk.
+        print("error: tkinter is not installed (install python3-tk), or use the CLI subcommands",
+              file=sys.stderr)
+        return 1
     from ..gui.app import main as gui_main
     from ..gui.elevate import ensure_root
 
     ensure_root(demo=args.demo)  # no-op if already root or --demo; else re-execs under sudo and exits
-    return gui_main(demo=args.demo)
+    try:
+        return gui_main(demo=args.demo)
+    except tk.TclError as exc:
+        # `atwa gui` over SSH / in a container: tk.Tk() raises "no display
+        # name and no $DISPLAY" -- neither RadioError nor OSError, so the
+        # top-level handler let a raw traceback through on the exact
+        # headless box the CLI exists to serve.
+        print(f"error: GUI unavailable ({exc}) -- no display? Use the CLI subcommands or X forwarding",
+              file=sys.stderr)
+        return 1

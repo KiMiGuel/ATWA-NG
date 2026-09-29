@@ -115,6 +115,12 @@ class OmniOrchestrator:
         self.iface = iface
         self.cracker = cracker
         self.capture_dir = Path(capture_dir)
+        # Create it HERE: handed to PcapWriter deep inside a listener
+        # thread, a missing dir raised FileNotFoundError where nobody could
+        # see it and the chain still ran every deauth round against a
+        # target it could not record -- reporting "no EAPOL captured" for
+        # what was really an unwritable-directory problem.
+        self.capture_dir.mkdir(parents=True, exist_ok=True)
         # Shared with the caller's own Stop button (e.g. App._crack_proc_holder)
         # so a live john/aircrack-ng subprocess launched by _stage_crack can
         # actually be terminated from outside -- without this, Stop Attack
@@ -434,20 +440,32 @@ class OmniOrchestrator:
                 stop_event=self._stop, progress_fn=self._log, cap=live_cap,
             )
 
-        listener = threading.Thread(target=run_capture)
+        # daemon so an exception (RadioError from a dropped adapter, or
+        # Ctrl-C) that kills the chain can never leave the interpreter
+        # joining a listener that still has ~100s of listen window left --
+        # the CLI used to print its error and then hang for up to 2 minutes.
+        listener = threading.Thread(target=run_capture, daemon=True)
         listener.start()
         time.sleep(self._listener_settle)  # let the sniffer settle before the first burst
 
         client = select_client(ap)
-        run_deauth_flow(
-            self._deauth_fn, self.iface, ap, client, live_cap,
-            max_rounds=self.handshake_max_rounds,
-            round_interval=self.handshake_round_interval,
-            burst_size=self.handshake_burst_size,
-            min_status=HandshakeStatus.CHALLENGE,
-            stop_event=self._stop,
-            progress_fn=self._log,
-        )
+        try:
+            run_deauth_flow(
+                self._deauth_fn, self.iface, ap, client, live_cap,
+                max_rounds=self.handshake_max_rounds,
+                round_interval=self.handshake_round_interval,
+                burst_size=self.handshake_burst_size,
+                min_status=HandshakeStatus.CHALLENGE,
+                stop_event=self._stop,
+                progress_fn=self._log,
+            )
+        except BaseException:
+            # ...and end the listener's window NOW rather than letting it
+            # hold a raw socket on the shared monitor iface for the rest of
+            # the window (GUI case: "Ready" while a stale sniffer still
+            # listens). self._stop IS this listener's stop_event.
+            self._stop.set()
+            raise
 
         # Join on the FULL listen window, not just the deauth round budget --
         # the listener may still be running and hasn't written result["cap"]
@@ -552,6 +570,14 @@ class OmniOrchestrator:
 
     def _stage_crack(self, report: OmniReport, wordlist: str | None) -> None:
         """Batch dedupe collected material into one file and run the cracker."""
+        if self._stop.is_set():
+            # Stop Attack pressed between capture and crack: launching a
+            # fresh john HERE would start a process that did not exist when
+            # Stop was clicked (the stop's termination pass already ran
+            # against nothing), so the GUI stayed "Running: OMNI" for the
+            # whole crack despite the stop.
+            report.stages.append(StageReport("crack", StageResult.SKIPPED, "stopped"))
+            return
         lines: list[str] = []
         for item in report.hash_lines:
             if item.endswith(".pcap"):

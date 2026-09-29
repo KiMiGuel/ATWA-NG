@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from ..crack.convert import cap_to_22000
-from ..crack.john import JohnCracker
+from ..crack.john import JohnCracker, JohnParseError, JohnUnavailableError
 from ..storage import record_cracked_password
 from . import CAPCRACK_BIN, EAPOLDUMP_BIN, _run_bounded
 
@@ -16,8 +16,16 @@ def _cmd_crack(args) -> int:
     if hashfile.lower().endswith((".cap", ".pcap", ".pcapng")):
         hashfile = cap_to_22000(hashfile, hashfile + ".22000")
         print(f"converted to {hashfile}")
-    results = JohnCracker().run_streaming(hashfile, args.wordlist, lambda line: print(line, end=""), {},
-                                           rules=getattr(args, "rules", ""))
+    try:
+        results = JohnCracker().run_streaming(hashfile, args.wordlist, lambda line: print(line, end=""), {},
+                                               rules=getattr(args, "rules", ""))
+    except (JohnUnavailableError, JohnParseError) as exc:
+        # Both messages are written FOR the operator ("john not found in
+        # PATH", "0 hashes loaded -- not a wrong wordlist. Try aircrack-ng
+        # instead.") -- john is an optional dependency, so dying with a
+        # raw RuntimeError traceback was the wrong UX on a box without it.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     for hash_id, password in results.items():
         print(f"{hash_id}: {password}")
         record_cracked_password(Path(args.hashfile).parent, "john", hash_id, password)
