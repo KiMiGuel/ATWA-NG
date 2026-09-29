@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
@@ -144,11 +145,12 @@ def check_for_update(
         return UpdateResult(current=current, error=str(exc), checked_at=checked_at)
 
 
-def apply_update(timeout: float = 60.0) -> tuple[bool, str]:
-    """Pull the latest ATWA-NG code from GitHub.
+def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
+    """Pull the latest ATWA-NG code from GitHub and re-install.
 
     The package is installed in editable mode from the local clone, so
-    `git pull` is the correct update mechanism.
+    `git pull` is the correct update mechanism. After pulling, re-install
+    so the installed package metadata (version, entry points) refreshes.
 
     Returns (success, message). Never raises -- update failures are
     reported to the caller, not raised past it.
@@ -167,4 +169,20 @@ def apply_update(timeout: float = 60.0) -> tuple[bool, str]:
         return False, f"git pull failed: {exc}"
     if proc.returncode != 0:
         return False, f"git pull failed: {proc.stderr.strip()}"
-    return True, proc.stdout.strip() or "already up to date"
+    pull_msg = proc.stdout.strip() or "already up to date"
+    # Re-install so the installed package metadata refreshes.
+    try:
+        reinstall = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"pull succeeded ({pull_msg}) but pip reinstall timed out after {timeout}s"
+    except OSError as exc:
+        return False, f"pull succeeded ({pull_msg}) but pip reinstall failed: {exc}"
+    if reinstall.returncode != 0:
+        return False, f"pull succeeded ({pull_msg}) but pip reinstall failed: {reinstall.stderr.strip()}"
+    return True, f"{pull_msg}; reinstalled successfully"
