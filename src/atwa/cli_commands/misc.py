@@ -17,17 +17,14 @@ def _cmd_update_check(args) -> int:
         print(f"ATWA-NG update available: {result.latest} (installed: {result.current})")
         if result.release_url:
             print(result.release_url)
-        if args.apply:
-            print("Applying update...")
-            ok, msg = apply_update()
-            if ok:
-                print(f"Update successful: {msg}")
-                print("Restart ATWA-NG to use the new version.")
-                return 0
-            print(f"Update failed: {msg}", file=sys.stderr)
-            return 1
-        print("Run 'atwa update --apply' to install it.")
-        return 10
+        print("Applying update...")
+        ok, msg = apply_update()
+        if ok:
+            print(f"Update successful: {msg}")
+            print("Restart ATWA-NG to use the new version.")
+            return 0
+        print(f"Update failed: {msg}", file=sys.stderr)
+        return 1
     print(f"ATWA-NG is up to date ({result.current})")
     return 0
 
