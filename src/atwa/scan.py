@@ -27,6 +27,7 @@ from .radio import (
     CHANNELS_5GHZ,
     CHANNELS_24GHZ,
     ChannelHopper,
+    RadioError,
     random_locally_administered_mac,
 )
 from .secure import owe_transition_info, security_profile, wps_profile
@@ -57,6 +58,16 @@ def _is_real_client(addr: str | None, bssid: str | None, own_mac: str | None) ->
     if not addr or addr == BROADCAST:
         return False
     lowered = addr.lower()
+    # Group (I/G) bit: every 802.11 group address -- IPv6 33:33:*, mDNS/
+    # SSDP 01:00:5e:*, STP, the WPS/P2P address below -- is a multicast
+    # target, never an associated station. Without this, an AP relaying
+    # multicast gained phantom "clients" and targeted deauth aimed at one
+    # silently disassociated nobody.
+    try:
+        if int(lowered.split(":", 1)[0], 16) & 1:
+            return False
+    except ValueError:
+        return False  # not a MAC at all
     if lowered in RESERVED_CLIENT_MACS or lowered.startswith("01:80:c2:"):
         return False
     if bssid and lowered == bssid.lower():
@@ -231,7 +242,15 @@ def process_packet(
             if ap.signal is None or frame.signal_dbm > ap.signal:
                 ap.signal = frame.signal_dbm
         return frame
-    # Attribute client addresses to their AP via addr3 (BSSID) when known.
+    # Attribute client addresses to their AP. The BSSID's address slot
+    # depends on the DS bits (IEEE 802.11 addr roles) -- addr3 is the
+    # BSSID only when ToDS=FromDS=0:
+    #   to_DS   -> addr1=BSSID, addr2=SA (the client), addr3=DA (remote)
+    #   from_DS -> addr2=BSSID, addr1=DA (the client), addr3=SA (remote)
+    # Single-DS frames used to take addr3 as the BSSID unconditionally, so
+    # on bridged/enterprise networks (AP is a pure L2 bridge, gateway
+    # elsewhere) addr3 held the remote wired host's MAC -- never in
+    # result.aps -- and the actual client was never recorded.
     frame_bssid: str | None = frame.addr3
     client_candidates: tuple[str | None, ...] = (frame.addr1, frame.addr2)
     if frame.to_ds and frame.from_ds:
@@ -244,6 +263,12 @@ def process_packet(
         # radio's own MAC as a "client".
         frame_bssid = frame.addr1 if frame.addr1 in result.aps else frame.addr2 if frame.addr2 in result.aps else None
         client_candidates = (frame.addr4,) if frame.addr4 else ()
+    elif frame.to_ds:
+        frame_bssid = frame.addr1
+        client_candidates = (frame.addr2,)
+    elif frame.from_ds:
+        frame_bssid = frame.addr2
+        client_candidates = (frame.addr1,)
     if frame_bssid and frame_bssid in result.aps:
         ap = result.aps[frame_bssid]
         dbm = frame.signal_dbm
@@ -376,6 +401,8 @@ def scan(
         probe_interval: float = active_probe_interval or 0.0
         next_probe = time.monotonic() + probe_interval if probe_interval else None
         while time.monotonic() < deadline:
+            if sniffer.exception is not None:
+                break  # socket died mid-scan -- stop hopping uselessly
             hopper.hop()
             if next_probe is not None and time.monotonic() >= next_probe:
                 probe = craft_probe_req(BROADCAST, random_locally_administered_mac())
@@ -383,4 +410,17 @@ def scan(
                 next_probe = time.monotonic() + probe_interval
     finally:
         sniffer.stop()
+        # Join before handing `result` to the caller: after stop() the
+        # capture thread can still run one more prn() pass (bounded by the
+        # 0.5s socket timeout), and a late insert racing the caller's
+        # iteration raises "dictionary changed size during iteration".
+        if sniffer.thread is not None:
+            sniffer.thread.join(timeout=2.0)
+    if sniffer.exception is not None:
+        # A dead/never-opened raw socket yields an empty or partial result
+        # that looks exactly like "no APs here" -- and the CLI's follow-up
+        # diagnosis ("is the iface in monitor mode?") is plain wrong. The
+        # GUI restarts its own sniffer on this; the CLI path must not
+        # silently under-report.
+        raise RadioError(f"scan capture failed: {sniffer.exception}")
     return result

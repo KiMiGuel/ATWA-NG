@@ -42,8 +42,10 @@ import struct
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-import dpkt.radiotap
-
+# dpkt is deliberately NOT imported here: it is only needed on the rare
+# fallback path below, and importing the package costs ~42ms at startup
+# (dpkt/__init__ eagerly pulls its whole protocol zoo). Deferred to the
+# first frame the fast path actually declines -- measured, see git history.
 TYPE_MGMT = 0
 TYPE_CTRL = 1
 TYPE_DATA = 2
@@ -73,7 +75,11 @@ _RADIOTAP_FIELDS = (
     (12, 1, 1),  # dB antenna signal
     (13, 1, 1),  # dB antenna noise
     (14, 2, 2),  # RX flags
-    (15, 4, 8),  # ChannelPlus
+    (15, 2, 2),  # TX flags (modern radiotap; the draft-era 8-byte
+                 # "Channel Plus" this slot used to assume was removed
+                 # from the spec and never ships -- reading it as 8 bytes
+                 # made every Channel+TX-flags header fail the final
+                 # offset check and fall back to dpkt)
 )
 _RADIOTAP_KNOWN_MASK = (1 << 16) - 1
 
@@ -234,20 +240,25 @@ def dissect(raw: bytes) -> Frame | None:
         if fast_header is not None:
             mac_start, signal_dbm, channel_hz = fast_header
         else:
+            import dpkt.radiotap  # deferred: ~42ms, see the note at this file's imports
+
             rtap = dpkt.radiotap.Radiotap(raw)
             mac_start = rtap.length
             signal_dbm = rtap.ant_sig.db if getattr(rtap, "ant_sig_present", False) else None
-            # dpkt exposes the channel as a (freq, flags, channel) tuple on
-            # different versions, so read it defensively and only trust it
-            # when a usable MHz frequency is present.
+            # dpkt names the parsed field `channel` -- a Channel struct with
+            # `.freq` in MHz (`chanplus` for the draft-era variant); `ch` /
+            # `ch_freq` do not exist in any dpkt release (verified against
+            # the installed 1.9.8), so this branch used to read them with
+            # getattr and ALWAYS fall through to channel=None -- silently
+            # disabling channel-of / AP channel-lock on any header the fast
+            # path declined.
             channel_hz = None
-            ch = getattr(rtap, "ch", None)
-            if isinstance(ch, (tuple, list)) and ch:
-                freq = ch[0]
-                if isinstance(freq, int) and freq:
-                    channel_hz = freq
-            elif isinstance(getattr(rtap, "ch_freq", None), int):
-                channel_hz = rtap.ch_freq or None
+            field = getattr(rtap, "channel", None)
+            if field is None:
+                field = getattr(rtap, "chanplus", None)
+            freq = getattr(field, "freq", None)
+            if isinstance(freq, int) and _plausible_hz(freq):
+                channel_hz = freq
     except Exception:  # noqa: BLE001 - any malformed radiotap header means "skip this frame"
         return None
 

@@ -25,6 +25,12 @@ def _run(cmd: list[str]) -> str:
         proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15, check=False)
     except subprocess.TimeoutExpired:
         raise RadioError(f"{cmd[0]} timed out after 15s")
+    except OSError as exc:
+        # Missing binary (FileNotFoundError) and friends: every caller
+        # degrades on RadioError ("driver = None", "skip this channel"),
+        # but nothing ever caught the raw OSError -- a box without
+        # ethtool/udevadm crashed those graceful paths with a traceback.
+        raise RadioError(f"{cmd[0]} failed: {exc}") from exc
     if proc.returncode != 0:
         raise RadioError(f"{cmd[0]} failed: {proc.stderr.strip()}")
     return proc.stdout
@@ -510,7 +516,7 @@ def get_allowed_channels(iface: str, requested: list[int] | None = None) -> list
     ``iw`` frequency rows include ``(disabled)``; DFS and radar-detection
     rows remain valid for monitor receive and are intentionally retained.
     """
-    candidates = list(requested) if requested is not None else list(ALL_CHANNELS) if "ALL_CHANNELS" in globals() else list(CHANNELS_24GHZ) + list(CHANNELS_5GHZ)
+    candidates = list(requested) if requested is not None else list(ALL_CHANNELS)
     phy = _phy_for_iface(iface)
     if phy is None:
         return candidates
