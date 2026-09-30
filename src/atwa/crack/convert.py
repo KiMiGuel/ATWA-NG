@@ -91,8 +91,15 @@ def hc22000_to_john(hashfile: str, outfile: str) -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"hcxhashtool failed: {proc.stderr.strip()}")
     if not Path(outfile).exists() or Path(outfile).stat().st_size == 0:
+        # hcxhashtool exits 0 even when it could not open the output file
+        # ("error opening file ...: Permission denied" lands on stdout), so
+        # an empty result is not proof of an empty hashfile -- surface what
+        # it actually said before blaming the capture.
+        detail = proc.stdout.strip()
         raise RuntimeError(
-            f"hcxhashtool found no valid EAPOL/PMKID handshake in {hashfile} to convert for John"
+            f"hcxhashtool produced no John output for {hashfile}"
+            + (f" — hcxhashtool said: {detail}" if detail else
+               " (no valid EAPOL/PMKID handshake to convert)")
         )
     return outfile
 

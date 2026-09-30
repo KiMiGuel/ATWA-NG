@@ -106,6 +106,10 @@ def _cmd_wps_recon(args) -> int:
 
 
 def _cmd_eapol_hunt(args) -> int:
+    if not EAPOLHUNTER_BIN.exists():
+        print(f"error: {EAPOLHUNTER_BIN} not found -- vendored eapol_hunter missing "
+              "(expected in the ATWA-NG repo checkout)", file=sys.stderr)
+        return 1
     cmd = [_python_for_scripts(), str(EAPOLHUNTER_BIN), args.iface]
     if args.bssid:
         cmd.append(args.bssid)

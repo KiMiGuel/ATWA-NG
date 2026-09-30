@@ -15,11 +15,11 @@
 <h3 align="center">One WiFi tool. Two radios. Zero mercy for a weak password.</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.5.6-%2300c8ff?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.6.1-%2300c8ff?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
-  <img src="https://img.shields.io/badge/subcommands-24-00c8ff?style=flat-square" alt="24 CLI subcommands">
-  <img src="https://img.shields.io/badge/tests-431%20passing-success?style=flat-square" alt="431 tests">
+  <img src="https://img.shields.io/badge/subcommands-23-00c8ff?style=flat-square" alt="23 CLI subcommands">
+  <img src="https://img.shields.io/badge/tests-471%20passing-success?style=flat-square" alt="471 tests">
 </p>
 
 <p align="center">
@@ -98,13 +98,15 @@ No manual format juggling. Point it at a capture and let it run.
 | 💾 | **Results land** | Cracked password on screen and in `creds.json` beside the capture. |
 
 ```bash
-atwa crack-cap capture.cap --wordlist rockyou.txt
-atwa crack hashes.22000 --wordlist rockyou.txt
+atwa crack-cap capture.cap rockyou.txt
+atwa crack hashes.22000 rockyou.txt
 ```
 
 ---
 
 ## Install
+
+Linux (Kali recommended), Python 3.10+, and a WiFi adapter that supports monitor mode and packet injection. With that:
 
 ```bash
 git clone https://github.com/KiMiGuel/ATWA-NG.git
@@ -113,42 +115,49 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-**Cracking needs John the Ripper *jumbo*** — the `wpapsk` format isn't in the community build.
+That gives you the `atwa` command. Two things worth installing alongside, both optional but you'll want them:
+
+**John the Ripper jumbo** (for `atwa crack`) — the `wpapsk` format isn't in the community build.
 
 ```bash
 sudo apt install john
 john --list=formats | grep -i wpapsk    # verify
-```
 
-Missing it? Build jumbo into `~/john` and ATWA-NG finds it automatically:
-
-```bash
+# missing it? build jumbo into ~/john and ATWA-NG finds it on its own:
 git clone https://github.com/openwall/john -b bleeding-jumbo ~/john
 cd ~/john/src && ./configure && make -s clean && make -sj$(nproc)
 ```
+
+**hcxtools** (for capture conversion): `sudo apt install hcxtools`
+
+There's a full dependency checklist in [USAGE.md](./USAGE.md), and the GUI can audit your system for you — **Help → Check Dependencies**.
 
 ---
 
 ## Use it
 
+The GUI is the easiest way in — it handles monitor mode and elevation for you:
+
 ```bash
-atwa gui                      # the full experience (needs root)
-atwa scan wlan0               # or drive it from the terminal
-atwa smart wlan0 <bssid>
-atwa omni wlan0 <bssid> --wordlist rockyou.txt
+atwa gui
 ```
+
+**Adapter → Start Monitor** puts the adapter in monitor mode. **Start Scanning** fills the AP list. **Click a target** to lock its channel and watch the signal graph. The **Attacks** panel below has everything: deauth, PMKID, handshake, SMART/OMNI/CHAOS, WEP, WPS, floods, rogue-APs. A second adapter unlocks PINCER and the rogue-AP workflows. The **Captures** tab is where you inspect, convert, fix, merge and crack what you caught.
+
+Driving it from the terminal works too. The two things to know: CLI commands need root, and the interface has to be in monitor mode first (the error tells you the exact `iw` command if it isn't):
+
+```bash
+sudo iw dev wlan0 set monitor        # once per session
+sudo atwa scan wlan0                 # see what's around
+sudo atwa smart wlan0 <bssid>        # quick attack: PMKID, then deauth+handshake
+sudo atwa omni wlan0 <bssid> --wordlist rockyou.txt   # the full chain
+```
+
+Everything you capture lands in `~/atwa-hs/<SSID>_<BSSID>/`, and cracked passwords are saved beside the capture in `creds.json` — plus on screen.
 
 <p align="center">
   <img src="docs/brand/gui-screenshot.png" alt="ATWA-NG GUI — adapter selection, scan list, target panel, attacks and log" width="820">
 </p>
-
-- **Adapter → Start Monitor** puts it in monitor mode. A second adapter unlocks PINCER and the rogue-AP workflows.
-- **Start Scanning** → live AP list.
-- **Click a target** → locks the channel, starts the signal graph, discovers clients.
-- **Attacks** → deauth, PMKID, handshake, SMART/OMNI/CHAOS, WEP, WPS, floods, rogue-APs.
-- **Captures** → Inspect, Convert, Fix, Merge, Crack — one panel.
-
-**Requirements:** Linux, Python 3.10+, an adapter with monitor mode + injection. PINCER needs two detected Alfa adapters.
 
 Full CLI reference and dependency checklist: [USAGE.md](./USAGE.md).
 
@@ -156,7 +165,7 @@ Full CLI reference and dependency checklist: [USAGE.md](./USAGE.md).
 
 Need a wordlist? [Indepenlist-MX-wordlist](https://github.com/KiMiGuel/Indepenlist-MX-wordlist) — Mexican-focused.
 
-ATWA-NG checks GitHub Releases for updates — the GUI does it at startup without blocking, or run `atwa update-check`.
+ATWA-NG checks GitHub Releases for updates — the GUI does it at startup without blocking, or run `atwa update`.
 
 ---
 

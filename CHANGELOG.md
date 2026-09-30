@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.6.1] - 2026-09-29
+
+### Fixed
+- `deauth()` recovers from the USB-dongle socket reset (ENETDOWN/ENODEV right
+  after a transmitted frame) by closing, reopening and retrying the frame
+  instead of aborting the whole burst after the first send.
+- `deauth()` no longer toggles active monitor off when the burst ends. The
+  toggle is an interface down/up cycle that tore down every other socket on
+  the interface (e.g. the GUI's live capture), and PINCER-style per-round
+  deauth calls flapped it twice per round. It is still requested once up
+  front; leaving it on is harmless.
+- Directed deauth counts a round's AP->client frame even when the client->AP
+  send dies mid-round (the returned frame total no longer undercounts).
+- GUI sudo relaunch uses cached sudo credentials when present (no password
+  dialog) and passes the editable-install path through to the root re-exec
+  inline, so root actually finds the `atwa` package.
+- `atwa crack` works for the unprivileged user again: the hcxhashtool
+  `--john=` conversion now writes to the system temp dir instead of next
+  to the hashfile (captures under `~/atwa-hs` are root-owned after any
+  sudo run, and hcxhashtool exits 0 even when it cannot open its output
+  file there, so the failure surfaced as a misleading "no valid
+  handshake" error), and John's `--session` .rec/.log files moved from
+  the root-owned `~/atwa-hs/.john-sessions` to the user cache dir
+  (`$XDG_CACHE_HOME/atwa/john-sessions`). A conversion that still
+  produces no output now reports what hcxhashtool actually said.
+- `verify-handshake` and `eapol-hunt` fail with a clear error when the
+  vendored helper script is missing instead of crashing with a raw
+  FileNotFoundError traceback.
+- `mypy src/` is clean again (theme style annotation, scapy override); plain
+  `pytest` from the repo root no longer descends into `vendor/`.
+
 ## [2.6.0] - 2026-09-29
 
 ### Fixed

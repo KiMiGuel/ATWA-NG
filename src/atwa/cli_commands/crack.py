@@ -56,6 +56,10 @@ def _cmd_verify_handshake(args) -> int:
     if args.frames and not args.mac:
         print("error: --frames requires --mac", file=sys.stderr)
         return 2
+    if not EAPOLDUMP_BIN.exists():
+        print(f"error: {EAPOLDUMP_BIN} not found -- vendored eapol_dump missing "
+              "(expected in the ATWA-NG repo checkout)", file=sys.stderr)
+        return 1
     cmd = [str(EAPOLDUMP_BIN), args.capfile]
     if args.mac:
         cmd.append(args.mac)

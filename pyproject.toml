@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atwa"
-version = "2.6.0"
+version = "2.6.1"
 description = "ATWA-NG: native WiFi security auditing engine with vendored scanning/cracking binaries, self-contained"
 requires-python = ">=3.10"
 # Self-contained as of 2026-08-25 — no runtime dependency on n2ng2.
@@ -23,16 +23,39 @@ where = ["src"]
 [tool.setuptools.package-data]
 atwa = ["gui/assets/*.png"]
 
+# Keep `pytest` (run from the repo root) scoped to tests/. Without this, the
+# default collection walks the entire tree and imports the aircrack-ng
+# `setup.py` scripts under vendor/ (they call distutils `setup()` at import
+# time), which aborts collection and reports thousands of spurious errors
+# instead of the real suite. `vendor/` must never be descended into.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "vendor",
+    ".venv",
+    "node_modules",
+    "docs",
+    "src",
+    "graphify-out",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+]
+
 # Added 2026-09-25. mypy previously ran on pure defaults, which reported
-# three errors that are not defects in this code: `dpkt` and `ttkthemes`
-# ship no type information and no stubs exist for either, so mypy emits
+# errors that are not defects in this code: `dpkt`, `ttkthemes` and `scapy`
+# ship no type information and no stubs exist for any of them, so mypy emits
 # import-untyped / library-stubs-not-installed for them. Those are
 # environmental, and leaving them in meant "mypy is not clean" could not
-# be distinguished from "mypy found a real problem". Only these two modules
+# be distinguished from "mypy found a real problem". Only these modules
 # are exempted -- everything else stays on default strictness, so this does
-# not weaken checking of atwa's own code.
+# not weaken checking of atwa's own code. `scapy.*` is included because
+# scapy's submodules (layers.dot11, sendrecv, packet, utils, ...) are
+# loadable at runtime but not statically resolvable by mypy on some installs;
+# the override is a no-op wherever scapy does resolve.
 [[tool.mypy.overrides]]
-module = ["dpkt", "dpkt.*", "ttkthemes", "ttkthemes.*"]
+module = ["dpkt", "dpkt.*", "ttkthemes", "ttkthemes.*", "scapy", "scapy.*"]
 ignore_missing_imports = true
 
 # preset "recommended": escape-hatch rules (Any/cast/dict-value misuse) block at

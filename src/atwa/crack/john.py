@@ -15,10 +15,10 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
-from .. import storage
 from .base import Cracker
 from .convert import hc22000_to_john
 
@@ -79,14 +79,19 @@ def _rules_args(rules: str) -> list[str]:
 
 
 def _session_dir() -> Path:
-    """Where John's --session .rec/.log files live: a hidden folder inside
-    the fixed capture root, not wherever atwa happened to be launched from.
-    John writes <session>.rec/<session>.log relative to the --session value
-    itself, so passing a path prefix (not just a bare name) redirects them
-    here directly -- previously they landed loose in the launch directory
+    """Where John's --session .rec/.log files live: a hidden folder in the
+    user's cache dir, not wherever atwa happened to be launched from and
+    not inside the capture root (which sudo runs leave root-owned, so an
+    unprivileged `atwa crack` cannot write there — confirmed live:
+    "1: open: /home/KaliMa/atwa-hs/.john-sessions/atwa_<hex>.log:
+    Permission denied" for the regular user). John writes
+    <session>.rec/<session>.log relative to the --session value itself,
+    so passing a path prefix (not just a bare name) redirects them here
+    directly -- previously they landed loose in the launch directory
     (confirmed live: atwa_<hex>.log/.rec appearing directly in ~ after a
     run launched from the home directory), with no cleanup, ever."""
-    d = storage.capture_root() / ".john-sessions"
+    root = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    d = Path(root) / "atwa" / "john-sessions"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -142,8 +147,15 @@ class JohnCracker(Cracker):
             )
 
     def _prepare(self, hashfile: str) -> str:
-        """Convert a hashcat 22000 file to John's format; return that path."""
-        return hc22000_to_john(hashfile, hashfile + ".john")
+        """Convert a hashcat 22000 file to John's format; return that path.
+        The converted file goes to the system temp dir, not next to the
+        hashfile: captures under ~/atwa-hs are often root-owned (created by
+        sudo runs), and hcxhashtool exits 0 even when it cannot open its
+        output file there -- the conversion then fails with a misleading
+        "no valid handshake" message."""
+        fd, tmp = tempfile.mkstemp(prefix="atwa_john_", suffix=".john")
+        os.close(fd)
+        return hc22000_to_john(hashfile, tmp)
 
     def crack(self, hashfile: str, wordlist: str, rules: str = "", timeout: float = 3600.0) -> dict[str, str]:
         """Convert hashfile for John, run it with wordlist, parse the pot."""
