@@ -12,12 +12,12 @@ from ..attacks.eviltwin import (
     run_pmf_bypass_chain,
 )
 from ..attacks.handshake import HandshakeStatus, capture_handshake
+from ..attacks.omni import OmniOrchestrator
 from ..attacks.pmkid import capture_pmkid
 from ..attacks.wep_client import hirte
 from ..attacks.wep_crack import crack_wep
 from ..attacks.wps import AttemptOutcome, pixie_attempt
 from ..frames import BROADCAST
-from ..omni import OmniOrchestrator
 from ..radio import get_mac
 from ..scan import scan
 from ..storage import capture_root
@@ -305,7 +305,7 @@ def _cmd_chaos(args) -> int:
     when the operator stopped it early via Ctrl-C or nothing ran, so a
     script can tell "ran and found nothing" from "did not run".
     """
-    from ..chaos import DEFAULT_VECTORS, chaos
+    from ..attacks.chaos import DEFAULT_VECTORS, chaos
 
     vectors = tuple(args.vectors.split(",")) if args.vectors else DEFAULT_VECTORS
     unknown = [v for v in vectors if v not in DEFAULT_VECTORS]

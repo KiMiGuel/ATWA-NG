@@ -29,20 +29,20 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from .attacks.deauth import deauth as _default_deauth
-from .attacks.handshake import HandshakeCapture, HandshakeStatus
-from .attacks.handshake import capture_handshake as _default_capture_handshake
-from .attacks.logic import best_status, run_deauth_flow, select_client
-from .attacks.online import online_guess as _default_online_guess
-from .attacks.pmkid import capture_pmkid as _default_capture_pmkid
-from .attacks.wep_client import caffe_latte as _default_caffe_latte
-from .attacks.wep_crack import crack_wep as _default_crack_wep
-from .attacks.wps import pixie_attempt as _default_pixie_attempt
-from .attacks.wps import wps_pin_bruteforce as _default_wps_bruteforce
-from .crack.base import Cracker
-from .crack.convert import cap_to_22000
-from .radio import get_mac
-from .scan import AccessPoint
+from ..crack.base import Cracker
+from ..crack.convert import cap_to_22000
+from ..radio import get_mac
+from ..scan import AccessPoint
+from .deauth import deauth as _default_deauth
+from .handshake import HandshakeCapture, HandshakeStatus
+from .handshake import capture_handshake as _default_capture_handshake
+from .logic import best_status, run_deauth_flow, select_client
+from .online import online_guess as _default_online_guess
+from .pmkid import capture_pmkid as _default_capture_pmkid
+from .wep_client import caffe_latte as _default_caffe_latte
+from .wep_crack import crack_wep as _default_crack_wep
+from .wps import pixie_attempt as _default_pixie_attempt
+from .wps import wps_pin_bruteforce as _default_wps_bruteforce
 
 
 class StageResult(Enum):
@@ -235,7 +235,7 @@ class OmniOrchestrator:
             return report
 
         if ap.pmf == "required":
-            from .secure import recommend_attack
+            from ..secure import recommend_attack
 
             pivot = recommend_attack(ap)
             self._log(f"PMF required — deauth would be dropped, skipping handshake stage ({pivot['reason']})")
@@ -299,7 +299,7 @@ class OmniOrchestrator:
             report.stages.append(StageReport("wps", StageResult.SKIPPED, "AP Setup Locked in scan profile"))
             return False
 
-        from .attacks.wps import AttemptOutcome
+        from .wps import AttemptOutcome
 
         if self._stop.is_set():
             report.stages.append(StageReport("wps", StageResult.SKIPPED, "stopped"))

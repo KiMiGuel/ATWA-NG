@@ -167,7 +167,7 @@ class AttackRunner:
         chaos.py's own note). Broadcast unless a client is given;
         default vectors/tiers match the CLI's no-flag run.
         """
-        from ..chaos import chaos
+        from ..attacks.chaos import chaos
         from ..frames import BROADCAST
 
         result = chaos(
@@ -231,8 +231,8 @@ class AttackRunner:
         return self._omni_style(ap, "run")
 
     def _omni_style(self, ap, method: str) -> str:
+        from ..attacks.omni import OmniOrchestrator
         from ..crack.john import JohnCracker, JohnUnavailableError
-        from ..omni import OmniOrchestrator
 
         cracker = None
         if self.wordlist:
