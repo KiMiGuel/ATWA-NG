@@ -36,13 +36,13 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .attacks.auth_flood import auth_flood
-from .attacks.beacon_flood import beacon_flood
-from .attacks.csa_spoof import send_csa
-from .attacks.deauth import deauth
-from .attacks.eapol_flood import eapol_flood
-from .attacks.tkip_mic_flood import tkip_mic_flood
-from .frames import BROADCAST
+from ..frames import BROADCAST
+from .auth_flood import auth_flood
+from .beacon_flood import beacon_flood
+from .csa_spoof import send_csa
+from .deauth import deauth
+from .eapol_flood import eapol_flood
+from .tkip_mic_flood import tkip_mic_flood
 
 # Ordered cheapest-and-loudest first, association-tearing last. The order
 # matters: exhausting the AP's station table (auth_flood) before
