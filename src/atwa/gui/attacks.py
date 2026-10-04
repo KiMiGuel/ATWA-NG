@@ -171,11 +171,16 @@ class AttacksMixin(GuiState):
         permanent_mac = self._permanent_mac
 
         def work():
-            from ..radio import set_managed_mode
+            from ..radio import restart_network_manager, set_managed_mode
 
             set_managed_mode(iface, restore_mac=permanent_mac)
             self.mon_iface = None
             self._permanent_mac = None
+            # NetworkManager drops a device that went to monitor mode and
+            # won't re-adopt it on its own once the mode is back, so the
+            # adapter would sit there unassociated after Stop Monitor.
+            if restart_network_manager(iface):
+                self._queue.put(("log", f"restarted NetworkManager so {iface} reconnects"))
             self._queue.put(("ui", lambda: self.monitor_status_var.set("MONITOR: OFF")))
             return iface
 

@@ -446,7 +446,10 @@ def set_monitor_mode(
 
 def set_managed_mode(iface: str, restore_mac: str | None = None) -> str:
     """Return iface to managed mode. Pass restore_mac (the permanent MAC
-    from set_monitor_mode) to put the real hardware MAC back."""
+    from set_monitor_mode) to put the real hardware MAC back.
+
+    Mode only -- the caller should follow with restart_network_manager() so
+    NetworkManager re-adopts the adapter and it rejoins its network."""
     _run(["ip", "link", "set", iface, "down"])
     try:
         if restore_mac:
@@ -455,6 +458,47 @@ def set_managed_mode(iface: str, restore_mac: str | None = None) -> str:
     finally:
         _run(["ip", "link", "set", iface, "up"])
     return iface
+
+
+def restart_network_manager(iface: str | None = None) -> bool:
+    """Best-effort: restart the host's network manager.
+
+    NetworkManager marks a device it sees go into monitor mode as
+    unmanaged, and does not re-adopt it just because the mode was flipped
+    back -- so after ATWA-NG returns the radio to managed the adapter sits
+    there unassociated. Restarting the service makes it re-scan and
+    reconnect on its own.
+
+    `iface` is accepted so callers can pass the adapter they tore down;
+    the restart is service-wide and does not act on a single device.
+
+    Deliberately best-effort: no network manager installed, a non-systemd
+    host, a non-root call, or a service that fails to restart must never
+    turn "leaving monitor mode" into an error. Returns True only when a
+    manager was actually found and restarted.
+    """
+    for manager in ("NetworkManager", "systemd-networkd", "connman"):
+        try:
+            active = subprocess.run(
+                ["systemctl", "is-active", "--quiet", manager],
+                capture_output=True, text=True,
+                stdin=subprocess.DEVNULL, timeout=10, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue  # no systemctl, or it hung -- try the next manager
+        if active.returncode != 0:
+            continue  # not installed or not running -- try the next
+        try:
+            restarted = subprocess.run(
+                ["systemctl", "restart", manager],
+                capture_output=True, text=True,
+                stdin=subprocess.DEVNULL, timeout=30, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue  # this one won't restart; try the next
+        if restarted.returncode == 0:
+            return True
+    return False
 
 
 def get_mode(iface: str) -> str:
