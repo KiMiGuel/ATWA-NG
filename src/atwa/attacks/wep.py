@@ -22,7 +22,7 @@ from scapy.layers.dot11 import Dot11, Dot11AssoResp, Dot11Auth, Dot11WEP
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
-from ..frames import BROADCAST, craft_assoc_req, craft_auth
+from ..frames.craft import BROADCAST, craft_assoc_req, craft_auth
 from ..radio import ensure_channel
 from ..wep.crypto import recover_keystream
 from ..wep.ptw import PTWVoteTable

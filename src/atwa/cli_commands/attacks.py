@@ -17,7 +17,7 @@ from ..attacks.pmkid import capture_pmkid
 from ..attacks.wep_client import hirte
 from ..attacks.wep_crack import crack_wep
 from ..attacks.wps import AttemptOutcome, pixie_attempt
-from ..frames import BROADCAST
+from ..frames.craft import BROADCAST
 from ..radio import get_mac
 from ..scan import scan
 from ..storage import capture_root

@@ -8,7 +8,7 @@ from scapy.sendrecv import AsyncSniffer, sendp
 
 from ..crack.convert import to_22000
 from ..eapol.pmkid import RSN_PMKID_SUITE, extract_pmkid
-from ..frames import craft_auth, is_eapol
+from ..frames.craft import craft_auth, is_eapol
 from ..radio import ensure_channel
 
 __all__ = ["RSN_PMKID_SUITE", "capture_pmkid", "capture_pmkid_passive", "extract_pmkid"]
@@ -41,7 +41,7 @@ def capture_pmkid_passive(
     def handler(pkt) -> None:
         if not pkt.addr2 or pkt.addr2.lower() != bssid_lower or not is_eapol(pkt):
             return
-        from ..frames import eapol_key_info
+        from ..frames.craft import eapol_key_info
 
         info = eapol_key_info(pkt)
         if info is None or info[0] or not info[1]:  # M1: ACK set, MIC clear
@@ -127,7 +127,7 @@ def capture_pmkid(
             return
         if not is_eapol(pkt):
             return
-        from ..frames import eapol_key_info
+        from ..frames.craft import eapol_key_info
 
         info = eapol_key_info(pkt)
         if info is None or info[0] or not info[1]:  # want M1: ack set, mic not set

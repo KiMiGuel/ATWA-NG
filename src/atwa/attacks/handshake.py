@@ -23,7 +23,7 @@ from scapy.layers.eap import EAPOL
 from scapy.sendrecv import AsyncSniffer
 from scapy.utils import PcapWriter
 
-from ..frames import eapol_key_info, is_eapol
+from ..frames.craft import eapol_key_info, is_eapol
 from ..radio import ensure_channel
 
 

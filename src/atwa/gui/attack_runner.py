@@ -77,7 +77,7 @@ class AttackRunner:
 
     def deauth_all(self, ap) -> str:
         from ..attacks.deauth import deauth
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
 
         block = self._pmf_block_message(ap)
         if block:
@@ -108,7 +108,7 @@ class AttackRunner:
 
     def csa_spoof(self, ap, new_channel: int, client: str | None = None) -> str:
         from ..attacks.csa_spoof import send_csa
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
 
         target = client or BROADCAST
         sent = send_csa(
@@ -146,7 +146,7 @@ class AttackRunner:
 
     def tkip_mic_flood(self, ap, client: str | None = None) -> str:
         from ..attacks.tkip_mic_flood import tkip_mic_flood
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
 
         target = client or BROADCAST
         sent = tkip_mic_flood(
@@ -168,7 +168,7 @@ class AttackRunner:
         default vectors/tiers match the CLI's no-flag run.
         """
         from ..attacks.chaos import chaos
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
 
         result = chaos(
             self._iface, ap.bssid, client=client or BROADCAST, channel=ap.channel,
@@ -337,7 +337,7 @@ class AttackRunner:
 
     def downgrade_twin(self, ap, iface_ap: str) -> str:
         from ..attacks.eviltwin import run_downgrade_twin
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
         from ..storage import target_capture_dir
 
         if ap.pmf == "required":
@@ -390,7 +390,7 @@ class AttackRunner:
 
     def owe_downgrade(self, ap, iface_ap: str) -> str:
         from ..attacks.eviltwin import run_owe_downgrade
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
 
         result = run_owe_downgrade(
             iface_ap=iface_ap,
@@ -457,7 +457,7 @@ class AttackRunner:
         )
         from ..attacks.logic import best_status
         from ..attacks.pmkid import capture_pmkid_passive
-        from ..frames import BROADCAST
+        from ..frames.craft import BROADCAST
         from ..radio import (
             ensure_channel,
             get_channel_txpower,

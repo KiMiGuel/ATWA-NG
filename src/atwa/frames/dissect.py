@@ -42,8 +42,6 @@ import struct
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-from .eapol import utils as _eapol
-
 # dpkt is deliberately NOT imported here: it is only needed on the rare
 # fallback path below, and importing the package costs ~42ms at startup
 # (dpkt/__init__ eagerly pulls its whole protocol zoo). Deferred to the
@@ -387,44 +385,5 @@ def channel_of(frame: Frame, ies: Iterable[tuple[int, bytes]] | None = None) -> 
     return None
 
 
-_LLC_SNAP_EAPOL = b"\xaa\xaa\x03\x00\x00\x00\x88\x8e"  # 802.2 LLC/SNAP, ethertype 0x888E (802.1X)
-
-
-def _eapol_payload(frame: Frame) -> bytes | None:
-    """The EAPOL payload of a data frame's body, or None if it doesn't
-    look like one.
-
-    Real over-the-air 802.11 data frames carrying EAPOL have an 8-byte
-    LLC/SNAP encapsulation header first (802.2 LLC/SNAP, ethertype
-    0x888E) -- skip it when present. When it isn't (a simplified test
-    fixture attaching EAPOL directly after the MAC header, which is
-    how this project's existing test suite builds them, relying on
-    scapy's own layer-tree search rather than a fixed byte offset),
-    fall back to treating the body as EAPOL only if it actually looks
-    like a plausible EAPOL header (version 1-3, type 0-3) -- avoids
-    false-positiving on arbitrary data frame payloads that simply lack
-    the LLC header."""
-    body = frame.body
-    if body[:8] == _LLC_SNAP_EAPOL:
-        return body[8:]
-    if len(body) >= 4 and body[0] in (1, 2, 3) and body[1] in (0, 1, 2, 3):
-        return body
-    return None
-
-
-def is_eapol(frame: Frame) -> bool:
-    """True if a data frame's body carries a well-formed EAPOL-Key frame.
-
-    Delegates to eapol.utils, which requires EAPOL type 3 and a valid key
-    descriptor type. The previous inline version accepted any EAPOL type
-    (including EAP-Packet), so callers reached here on ordinary EAP
-    traffic that has no key descriptor to read."""
-    return _eapol.is_eapol(_eapol_payload(frame) or b"")
-
-
-def eapol_key_info(frame: Frame) -> tuple[bool, bool] | None:
-    """Return (mic_set, ack_set) from a WPA key EAPOL frame, else None.
-
-    The two flag bits identify handshake messages: M1 has ack+!mic,
-    M2 has mic+!ack, M3 has ack+mic (with install), M4 has mic+!ack."""
-    return _eapol.eapol_key_info(_eapol_payload(frame) or b"")
+# EAPOL access moved to eapol/frame.py: everything EAPOL lives in one
+# package, and this module is left as pure 802.11 frame parsing.

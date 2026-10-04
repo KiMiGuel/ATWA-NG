@@ -17,7 +17,7 @@ import time
 
 from scapy.config import conf
 
-from ..frames import craft_beacon
+from ..frames.craft import craft_beacon
 from ..radio import (
     ensure_channel,
     ensure_monitor_mode,

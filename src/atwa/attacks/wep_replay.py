@@ -7,7 +7,7 @@ import threading
 from scapy.packet import Packet
 from scapy.sendrecv import sendp
 
-from ..frames import with_forced_rate
+from ..frames.craft import with_forced_rate
 
 
 def replay_arp(

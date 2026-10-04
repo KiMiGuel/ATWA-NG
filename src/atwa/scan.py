@@ -11,18 +11,17 @@ from scapy.config import conf
 from scapy.sendrecv import sendp
 
 from .crack.convert import to_22000
-from .dissect import (
+from .eapol.frame import eapol_key_info, is_eapol
+from .eapol.pmkid import extract_pmkid
+from .frames.craft import craft_probe_req
+from .frames.dissect import (
     Frame,
     channel_of,
     dissect,
-    eapol_key_info,
     is_beacon_or_probe_resp,
-    is_eapol,
     ssid_of,
     walk_ies,
 )
-from .eapol.pmkid import extract_pmkid
-from .frames import craft_probe_req
 from .radio import (
     ALL_CHANNELS,
     CHANNELS_5GHZ,

@@ -8,7 +8,7 @@ import time
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
-from ..frames import with_forced_rate
+from ..frames.craft import with_forced_rate
 from ..wep.ptw import PTWVoteTable, compute_key
 from .wep import add_captured_frame_to_table, fake_authenticate
 from .wep_replay import replay_arp

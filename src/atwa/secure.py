@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .dissect import CAP_PRIVACY, Frame, beacon_capability, walk_ies
+from .frames.dissect import CAP_PRIVACY, Frame, beacon_capability, walk_ies
 from .wps.tlv import (
     ATTR_AP_SETUP_LOCKED,
     ATTR_DEVICE_NAME,

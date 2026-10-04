@@ -6,7 +6,7 @@ import time
 
 from scapy.config import conf
 
-from ..frames import BROADCAST, craft_deauth
+from ..frames.craft import BROADCAST, craft_deauth
 from ..radio import ensure_channel, ensure_monitor_mode, get_mode, set_monitor_active
 
 
