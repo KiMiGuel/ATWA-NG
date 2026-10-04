@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import signal
-import subprocess
 import sys
 import time
 
 from ..injection_test import injection_test
 from ..radio import get_allowed_channels, get_mode
 from ..scan import channels_for_band, parse_channel_range, scan
-from . import EAPOLHUNTER_BIN, _python_for_scripts
 
 
 def _cmd_scan(args) -> int:
@@ -106,33 +103,59 @@ def _cmd_wps_recon(args) -> int:
 
 
 def _cmd_eapol_hunt(args) -> int:
-    if not EAPOLHUNTER_BIN.exists():
-        print(f"error: {EAPOLHUNTER_BIN} not found -- vendored eapol_hunter missing "
-              "(expected in the ATWA-NG repo checkout)", file=sys.stderr)
-        return 1
-    cmd = [_python_for_scripts(), str(EAPOLHUNTER_BIN), args.iface]
-    if args.bssid:
-        cmd.append(args.bssid)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, text=True)
+    """Passive EAPOL capture, native (was a vendored wrapper script)."""
+    import threading
+
+    from scapy.layers.eap import EAPOL
+    from scapy.sendrecv import AsyncSniffer
+
+    from ..eapol.scanner import EapolScanner
+    from ..radio import ALL_CHANNELS, ChannelHopper, check_kill_interfering_processes
+
+    iface, duration = args.iface, args.duration
+    scanner = EapolScanner()
+
+    def handle(pkt) -> None:
+        eapol = pkt.getlayer(EAPOL)
+        if eapol is None:
+            return
+        addr1, addr2 = getattr(pkt, "addr1", None), getattr(pkt, "addr2", None)
+        if not (addr1 and addr2):
+            return
+        scanner.observe_packet(bytes(eapol), addr1, addr2)
+
+    check_kill_interfering_processes()
+    hopper = ChannelHopper(iface=iface, channels=list(ALL_CHANNELS))
+    stop = threading.Event()
+
+    def hop_loop() -> None:
+        # ChannelHopper is a one-shot hop() plus a dwell sleep, not a
+        # long-running thread of its own; the GUI drives it the same way.
+        while not stop.is_set():
+            hopper.hop()
+
+    hop_thread = threading.Thread(target=hop_loop, daemon=True)
+    hop_thread.start()
+    sniffer = AsyncSniffer(iface=iface, prn=handle)
+    sniffer.start()
     try:
-        time.sleep(args.duration)
+        print(f"listening for EAPOL on {iface} for {duration:.0f}s", file=sys.stderr)
+        time.sleep(duration)
+    except KeyboardInterrupt:
+        pass
     finally:
-        proc.send_signal(signal.SIGINT)
-        try:
-            out, _ = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, _ = proc.communicate()
-    print(out)
-    # Propagate the child's own exit status -- a crashed helper used to
-    # look identical to a clean "nothing found" run (always returned 0).
-    # A negative returncode means it was killed by a signal (e.g. our own
-    # SIGKILL fallback above after it ignored SIGINT) -- map that to the
-    # conventional 128+signum shell exit code instead of falling through
-    # to 0, which would hide exactly the crash this is meant to surface.
-    if proc.returncode is None:
+        stop.set()
+        sniffer.stop()
+        hop_thread.join(timeout=2.0)
+
+    summary = scanner.summary()
+    if not summary:
+        print("no EAPOL-Key frames seen")
         return 0
-    if proc.returncode < 0:
-        return 128 - proc.returncode
-    return proc.returncode
+    print(f"\n{'BSSID':<18} {'Client':<18} {'Quality':<12} Notes")
+    print("-" * 78)
+    for (bssid, client), quality in sorted(summary.items(), key=lambda kv: kv[1].value):
+        notes = scanner.explain(bssid, client).problems
+        print(f"{bssid:<18} {client:<18} {quality.value:<12} "
+              f"{'; '.join(notes) if notes else 'crackable'}")
+    return 0

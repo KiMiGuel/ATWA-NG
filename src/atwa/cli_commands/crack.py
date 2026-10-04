@@ -8,7 +8,7 @@ from pathlib import Path
 from ..crack.convert import cap_to_22000
 from ..crack.john import JohnCracker, JohnParseError, JohnUnavailableError
 from ..storage import record_cracked_password
-from . import CAPCRACK_BIN, EAPOLDUMP_BIN, _run_bounded
+from . import CAPCRACK_BIN, _run_bounded
 
 
 def _cmd_crack(args) -> int:
@@ -56,16 +56,32 @@ def _cmd_verify_handshake(args) -> int:
     if args.frames and not args.mac:
         print("error: --frames requires --mac", file=sys.stderr)
         return 2
-    if not EAPOLDUMP_BIN.exists():
-        print(f"error: {EAPOLDUMP_BIN} not found -- vendored eapol_dump missing "
-              "(expected in the ATWA-NG repo checkout)", file=sys.stderr)
+    from ..eapol.dumper import EapolDumper
+
+    dumper = EapolDumper(args.capfile)
+    frames = dumper.frames(mac=args.mac) if args.mac else dumper.frames()
+    if not frames:
+        print("no EAPOL-Key frames found")
         return 1
-    cmd = [str(EAPOLDUMP_BIN), args.capfile]
-    if args.mac:
-        cmd.append(args.mac)
-        cmd += [str(n) for n in args.frames]
-    rc, out, err = _run_bounded(cmd, timeout=30.0)
-    print(out)
-    if rc != 0 and err:
-        print(err, file=sys.stderr)
-    return rc
+    # The original shelled out to eapol_dump.sh + tshark for an overview,
+    # then per-frame nonce/MIC for the frame numbers given. Same output,
+    # computed from the shared parser instead of tshark field expressions.
+    print(f"{'Frame':>6}  {'Src MAC':<18} -> {'Dest MAC':<18} {'Msg':<4}")
+    print("-" * 70)
+    for r in frames:
+        print(f"{r.index:>6}  {r.bssid:<18} -> {r.client:<18} "
+              f"{('M' + str(r.message)) if r.message is not None else '--':<4}"
+              f"  [{r.key_info_flags()}]")
+    for n in args.frames:
+        match = next((r for r in frames if r.index == n), None)
+        if match is None:
+            print(f"\nDetails for frame #{n}: not an EAPOL-Key frame in this capture")
+            continue
+        print(f"\nDetails for frame #{n}")
+        print("-" * 70)
+        print(f"  Message      : {('M' + str(match.message)) if match.message else '--'}")
+        print(f"  Descriptor   : {match.descriptor_type}")
+        print(f"  Key Info     : 0x{match.key_info:04x} ({match.key_info_flags()})")
+        print(f"  Nonce        : {match.nonce_hex() or '(none)'}")
+        print(f"  MIC          : {match.mic_hex() or '(none)'}")
+    return 0
