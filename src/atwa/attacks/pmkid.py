@@ -6,44 +6,12 @@ import time
 
 from scapy.sendrecv import AsyncSniffer, sendp
 
+from ..crack.convert import to_22000
+from ..eapol.pmkid import RSN_PMKID_SUITE, extract_pmkid
 from ..frames import craft_auth, is_eapol
 from ..radio import ensure_channel
 
-RSN_PMKID_SUITE = 16  # element ID inside the RSN KDE carrying the PMKID
-
-
-def extract_pmkid(eapol_raw: bytes) -> bytes | None:
-    """Pull the 16-byte PMKID from the RSN KDE of an EAPOL M1 frame, or None."""
-    # WPA key data layout: ...key_data_len(2) at offset 95..97 of the key frame,
-    # but in practice scan for the KDE: dd ?? 00 0f ac 04 <pmkid16>
-    marker = b"\xdd"
-    idx = 0
-    while True:
-        idx = eapol_raw.find(marker, idx)
-        if idx < 0 or idx + 2 >= len(eapol_raw):
-            return None
-        length = eapol_raw[idx + 1]
-        kde = eapol_raw[idx + 2 : idx + 2 + length]
-        if len(kde) >= 20 and kde[:4] == b"\x00\x0f\xac\x04":
-            return kde[4:20]
-        idx += 1
-
-
-def to_22000(pmkid: bytes, bssid: str, client: str, essid: str | None = None) -> str:
-    """Format a PMKID as a hashcat/John 22000 line: `WPA*01*PMKID*AP*CLIENT*ESSID***`.
-
-    The ``WPA*01*`` magic and the trailing empty ANONCE/EAPOL/MESSAGEPAIR
-    fields are both mandatory, verified against hcxtools: without them
-    ``hcxhashtool`` reports "no hashes loaded", so john conversion, the GUI
-    hash inspector (``startswith("WPA*01*")``) and housekeeping's merge all
-    silently drop the line while we still claim a PMKID capture. The bare
-    ``pmkid*ap*client*essid`` shape this used to emit is the deprecated
-    16800 layout, not 22000.
-    """
-    mac_ap = bssid.replace(":", "")
-    mac_cl = client.replace(":", "")
-    essid_hex = essid.encode().hex() if essid else ""
-    return f"WPA*01*{pmkid.hex()}*{mac_ap}*{mac_cl}*{essid_hex}***"
+__all__ = ["RSN_PMKID_SUITE", "capture_pmkid", "capture_pmkid_passive", "extract_pmkid"]
 
 
 def capture_pmkid_passive(

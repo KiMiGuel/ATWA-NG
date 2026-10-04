@@ -2906,7 +2906,7 @@ class App:
         from scapy.utils import PcapReader
 
         from ..attacks.handshake import HandshakeCapture, _classify
-        from ..attacks.pmkid import extract_pmkid
+        from ..eapol.pmkid import extract_pmkid
         from ..frames import is_eapol
 
         cap = HandshakeCapture()

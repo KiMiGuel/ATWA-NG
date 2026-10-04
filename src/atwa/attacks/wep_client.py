@@ -36,8 +36,8 @@ from scapy.layers.dot11 import Dot11, Dot11WEP
 from scapy.packet import Packet
 from scapy.sendrecv import sendp, sniff
 
-from ..cli_commands import CHOPCHOP_BIN
 from ..frames import with_forced_rate
+from ..paths import CHOPCHOP_BIN
 from ..radio import ensure_channel
 from ..storage import organized_output_path
 from ..wep.crypto import recover_keystream

@@ -10,7 +10,7 @@ from typing import TypeGuard
 from scapy.config import conf
 from scapy.sendrecv import sendp
 
-from .attacks.pmkid import extract_pmkid, to_22000
+from .crack.convert import to_22000
 from .dissect import (
     Frame,
     channel_of,
@@ -21,6 +21,7 @@ from .dissect import (
     ssid_of,
     walk_ies,
 )
+from .eapol.pmkid import extract_pmkid
 from .frames import craft_probe_req
 from .radio import (
     ALL_CHANNELS,

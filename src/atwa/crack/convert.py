@@ -67,6 +67,21 @@ def cap_to_22000(capfile: str, outfile: str) -> str:
     return outfile
 
 
+def to_22000(pmkid: bytes, bssid: str, client: str, essid: str | None = None) -> str:
+    """Format a PMKID as a 22000 line: `WPA*01*PMKID*AP*CLIENT*ESSID***`.
+
+    The ``WPA*01*`` magic and the three trailing empty fields are both
+    mandatory — verified against hcxtools. Without them hcxhashtool reports
+    "no hashes loaded" and john conversion, the GUI hash inspector and
+    cleanup's merge all drop the line while we still claim a PMKID capture.
+    The bare ``pmkid*ap*client*essid`` shape is the deprecated 16800 layout.
+    """
+    mac_ap = bssid.replace(":", "")
+    mac_cl = client.replace(":", "")
+    essid_hex = essid.encode().hex() if essid else ""
+    return f"WPA*01*{pmkid.hex()}*{mac_ap}*{mac_cl}*{essid_hex}***"
+
+
 def hc22000_to_john(hashfile: str, outfile: str) -> str:
     """Convert a hashcat-format 22000 file to John's own wpapsk format via
     `hcxhashtool --john=`. Required, not optional: John's wpapsk parser
