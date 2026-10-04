@@ -10,11 +10,11 @@ from typing import TypeGuard
 from scapy.config import conf
 from scapy.sendrecv import sendp
 
-from .crack.convert import to_22000
-from .eapol.frame import eapol_key_info, is_eapol
-from .eapol.pmkid import extract_pmkid
-from .frames.craft import craft_probe_req
-from .frames.dissect import (
+from ..crack.convert import to_22000
+from ..eapol.frame import eapol_key_info, is_eapol
+from ..eapol.pmkid import extract_pmkid
+from ..frames.craft import craft_probe_req
+from ..frames.dissect import (
     Frame,
     channel_of,
     dissect,
@@ -22,7 +22,7 @@ from .frames.dissect import (
     ssid_of,
     walk_ies,
 )
-from .radio import (
+from ..radio import (
     ALL_CHANNELS,
     CHANNELS_5GHZ,
     CHANNELS_24GHZ,
@@ -30,7 +30,7 @@ from .radio import (
     RadioError,
     random_locally_administered_mac,
 )
-from .secure import owe_transition_info, security_profile, wps_profile
+from ..secure import owe_transition_info, security_profile, wps_profile
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
 
