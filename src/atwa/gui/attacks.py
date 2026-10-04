@@ -210,18 +210,10 @@ class AttacksMixin(GuiState):
             from ..radio import ALL_CHANNELS, ChannelHopper, check_and_heal
             from ..scan import RawFrameSniffer, ScanResult, process_packet
 
-            # One persistent hopper for the whole scanning session, not a
-            # fresh one per pass — matches how the compiled scan engine actually works
-            # (confirmed via --help: one continuous hop loop, incremental
-            # display, never restarts). The old design called scan() in a
-            # loop, which builds a brand-new ChannelHopper every time — its
-            # channel index always restarted at 0, so with hop() costing a
-            # full dwell itself (0.3s) *plus* the 0.3s sniff (0.6s/channel,
-            # 13.2s for a full 22-channel sweep), a short bounded duration
-            # never reached 5GHz at all, not just less often. process_packet
-            # already merges correctly into a persistent ScanResult (fixed
-            # 2026-08-19), so this also drops the GUI's own duplicate merge
-            # logic that used to sit here.
+            # One hopper for the whole session: a fresh one per pass restarts its
+            # index at 0, and at ~0.6s/channel a bounded run then never
+            # reaches 5GHz at all. process_packet merges into a persistent
+            # ScanResult, so no GUI-side merge is needed.
             result = ScanResult(aps=self.aps)
             hopper = ChannelHopper(iface=self.mon_iface, channels=self._scan_channels or list(ALL_CHANNELS))
 
@@ -238,18 +230,11 @@ class AttacksMixin(GuiState):
                 s.start()
                 return s
 
-            # ONE persistent capture socket for the whole scanning session,
-            # not a fresh sniff() opened and closed every single hop -- the
-            # exact same bug scan.py's own scan() function already fixed
-            # (per-hop sniff() flaps promiscuous mode in lockstep with the
-            # dwell timer on some drivers, confirmed live via dmesg, eating
-            # into the listening window every hop and occasionally raising
-            # a real ENETDOWN from the socket churn), just never ported into
-            # the GUI's own loop until now. hopper.hop() already sleeps for
-            # the dwell period itself, so this also drops the old code's
-            # redundant *second* dwell-length wait from the per-hop
-            # sniff(timeout=hopper.dwell) call -- a full channel sweep now
-            # takes roughly half as long as before.
+            # ONE socket for the whole session: per-hop sniff() flaps promiscuous
+            # mode against the dwell timer on some drivers (confirmed via
+            # dmesg), shrinking the listen window and sometimes raising a
+            # real ENETDOWN. Also drops a redundant second dwell wait --
+            # hopper.hop() already sleeps.
             try:
                 sniffer = start_sniffer()
             except Exception as exc:  # noqa: BLE001 - transient driver errors must not kill the scan loop
@@ -283,20 +268,12 @@ class AttacksMixin(GuiState):
                     now = time.monotonic()
                     if now - last_health_check >= HEALTH_CHECK_INTERVAL:
                         last_health_check = now
-                        # check_and_heal() has no exception handling of its own --
-                        # every call inside it (get_mode/get_channel/set_channel)
-                        # raises RadioError straight through on any iw/ip failure.
-                        # This whole loop body sits in a try/finally with no
-                        # except, so an unguarded call here (a transient USB
-                        # hiccup, the adapter being briefly busy, ...) used to
-                        # propagate out of loop() entirely and silently kill
-                        # self._scan_thread -- self._scanning never gets cleared
-                        # since only Stop Scan does that, so the GUI kept showing
-                        # "scanning" while nothing was actually happening anymore
-                        # (2026-09-12 user report: "the scan eventually just
-                        # stops"). Caught and logged here instead, same
-                        # self-heal-don't-crash treatment this loop already gives
-                        # every other failure mode (dead sniffer, failed restart).
+                        # check_and_heal() lets RadioError through. Unguarded, that killed
+                        # self._scan_thread outright; since only Stop Scan
+                        # clears _scanning, the GUI kept showing "scanning"
+                        # with nothing happening (user report 2026-09-12:
+                        # "the scan eventually just stops"). Same don't-crash treatment the loop
+                        # already gives every other failure mode.
                         try:
                             healed = check_and_heal(self.mon_iface)
                         except Exception as exc:  # noqa: BLE001

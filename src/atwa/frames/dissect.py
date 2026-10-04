@@ -122,16 +122,10 @@ def _mac_str(b: bytes) -> str:
     return b.hex(":")
 
 
-# Authoritative 802.11 channel -> centre frequency table.
-#
-# This is a table rather than arithmetic on purpose. 2.4 GHz is 5 MHz steps
-# from 2412 with channel 14 stranded at 2484. 5 GHz looks like 20 MHz steps
-# but is not: channel 48 is 5245 (not 5240), and channel 144 and 149 are BOTH
-# 5745. An earlier version derived the valid set as range(5180, 5826, 20),
-# which silently excluded 5745 -- so channel 149, one of the most common
-# 5 GHz channels there is, was rejected as implausible and its beacons went
-# back to reporting channel=None. Caught by a test asserting the table and
-# the arithmetic agree.
+# Authoritative 802.11 channel -> centre frequency. A table, not arithmetic:
+# 5GHz is not uniform 20MHz steps (ch48=5245, ch144 and ch149 both 5745), and
+# deriving the valid set excluded 5745, so common channel 149 beacons
+# reported channel=None. A test asserts table and arithmetic agree.
 _CHANNEL_CENTER_HZ: dict[int, int] = {
     **{ch: 2407 + 5 * ch for ch in range(1, 14)},
     14: 2484,
@@ -165,17 +159,13 @@ def _fast_radiotap_header(raw: bytes) -> tuple[int, int | None, int | None] | No
     if header_len < 8 or header_len > len(raw):
         return None
 
-    # Unknown *trailing* namespaces must not disqualify the whole header.
-    # The fields we need (CHANNEL at bit 3, dBm at bit 5) always come first,
-    # so a driver that also sets bit 29/31 -- the mt76x0u does, measured
-    # live 2026-09-26 with present=0xa018402a -- still yields a channel.
-    # Bailing on any unknown bit is what previously sent every such frame
-    # down the dpkt path, which does not expose the channel at all, so those
-    # APs reported channel=None.
-    #
-    # We can only walk as far as the lowest unknown *preceding* field,
-    # because an unknown field's width is unknown and alignment after it is
-    # therefore undecidable. Everything from there on is simply not read.
+    # Unknown *trailing* namespaces must not disqualify the header: CHANNEL
+    # (bit 3) and dBm (bit 5) come first, so a driver also setting bits
+    # 29/31 (mt76x0u does) still yields a channel. Bailing on any unknown
+    # bit sent those frames down the dpkt path, which reports no channel,
+    # so those APs showed channel=None. Walking stops at the lowest unknown
+    # *preceding* field, since its width -- and thus alignment after it --
+    # is undecidable.
     unknown_below = present & ~_RADIOTAP_KNOWN_MASK
     all_fields_known = unknown_below == 0
 
@@ -204,17 +194,11 @@ def _fast_radiotap_header(raw: bytes) -> tuple[int, int | None, int | None] | No
         if bit == 5:
             signal_dbm = struct.unpack_from("<b", raw, offset)[0]
         elif bit == 3:
-            # Radiotap's CHANNEL field is nominally flags(1) | frequency(2
-            # LE) | [max(1) antenna(1)], but drivers disagree on the order
-            # and scapy -- which everything WiFi-adjacent is validated
-            # against -- reads the 2-byte frequency FIRST. Measured on the
-            # mt76x0u 2026-09-26: the field bytes were `6c 09 a0 00`,
-            # giving 0x096c = 2412 (correct) when read at +0 and 0xa009 =
-            # 40969 (nonsense) when read at +1 the spec way.
-            #
-            # So try both offsets and keep whichever is a real 802.11
-            # centre frequency. That is driver-agnostic and cannot be
-            # fooled by a flags byte that happens to look plausible.
+            # Radiotap's CHANNEL field is nominally flags(1) | frequency(2 LE),
+            # but scapy reads frequency first and some drivers follow it.
+            # Try both offsets and keep whichever is a real 802.11 centre
+            # frequency -- driver-agnostic, and a plausible-looking flags
+            # byte can't fool it.
             first = struct.unpack_from("<H", raw, offset)[0]
             second = struct.unpack_from("<H", raw, offset + 1)[0]
             if _plausible_hz(first):
