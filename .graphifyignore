@@ -1,6 +1,7 @@
 # Code-only scope for the committed graph: source code, nothing else.
 # Excludes prose/packaging (README, USAGE, pyproject, docs) and tests
-# (not shipped). vendor/ is kept -- it is code the cracking side depends on.
+# (not shipped). vendor/ holds only non-Python wrappers: the compiled
+# aircrack-ng binaries and the two EAPOL tools being replaced by native code.
 tests/
 docs/
 README.md
