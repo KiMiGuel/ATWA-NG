@@ -673,9 +673,13 @@ class ToolbarMixin(GuiState):
         self._save_settings()
         if self.mon_iface and "demo" not in self.mon_iface:
             try:
-                from ..radio import set_managed_mode
+                from ..radio import restart_network_manager, set_managed_mode
 
-                set_managed_mode(self.mon_iface, restore_mac=self._permanent_mac)
+                iface = self.mon_iface
+                set_managed_mode(iface, restore_mac=self._permanent_mac)
+                # Best-effort, and after the mode restore: a restart on
+                # exit is what stops the adapter being left unassociated.
+                restart_network_manager(iface)
             except Exception:  # noqa: BLE001, S110 - shutdown cleanup must be best-effort
                 pass
         self.root.destroy()
