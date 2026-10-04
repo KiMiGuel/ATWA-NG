@@ -1373,7 +1373,7 @@ class App:
         def loop():
             import time
 
-            from ..dissect import dissect
+            from ..frames.dissect import dissect
             from ..radio import ALL_CHANNELS, ChannelHopper, check_and_heal
             from ..scan import RawFrameSniffer, ScanResult, process_packet
 
@@ -2907,7 +2907,7 @@ class App:
 
         from ..attacks.handshake import HandshakeCapture, _classify
         from ..eapol.pmkid import extract_pmkid
-        from ..frames import is_eapol
+        from ..frames.craft import is_eapol
 
         cap = HandshakeCapture()
         pmkid_found = False

@@ -47,7 +47,7 @@ from scapy.layers.l2 import LLC, SNAP
 from scapy.packet import Packet
 from scapy.sendrecv import AsyncSniffer, sendp
 
-from ..frames import assoc_resp_status, craft_assoc_req, craft_auth, craft_rsn_ie
+from ..frames.craft import assoc_resp_status, craft_assoc_req, craft_auth, craft_rsn_ie
 from ..radio import ensure_channel
 from ..wpa.crypto import compute_mic, derive_pmk, derive_ptk, mac_to_bytes, split_ptk
 

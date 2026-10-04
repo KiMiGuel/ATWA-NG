@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from ..frames import BROADCAST
+from ..frames.craft import BROADCAST
 from .deauth import deauth as _deauth
 from .handshake import HandshakeStatus
 from .handshake import capture_handshake as _capture_handshake

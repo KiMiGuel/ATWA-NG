@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 
-from ..frames import BROADCAST
+from ..frames.craft import BROADCAST
 from ..scan import AccessPoint
 from .handshake import HandshakeCapture, HandshakeStatus
 

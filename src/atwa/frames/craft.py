@@ -18,6 +18,8 @@ from scapy.layers.dot11 import (
 from scapy.layers.eap import EAPOL
 from scapy.packet import Packet, Raw
 
+from ..eapol import utils
+
 BROADCAST = "ff:ff:ff:ff:ff:ff"
 
 SAE_AUTH_ALGO = 3  # 802.11's Authentication Algorithm Number for SAE (not in scapy's algo enum)
@@ -294,26 +296,26 @@ def assoc_resp_status(pkt: Packet) -> int | None:
 
 
 def is_eapol(pkt: Packet) -> bool:
-    """True if the frame carries an EAPOL (802.1X) payload."""
-    return bool(pkt.haslayer(EAPOL))
+    """True if the packet carries a well-formed EAPOL-Key frame.
+
+    bytes(eapol) reconstructs the PDU including its 4-byte header, so
+    this routes through eapol.utils and gets the same EAPOL-type and
+    descriptor-type validation the dissect.Frame path uses. The old
+    haslayer() check accepted EAP-Packet/Start/Logoff, which carry no key
+    descriptor, and missed the no-LLC/SNAP shape entirely.
+    """
+    eapol = pkt.getlayer(EAPOL)
+    if eapol is None:
+        return False
+    return utils.is_eapol(bytes(eapol))
 
 
 def eapol_key_info(pkt: Packet) -> tuple[bool, bool] | None:
-    """Return (mic_set, ack_set) from a WPA key EAPOL frame, else None.
+    """(mic_set, ack_set) from a WPA key EAPOL frame, else None.
 
-    The two flag bits identify handshake messages: M1 has ack+!mic,
-    M2 has mic+!ack, M3 has ack+mic (with install), M4 has mic+!ack.
+    M1 has ack+!mic, M2 mic+!ack, M3 ack+mic, M4 mic+!ack.
     """
-    if not is_eapol(pkt):
-        return None
     eapol = pkt.getlayer(EAPOL)
     if eapol is None:
         return None
-    raw = bytes(eapol.payload)
-    if len(raw) < 6:
-        return None
-    # WPA key frame: [descriptor_type(1)][key_info(2, big-endian)]...
-    key_info = int.from_bytes(raw[1:3], "big")
-    mic_set = bool(key_info & 0x0100)
-    ack_set = bool(key_info & 0x0080)
-    return mic_set, ack_set
+    return utils.eapol_key_info(bytes(eapol))

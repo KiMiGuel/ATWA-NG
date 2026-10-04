@@ -32,7 +32,7 @@ from scapy.config import conf
 from scapy.layers.dot11 import Dot11, Dot11QoS, RadioTap
 from scapy.packet import Packet, Raw
 
-from ..frames import BROADCAST
+from ..frames.craft import BROADCAST
 from ..radio import ensure_channel, ensure_monitor_mode, get_mode, set_monitor_active
 
 # TKIP per-MPDU overhead: 8-byte TKIP header (IV/ExtIV/keyid) + Michael

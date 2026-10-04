@@ -11,7 +11,7 @@ from enum import Enum
 from scapy.layers.dot11 import Dot11AssoResp, Dot11Auth, Dot11Elt
 from scapy.sendrecv import AsyncSniffer, sendp
 
-from ..frames import assoc_resp_status, craft_assoc_req, craft_auth
+from ..frames.craft import assoc_resp_status, craft_assoc_req, craft_auth
 from ..radio import ensure_channel, get_mac
 from ..wps import eap, messages, tlv
 from ..wps.crypto import (

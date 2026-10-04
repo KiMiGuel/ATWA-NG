@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from scapy.layers.dot11 import Dot11, Dot11Auth
 from scapy.sendrecv import AsyncSniffer, sendp
 
-from ..frames import SAE_AUTH_ALGO, craft_sae_commit
+from ..frames.craft import SAE_AUTH_ALGO, craft_sae_commit
 from ..radio import ensure_channel, random_locally_administered_mac
 
 # NIST P-256 (secp256r1) -- SAE's mandatory "group 19". FIPS 186-4

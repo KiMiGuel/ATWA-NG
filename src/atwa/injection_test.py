@@ -29,7 +29,13 @@ from dataclasses import dataclass
 from scapy.layers.dot11 import Dot11, Dot11Auth, Dot11Beacon, Dot11ProbeResp
 from scapy.sendrecv import sendp, sniff
 
-from .frames import BROADCAST, craft_auth, craft_null_data, craft_probe_req, craft_rts
+from .frames.craft import (
+    BROADCAST,
+    craft_auth,
+    craft_null_data,
+    craft_probe_req,
+    craft_rts,
+)
 from .radio import _run
 
 ATIME = 0.2  # seconds to wait for an answer per attempt (aireplay-ng's atime=200ms)

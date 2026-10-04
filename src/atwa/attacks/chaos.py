@@ -36,7 +36,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from ..frames import BROADCAST
+from ..frames.craft import BROADCAST
 from .auth_flood import auth_flood
 from .beacon_flood import beacon_flood
 from .csa_spoof import send_csa
