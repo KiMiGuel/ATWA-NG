@@ -23,7 +23,7 @@ from scapy.layers.eap import EAPOL
 from scapy.sendrecv import AsyncSniffer
 from scapy.utils import PcapWriter
 
-from ..frames.craft import eapol_key_info, is_eapol
+from ..eapol.utils import message_number
 from ..radio import ensure_channel
 
 
@@ -77,72 +77,22 @@ class HandshakeCapture:
         return self.status(ap, client) is HandshakeStatus.AUTHORIZED
 
 
-def _looks_like_m4(pkt) -> bool:
-    """Distinguish M4 from M2 -- both have ack=0/mic=1, so the flag bits
-    alone (eapol_key_info) can't tell them apart, and recording a lone M4
-    as M2 produces phantom CHALLENGE (M1+M4) / AUTHORIZED (M3+M4) states.
-
-    Differences on the wire: M2 carries the station's RSN IE in its key
-    data (non-empty), M4's key data is empty; and M4 sets the Secure bit
-    (0x0200 in key_info, keys already installed) while M2 doesn't. Both
-    must hold together -- checking either alone (e.g. key_data_len == 0
-    on its own) misclassifies a genuine M2 with truncated/dropped RSNE
-    as M4, silently dropping it from the capture.
-    """
-    if not is_eapol(pkt):
-        return False
-    eapol = pkt.getlayer(EAPOL)
-    if eapol is None:
-        return False
-    raw = bytes(eapol.payload)
-    if len(raw) < 95:  # descriptor(1)+key_info(2)+...+mic(16)+key_data_len(2)
-        return False
-    key_info = int.from_bytes(raw[1:3], "big")
-    key_data_len = int.from_bytes(raw[93:95], "big")
-    return bool(key_info & 0x0200) and key_data_len == 0
-
-
-def _key_info_raw(pkt) -> int | None:
-    """Raw big-endian Key Information word of an EAPOL-Key frame, or None."""
-    if not is_eapol(pkt):
-        return None
-    eapol = pkt.getlayer(EAPOL)
-    if eapol is None:
-        return None
-    raw = bytes(eapol.payload)
-    if len(raw) < 3:
-        return None
-    return int.from_bytes(raw[1:3], "big")
-
-
-# Key Information bit 3: 1 = pairwise key (4-way handshake), 0 = group key.
-PAIRWISE_KEY_TYPE = 0x0008
-
-
 def _classify(pkt) -> int | None:
-    """Return handshake message number (1-4) or None.
+    """Handshake message number 1-4, or None if this is not one.
 
-    Group-key (GTK rekey) frames are ignored via the Key Type bit: the
-    group handshake's message 1 carries the exact ACK=1/MIC=1 profile that
-    maps to "M3" below, so recording it would escalate a CHALLENGE pair to
-    AUTHORIZED on an AP-confirmation that never happened and stop the
-    sniff early on a capture hcxpcapngtool then finds empty (group frames
-    carry no ANonce).
+    Delegates to eapol.utils.message_number, which applies the
+    IEEE 802.11-2024 12.7.2 rules: Key Information bits decide M1/M2/M3/M4
+    for RSN, legacy WPA frames fall back to the replay counter, group
+    (GTK) frames and Request/Error frames are ignored. The group-key
+    exclusion matters because the group M1 carries the same ACK/MIC
+    profile as pairwise M3, which would otherwise escalate a CHALLENGE
+    pair to AUTHORIZED and stop the sniff on a capture hcxpcapngtool then
+    finds empty.
     """
-    key = _key_info_raw(pkt)
-    if key is None or not key & PAIRWISE_KEY_TYPE:
+    eapol = pkt.getlayer(EAPOL)
+    if eapol is None:
         return None
-    info = eapol_key_info(pkt)
-    if info is None:
-        return None
-    mic_set, ack_set = info
-    if ack_set and not mic_set:
-        return 1
-    if not ack_set and mic_set:
-        return 4 if _looks_like_m4(pkt) else 2
-    if ack_set and mic_set:
-        return 3
-    return None
+    return message_number(bytes(eapol))
 
 
 def capture_handshake(
