@@ -7,7 +7,7 @@ import sys
 
 def _cmd_update_check(args) -> int:
     from .. import __version__
-    from ..update_check import apply_update, check_for_update
+    from ..update import apply_update, check_for_update
 
     result = check_for_update(__version__, timeout=args.timeout)
     if result.error:

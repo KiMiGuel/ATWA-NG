@@ -116,7 +116,7 @@ class App:
         self.selected_bssid: str | None = None
         self._last_graphed_bssid: str | None = None
         self._select_capture_watch_stop: threading.Event | None = None
-        self._lock_capture_proc = None  # lock_capture.LockCapture | None
+        self._lock_capture_proc = None  # capture.lock.LockCapture | None
         self._crack_proc_holder: dict = {}  # {"proc": subprocess.Popen} while a crack runs
         self.mon_iface: str | None = None
         self.own_mac: str | None = None
@@ -974,7 +974,7 @@ class App:
     # come back through a queue drained on the Tk main loop via `after`.
     # ------------------------------------------------------------------
     def _check_for_updates(self):
-        from ..update_check import check_for_update
+        from ..update import check_for_update
 
         result = check_for_update(__version__, timeout=3.0)
         if result.error:
@@ -1058,7 +1058,7 @@ class App:
             self.root.after(100, self._drain_queue)
 
     def _show_update_available(self, result):
-        from ..update_check import apply_update
+        from ..update import apply_update
 
         message = f"ATWA-NG {result.latest} is available (installed: {result.current})."
         if result.release_url:
@@ -1932,14 +1932,14 @@ class App:
                 self._log(f"no clients seen yet on {ap.bssid} — skipping lock capture (nothing to record)")
 
     def _start_lock_capture(self, ap: AccessPoint):
-        """Native AsyncSniffer-backed capture (lock_capture.LockCapture),
+        """Native AsyncSniffer-backed capture (capture.lock.LockCapture),
         restricted to ap's bssid on the already-locked channel, writing
         continuously to disk. Stopped by _unlock_channel/_stop_lock_capture."""
         assert self.mon_iface is not None
         self._stop_lock_capture()
         import time as _time
 
-        from ..lock_capture import LockCapture
+        from ..capture.lock import LockCapture
         from ..storage import target_capture_dir
 
         out_dir = target_capture_dir(ap.ssid, ap.bssid)
@@ -3415,7 +3415,7 @@ class App:
         self._crack_with_aircrack(cap_paths, wordlist)
 
     def _capture_cleanup(self):
-        """Preview then run housekeeping.cleanup_handshakes — merges each
+        """Preview then run capture.cleanup.cleanup_handshakes — merges each
         target's captures/hashes down to one file, then all targets into
         one master, deleting originals only after each merge is written.
         Destructive, so this always previews (dry_run) before asking.
@@ -3423,7 +3423,7 @@ class App:
         that used to freeze the GUI when _refresh_captures ran it on the Tk
         thread (fix documented there), so the plan runs off-thread here
         too and only the dialog is queued back to the Tk thread."""
-        from ..housekeeping import cleanup_handshakes
+        from ..capture.cleanup import cleanup_handshakes
 
         capture_root = self.capture_dir_var.get()  # Tk-thread read
 
@@ -3438,7 +3438,7 @@ class App:
         threading.Thread(target=plan_and_confirm, daemon=True).start()
 
     def _confirm_cleanup(self, plan, capture_root: str) -> None:
-        from ..housekeeping import cleanup_handshakes
+        from ..capture.cleanup import cleanup_handshakes
 
         if not plan.targets:
             messagebox.showinfo("ATWA-NG", "No target folders with captures to clean up.")
