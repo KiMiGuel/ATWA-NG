@@ -7,7 +7,6 @@ made cli_commands -> attacks -> cli_commands circular.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,22 +19,13 @@ else:
     _REPO_ROOT = Path(__file__).resolve().parents[2]
 _VENDOR_ROOT = _REPO_ROOT / "vendor" / "aircrack-ng"
 
-# Only cracking backends and capture/pcap tools stay wrapped. Every other
-# capability is native: injection, scanning, handshake capture, WPS recon.
+# Only cracking backends stay wrapped. Everything else is native: injection,
+# scanning, handshake capture, WPS recon, and EAPOL capture/inspection.
 # CHOPCHOP_BIN is the one attack-side exception -- the native rewrite in
 # attacks/wep_client.py is verified broken and re-deriving KoreK/RC4 isn't
 # worth it when the real implementation is already vendored.
 CAPCRACK_BIN = _VENDOR_ROOT / "aircrack-ng"
 CHOPCHOP_BIN = _VENDOR_ROOT / "aireplay-ng"
-EAPOLHUNTER_BIN = _REPO_ROOT / "vendor" / "eapol_hunter" / "eapol_hunter.py"
-EAPOLDUMP_BIN = _REPO_ROOT / "vendor" / "eapol_dump" / "eapol_dump.sh"
-
-
-def python_for_scripts() -> str:
-    """Interpreter to run a vendored Python script with."""
-    if getattr(sys, "frozen", False):
-        return shutil.which("python3") or "python3"
-    return sys.executable
 
 
 def run_bounded(cmd: list[str], timeout: float) -> tuple[int, str, str]:

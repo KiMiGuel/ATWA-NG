@@ -268,9 +268,8 @@ class CapturesMixin(GuiState):
 
 
     def _inspect_capture(self, path) -> str:
-        from scapy.utils import PcapReader
-
         from ..attacks.handshake import HandshakeCapture, _classify
+        from ..capture.reader import read_capture
         from ..eapol.pmkid import extract_pmkid
         from ..frames.craft import is_eapol
 
@@ -278,18 +277,19 @@ class CapturesMixin(GuiState):
         pmkid_found = False
         packet_count = 0
         try:
-            # Stream one packet at a time. rdpcap() builds a complete
-            # Scapy PacketList, which made Inspect All's RAM usage scale
-            # with the largest capture instead of staying bounded.
-            with PcapReader(str(path)) as packets:
-                for pkt in packets:
-                    packet_count += 1
-                    if is_eapol(pkt) and extract_pmkid(bytes(pkt)):
-                        pmkid_found = True
-                    msg_no = _classify(pkt)
-                    if msg_no is not None and getattr(pkt, "addr3", None) and getattr(pkt, "addr1", None):
-                        ap, client = pkt.addr3, pkt.addr1 if msg_no % 2 == 1 else pkt.addr2
-                        cap.add(ap, client, msg_no)
+            # read_capture, not PcapReader: these files are linktype 127
+            # (radiotap), which Scapy's own L2 table may not resolve -- it
+            # then hands back opaque Raw packets and every count below
+            # reads zero. Its streaming context also keeps RAM bounded,
+            # which rdpcap() did not.
+            for pkt in read_capture(str(path)):
+                packet_count += 1
+                if is_eapol(pkt) and extract_pmkid(bytes(pkt)):
+                    pmkid_found = True
+                msg_no = _classify(pkt)
+                if msg_no is not None and getattr(pkt, "addr3", None) and getattr(pkt, "addr1", None):
+                    ap, client = pkt.addr3, pkt.addr1 if msg_no % 2 == 1 else pkt.addr2
+                    cap.add(ap, client, msg_no)
         except Exception as exc:  # noqa: BLE001 - capture parse failures are reported, not fatal
             return f"could not parse ({exc})"
         statuses = [cap.status(a, c).value for a, c in cap.messages]

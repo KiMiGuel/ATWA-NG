@@ -1,10 +1,21 @@
-"""EAPOL: parsing, passive capture, and per-frame reporting.
+"""EapolScanner / EapolDumper: the capability ported out of the two
+vendored EAPOL wrapper scripts.
 
-utils   -- the EAPOL-Key parser every other module delegates to
-scanner -- passive handshake capture and capture-quality verification
-dumper  -- per-frame nonce/MIC reporting for a capture file
+scanner.py -- passive capture tracking and crackability grading
+dumper.py  -- per-frame nonce/MIC reporting for a capture file
+
+Both sit on utils.py's parser, so the offsets and the M1..M4 rules are
+defined once.
 """
 
+from .dumper import EapolDumper, FrameReport
+from .scanner import (
+    CaptureQuality,
+    EapolScanner,
+    PairState,
+    PassiveEapolListener,
+    QualityReport,
+)
 from .utils import (
     EapolKey,
     eapol_key_info,
@@ -16,7 +27,14 @@ from .utils import (
 )
 
 __all__ = [
+    "CaptureQuality",
+    "EapolDumper",
     "EapolKey",
+    "EapolScanner",
+    "FrameReport",
+    "PairState",
+    "PassiveEapolListener",
+    "QualityReport",
     "eapol_key_info",
     "extract_mic",
     "extract_nonce",
