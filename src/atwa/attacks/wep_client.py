@@ -210,27 +210,15 @@ def hirte(
 
 # ── Chopchop ──────────────────────────────────────────────────────────────────
 #
-# The native from-scratch attempt below was disabled after two independent
-# offline verification passes (2026-08-25): the ICV-correction math doesn't
-# survive contact with WEP's actual RC4-encrypted trailer (500/500 failures
-# reconstructing a real re-encrypted shortened frame via this project's own
-# validated wep_encrypt()) — CRC-32 "un-append" is only a valid inverse over
-# a true cleartext CRC register, and that identity does not commute through
-# an independent keystream XOR at each byte position. Reimplementing this
-# correctly needs the same KoreK (2004) derivation routed through RC4, not
-# just a bare CRC reversal.
+# Native implementation removed (2026-09-14). Two offline passes showed the
+# ICV-correction math cannot survive WEP's RC4-encrypted trailer: 500/500
+# failures re-encrypting a shortened frame, because CRC-32 "un-append" is
+# only a valid inverse over a real CRC register and that identity does not
+# commute through a keystream XOR. Doing it right needs KoreK (2004)
+# derivation routed through RC4, not a bare CRC reversal.
 #
-# The real fix: this project already vendors and compiles a working
-# chopchop implementation (vendor/aircrack-ng, wired to `-4`/`--chopchop`)
-# — the same self-built binary this project already uses elsewhere in
-# cli.py, not a third-party tool being wrapped as a fallback. See
-# chopchop_vendor() below — it drives that binary instead of this function.
-
-
-# (The native chopchop() function itself was deleted 2026-09-14 -- it had
-# been a permanently-disabled raise-NotImplementedError stub since the
-# offline-verified ICV-correction failure; chopchop_vendor() below is the
-# only implementation now.)
+# chopchop_vendor() drives the aircrack-ng binary already vendored and
+# compiled here -- the same one cli.py uses, not a new dependency.
 
 
 def chopchop_vendor(

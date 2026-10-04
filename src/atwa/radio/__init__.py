@@ -89,29 +89,15 @@ def clear_driver_cache(iface: str | None = None) -> None:
 
 
 # PINCER is a public dual-Alfa feature. The user's known lab pair is
-# wlan1=mt76x0u and wlan0=rtw88_8814au, but the gate must not require those
-# exact models for other users.
-#
-# CORRECTION (2026-08-26): an earlier note here claimed mt76x0u
-# couldn't receive 5GHz frames in monitor mode at all, based on a
-# controlled A/B test that consistently got 0 packets on 5GHz vs.
-# thousands on 2.4GHz. That was wrong — the real cause was a stuck USB
-# device state left over from a power outage, not a driver/hardware
-# limit; a physical unplug/replug cleared it, and a fresh test
-# immediately succeeded on 5GHz. Both adapters are confirmed capable of
-# 5GHz monitor-mode RX. The role assignment below (mt76x0u=scan,
-# rtw88_8814au=attack) is unchanged — that's a design choice, not tied
-# to this correction — but don't cite the old "mt76x0u is 2.4GHz-only"
-# claim as a reason for it.
+# Alfa role split: mt76x0u scans, rtw88_8814au attacks. A design choice,
+# not a hardware limit -- an earlier note here claimed mt76x0u was
+# 2.4GHz-only, which was a stuck USB device state, not the driver. Both
+# adapters do 5GHz monitor-mode RX; don't cite that claim.
 ALFA_SCAN_DRIVERS = {"mt76x0u"}
 ALFA_ATTACK_DRIVERS = {"rtw88_8814au"}
-# USB vendor IDs used by Alfa adapters and common Alfa re-badged MediaTek
-# hardware. Driver-only detection is too narrow: a stranger may own two
-# different Alfa radios whose Linux drivers are not the two chipsets in our
-# lab. 0x0e8d is MediaTek's USB vendor ID and is also what the user's
-# AWUS036ACHM exposes; it cannot by itself prove the enclosure brand, so this
-# is a compatibility fallback after the known-driver path, not a claim that
-# every Mediatek/Realtek product is an Alfa.
+# Vendor IDs as a fallback for Alfa-branded MediaTek/Realtek radios whose
+# drivers aren't the two chipsets above. 0x0e8d is MediaTek's ID, so this
+# cannot prove the enclosure brand.
 ALFA_USB_VENDORS = {"0cf3", "0e8d"}
 
 
@@ -729,23 +715,13 @@ class ChannelHopper:
 
     iface: str
     channels: list[int] = field(default_factory=lambda: list(ALL_CHANNELS))
-    # Matches airodump-ng's default hop delay (DEFAULT_HOPFREQ, 250ms) --
-    # confirmed live (2026-09-07) both tools pay the same ~90-95ms
-    # mt76x0u hardware-retune tax per hop regardless of dwell value (a
-    # kernel-driver/firmware round trip, not fixable at the netlink call
-    # site -- verified against pyRIC with a persistent socket too), so
-    # this constant is the only lever.
-    # FLAGGED, NOT RE-VERIFIED (2026-09-13): the "verified against pyRIC"
-    # clause above is unconfirmed by anyone re-running it -- it's taken
-    # on faith the same way the now-disproved "wlan1 zero 5GHz frames"
-    # claim in set_channel() above was. Not shown wrong, just not
-    # actually re-checked; treat this specific clause as unverified until
-    # someone re-runs the hop-timing comparison against pyRIC directly.
-    # The old 0.3 vs. this 0.25 meant
-    # ~13% fewer channel visits per unit wall-clock time, which matched
-    # a live side-by-side AP-count gap almost exactly (61 vs. 71 APs in
-    # a 20s scan -> 86% coverage, vs. an 87% hop-rate ratio); dropping
-    # to 0.25 closed it completely (71 vs. 71, same 20s window).
+    # airodump-ng's DEFAULT_HOPFREQ (250ms). Both tools pay the same ~90-95ms
+    # mt76x0u retune tax per hop regardless of dwell, so this is the only
+    # lever; 0.3 vs 0.25 was ~13% fewer channel visits and closed a
+    # measured 61-vs-71-AP coverage gap at 20s.
+    # UNVERIFIED: the earlier claim that this tax is unfixable at the
+    # netlink call site (checked once against pyRIC, never re-run).
+    # Treat as unconfirmed until someone repeats that comparison.
     dwell: float = 0.25
     _idx: int = 0
 

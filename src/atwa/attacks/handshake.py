@@ -129,15 +129,10 @@ def capture_handshake(
         log(f"channel set to {channel}")
     log(f"listening for EAPOL on {bssid} (up to {timeout:.0f}s)...")
     cap = cap if cap is not None else HandshakeCapture()
-    # linktype forced explicitly: without it, PcapWriter guesses from the
-    # first packet's own .linktype attribute and warns + silently falls
-    # back to Ethernet ("unknown LL type for NoneType. Using type 1
-    # (Ethernet)") whenever that's absent — not just a noisy warning, the
-    # capture file's header would then claim Ethernet framing while
-    # actually containing raw 802.11/RadioTap frames, which is wrong data
-    # for any downstream tool (aircrack-ng, hcxpcapngtool, Wireshark) to
-    # parse. Monitor-mode sniffs always come back RadioTap-wrapped, so the
-    # correct type is DLT_IEEE802_11_RADIO, always, not a guess.
+    # linktype forced: left to guess, PcapWriter falls back to Ethernet, so
+    # the file header would claim Ethernet framing while holding raw
+    # RadioTap frames -- unreadable by aircrack-ng, hcxpcapngtool, or
+    # Wireshark. Monitor-mode sniffs are always RadioTap-wrapped.
     # The "discard when nothing was captured" logic below may only delete a
     # file THIS call created: the writer opens append=True, so outfile can
     # already hold a good capture from a previous run (OMNI reuses

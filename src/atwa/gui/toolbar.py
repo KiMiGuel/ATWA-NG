@@ -321,26 +321,11 @@ class ToolbarMixin(GuiState):
 
 
     def _build_body(self):
-        # Top-level Notebook (Target tab | Captures tab) instead of one long
-        # silent-scroll column (2026-08-27 reskin) -- that single column
-        # buried Captures, and most of the Attacks list, below the fold with
-        # no visible cue there was more to see (2026-08-28 user report:
-        # "resizing makes hidden buttons appear that I was not aware of";
-        # Captures could shrink to nothing at normal window heights). Tabs
-        # give each one the *full* body height instead (2026-08-28 user
-        # request, citing v1/n2-ng's own tabbed raw-log precedent).
-        #
-        # The Scanned Access Points list lives INSIDE the Target tab, not
-        # beside the Notebook -- Captures work (managing/cracking files) has
-        # no use for it, so keeping it always-visible just stole width from
-        # the Captures button row/file table for no reason (2026-08-28 user
-        # request: "make the captures tab open all the way to the left to
-        # hide the scanned access points window"). It reappears automatically
-        # when the Target tab is reselected, since it's that tab's own child,
-        # not a separately-hidden widget.
-        #
-        # Log itself stays untabbed, always a full-width bottom strip (user
-        # live-test note 2026-08-27: moving IT into a notebook tab hid it).
+        # Notebook, not one long scrolling column: a single column buried
+        # Captures and most of the Attacks list below the fold with no cue.
+        # The AP list lives inside the Target tab (Captures has no use for it
+        # and it stole width); it returns with that tab, since it's the tab's
+        # own child. The log stays untabbed -- tabbing it hid it.
         body = ttk.Frame(self.root, padding=2)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -655,19 +640,12 @@ class ToolbarMixin(GuiState):
         self._scanning.clear()
         self._stop_event.set()
         self._stop_lock_capture()
-        # The scan loop thread (_start_scan) may be mid-blocking-sniff() when
-        # _scanning is cleared -- sniff()'s call is timed (up to one dwell
-        # period) and doesn't notice the flag until it returns. Without
-        # waiting here, set_managed_mode() below (which does `ip link set
-        # <iface> down`) could run while that thread's raw socket is still
-        # open, yanking the interface out from under a live read -- this is
-        # exactly the "[Errno 100] Network is down" scapy warning users see
-        # on close, reproduced live (2026-08-27): AsyncSniffer left running
-        # + set_managed_mode() called concurrently = deterministic ENETDOWN.
-        # No driver quirk involved -- any open raw socket on an interface
-        # that goes admin-down behaves this way, on any adapter. The join
-        # timeout only needs to cover one dwell period plus loop overhead
-        # (dwell defaults to 0.25s); 2s leaves comfortable margin.
+        # Join the scan thread before touching the radio: it may be mid-sniff()
+        # (timed to one dwell, so it misses the flag until it returns), and
+        # set_managed_mode() admin-downs the interface underneath it. That
+        # race is a deterministic ENETDOWN on close, not a driver quirk --
+        # any open raw socket behaves this way. 2s covers one dwell (0.25s)
+        # with margin.
         if self._scan_thread is not None:
             self._scan_thread.join(timeout=2.0)
         self._save_settings()
