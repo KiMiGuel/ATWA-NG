@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 
 from . import utils
 
+# frames.craft imports this package's utils at runtime to parse EAPOL out
+# of scapy packets, so the frames <-> eapol edge exists either way. This
+# module's Frame import is TYPE_CHECKING-only to keep that edge one-way at
+# runtime; importing dissect here for real would make the two packages
+# mutually importable.
 if TYPE_CHECKING:
     from ..frames.dissect import Frame
 
