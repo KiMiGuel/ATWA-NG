@@ -279,17 +279,12 @@ def message_number(data: bytes) -> int | None:
     if ack and mic:
         return 3
     if not ack and mic:
-        if key.is_rsn or desc_type_is_legacy(key):
-            # RSN: SECURE alone decides (M4 sets it, M2 does not).
-            # Legacy WPA: SECURE is absent on both, so fall back to the
-            # replay counter.
-            if key.is_rsn:
-                return 4 if secure else 2
+        # SECURE alone separates M2 from M4 for every descriptor except
+        # legacy WPA/WEP (254), where it is absent on both and the replay
+        # counter decides instead. Types 1 and 3 are WPA1 802.1X and follow
+        # the same rule as RSN -- notably a WPA1 M4 sets SECURE, so routing
+        # them down the legacy path would misread it as M2.
+        if key.descriptor_type == DESC_TYPE_WPA:
             return 4 if key.replay_counter else 2
-        return 2
+        return 4 if secure else 2
     return None
-
-
-def desc_type_is_legacy(key: EapolKey) -> bool:
-    """True for the legacy WPA/WEP key descriptor."""
-    return key.descriptor_type == DESC_TYPE_WPA
