@@ -42,6 +42,8 @@ import struct
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
+from .eapol import utils as _eapol
+
 # dpkt is deliberately NOT imported here: it is only needed on the rare
 # fallback path below, and importing the package costs ~42ms at startup
 # (dpkt/__init__ eagerly pulls its whole protocol zoo). Deferred to the
@@ -411,8 +413,13 @@ def _eapol_payload(frame: Frame) -> bytes | None:
 
 
 def is_eapol(frame: Frame) -> bool:
-    """True if a data frame's body carries an EAPOL (802.1X) payload."""
-    return _eapol_payload(frame) is not None
+    """True if a data frame's body carries a well-formed EAPOL-Key frame.
+
+    Delegates to eapol.utils, which requires EAPOL type 3 and a valid key
+    descriptor type. The previous inline version accepted any EAPOL type
+    (including EAP-Packet), so callers reached here on ordinary EAP
+    traffic that has no key descriptor to read."""
+    return _eapol.is_eapol(_eapol_payload(frame) or b"")
 
 
 def eapol_key_info(frame: Frame) -> tuple[bool, bool] | None:
@@ -420,14 +427,4 @@ def eapol_key_info(frame: Frame) -> tuple[bool, bool] | None:
 
     The two flag bits identify handshake messages: M1 has ack+!mic,
     M2 has mic+!ack, M3 has ack+mic (with install), M4 has mic+!ack."""
-    eapol = _eapol_payload(frame)
-    if eapol is None:
-        return None
-    # EAPOL: [version(1)][type(1)][length(2)][descriptor_type(1)][key_info(2, big-endian)]...
-    key_frame = eapol[4:]
-    if len(key_frame) < 3:
-        return None
-    key_info = int.from_bytes(key_frame[1:3], "big")
-    mic_set = bool(key_info & 0x0100)
-    ack_set = bool(key_info & 0x0080)
-    return mic_set, ack_set
+    return _eapol.eapol_key_info(_eapol_payload(frame) or b"")
