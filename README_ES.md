@@ -130,7 +130,7 @@ cd ~/john/src && ./configure && make -s clean && make -sj$(nproc)
 
 **hcxtools** (para la conversión de capturas): `sudo apt install hcxtools`
 
-El checklist completo de dependencias está en [USAGE.md](./USAGE.md), y la GUI puede auditar tu sistema por ti: **Help → Check Dependencies**.
+La GUI puede auditar tu sistema por ti: **Help → Check Dependencies**.
 
 ---
 
@@ -159,7 +159,7 @@ Todo lo que captures cae en `~/atwa-hs/<SSID>_<BSSID>/`, y las contraseñas crac
   <img src="docs/brand/gui-screenshot.png" alt="GUI de ATWA-NG — selección de adaptador, lista de escaneo, panel de objetivo, ataques y log" width="820">
 </p>
 
-Referencia completa de la CLI y checklist de dependencias: [USAGE.md](./USAGE.md).
+Referencia completa de la CLI: [README.md](./README.md).
 
 ---
 
