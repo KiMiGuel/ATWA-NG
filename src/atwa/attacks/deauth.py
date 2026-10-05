@@ -55,8 +55,8 @@ def deauth(
     frames got out before the failure).
     This is NOT proof of over-the-air reception: this hardware's TX
     packet counters (`ip -s link`) aren't instrumented for monitor-mode
-    injection at all (confirmed live via a second-radio witness -- see
-    STATUS.md), so there's no cheap from-Python way to verify actual RF
+    injection at all (confirmed live via a second-radio witness), so
+    there's no cheap from-Python way to verify actual RF
     transmission. What this DOES catch is the real, previously-silent
     failure mode of calling deauth() against an interface that isn't
     actually in monitor mode (e.g. a stale lock, a failed monitor-mode

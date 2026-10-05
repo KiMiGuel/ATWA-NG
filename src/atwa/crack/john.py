@@ -83,7 +83,7 @@ def _session_dir() -> Path:
     user's cache dir, not wherever atwa happened to be launched from and
     not inside the capture root (which sudo runs leave root-owned, so an
     unprivileged `atwa crack` cannot write there — confirmed live:
-    "1: open: /home/KaliMa/atwa-hs/.john-sessions/atwa_<hex>.log:
+    "1: open: ~/atwa-hs/.john-sessions/atwa_<hex>.log:
     Permission denied" for the regular user). John writes
     <session>.rec/<session>.log relative to the --session value itself,
     so passing a path prefix (not just a bare name) redirects them here
