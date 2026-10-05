@@ -1,8 +1,7 @@
 """Lightweight raw-bytes 802.11 frame dissection for the scan hot path
 (scan.py's process_packet() and the security/WPS/OWE profile parsers it
 calls) -- replacing scapy's Packet object model there, the actual
-measured CPU cost during continuous scanning (STATUS.md's Performance
-section). Frame-CRAFTING for injection (frames.py's craft_*() functions,
+measured CPU cost during continuous scanning. Frame-CRAFTING for injection (frames.py's craft_*() functions,
 used by attacks -- a handful of packets per action, not a hot loop)
 stays on scapy unchanged; it was never part of the CPU/fan complaint and
 rewriting it would add regression risk to already-live-verified attacks

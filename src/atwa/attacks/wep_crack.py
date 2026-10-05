@@ -37,7 +37,7 @@ def crack_wep(
     result_out: dict | None = None,
 ) -> bytes | None:
     """Full attack: fake-auth, find one ARP frame, replay it, harvest IVs,
-    recover the key with PTW. Not yet live-tested (see STATUS.md) —
+    recover the key with PTW. Not yet live-tested --
     sendp/sniff/auth are injectable (whole-function injection, matching
     omni.py's pmkid_fn/handshake_fn/deauth_fn pattern rather than
     threading a sendp_fn down into fake_authenticate itself) so the

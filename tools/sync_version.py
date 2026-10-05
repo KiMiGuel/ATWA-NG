@@ -2,7 +2,7 @@
 """Sync version/subcommand/test tags across README.md, README_ES.md and
 docs/index.html from a single source of truth: pyproject.toml.
 
-Run after bumping the version (step 1 of the release flow in AGENTS.md):
+Run after bumping the version in pyproject.toml:
 
     python3 tools/sync_version.py
 

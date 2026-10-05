@@ -19,8 +19,7 @@ threshold the way a genuine MIC failure is. Reliably triggering real
 countermeasures needs a captured live frame with a valid ICV and only the
 MIC corrupted (the wep_replay.py/wep_client.py capture-then-corrupt
 pattern), which this module does not do. Kept as the simple synthetic
-version the plan called for; not yet live-verified either way (see
-STATUS.md's live-vs-unit-tested convention).
+version the plan called for; not yet live-verified either way.
 """
 
 from __future__ import annotations

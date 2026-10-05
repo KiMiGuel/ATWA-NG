@@ -937,8 +937,8 @@ class AttacksMixin(GuiState):
         warned = messagebox.askokcancel(
             "ATWA-NG",
             "WPS bruteforce is currently EXPERIMENTAL — across multiple live sessions "
-            "it has never completed a real M2→M3 exchange against a test AP (see "
-            "STATUS.md). It may just time out repeatedly. Continue anyway?",
+            "it has never completed a real M2→M3 exchange against a test AP. "
+            "It may just time out repeatedly. Continue anyway?",
         )
         if not warned:
             return
@@ -1121,8 +1121,8 @@ class AttacksMixin(GuiState):
 
 
     def _attack_pincer(self):
-        """Flagship dual-Alfa mode (STATUS.md 'Ideas/undecided', 2026-08-14
-        — one special locked/hidden attack, not folded into the default
+        """Flagship dual-Alfa mode — one special locked/hidden attack, not
+        folded into the default
         single-adapter path). Split-role, proven live that session: the
         AWUS036ACHM (mt76x0u, wider scan range) stays parked on the
         target's channel doing nothing but listen for the handshake, while
