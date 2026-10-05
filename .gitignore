@@ -28,10 +28,6 @@ Pycharm/
 *.hccapx
 *.22000
 
-# graphify-out/ IS tracked (the graph travels with the repo). Only its
-# regenerable caches and dated backup snapshots are ignored.
-graphify-out/cache/
-graphify-out/20*/
-
-# Only the repo-root graphify-out/ is tracked; nested ones are stray.
-*/graphify-out/
+# Code knowledge graph — regenerable dev-tooling output, rebuilt locally by
+# the post-commit hook. Not published.
+graphify-out/
