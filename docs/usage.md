@@ -36,8 +36,6 @@ Stop Attack aborts between rounds. Some vectors finish their current frame first
 
 ## Captures & cracking
 
-Screenshots (add to `docs/brand/`): `captures-main.png`, `captures-handshake.png`, `captures-pmkid.png`, `captures-crack.png`, `captures-omni.png`.
-
 Captures live in `~/atwa-hs/<SSID>_<BSSID>/`.
 
 ### Handshake capture
