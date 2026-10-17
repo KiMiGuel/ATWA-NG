@@ -173,15 +173,26 @@ def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
     checkout = _find_checkout()
     if checkout is None:
         return False, "ATWA-NG source checkout not found next to the installed package; update manually with git pull"
+    # Resolve the branch explicitly: a clone without upstream tracking
+    # (common after a fresh clone or a detached HEAD) makes a bare
+    # `git pull` fail with "no tracking information". Pinning origin/<branch>
+    # avoids that and also repairs the tracking config for next time.
+    try:
+        branch_proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            cwd=str(checkout), timeout=timeout, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, f"could not determine current branch: {exc}"
+    branch = (branch_proc.stdout or "").strip()
+    if not branch or branch == "HEAD":
+        branch = "main"
     try:
         proc = subprocess.run(
-            ["git", "pull"],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            cwd=str(checkout),
-            timeout=timeout,
-            check=False,
+            ["git", "pull", "origin", branch],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            cwd=str(checkout), timeout=timeout, check=False,
         )
     except subprocess.TimeoutExpired:
         return False, f"git pull timed out after {timeout}s"
@@ -190,6 +201,15 @@ def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
     if proc.returncode != 0:
         return False, f"git pull failed: {proc.stderr.strip()}"
     pull_msg = proc.stdout.strip() or "already up to date"
+    # Repair upstream tracking so future bare `git pull`s work too.
+    try:
+        subprocess.run(
+            ["git", "branch", "--set-upstream-to", f"origin/{branch}", branch],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            cwd=str(checkout), timeout=timeout, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
     # Re-install so the installed package metadata refreshes.
     try:
         reinstall = subprocess.run(
