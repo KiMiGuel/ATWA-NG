@@ -8,8 +8,6 @@ Drop panel captures into `docs/brand/` and they'll render here.
 - Overview: `brand/gui-screenshot.png` (included)
 - Add: `brand/scan.png`, `brand/attacks.png`, `brand/captures.png`, `brand/wps.png`
 
-![ATWA-NG GUI](brand/gui-screenshot.png)
-
 ## Setup
 Two adapters is the sane setup:
 - `wlan0` → internet (managed)
