@@ -381,20 +381,31 @@ class ToolbarMixin(GuiState):
         self.adapter_combo["values"] = displays
         self.iface_ap_combo["values"] = displays
 
+        # Default the scan/monitor adapter to the first Alfa scan role when
+        # one is detected (mt76x0u) rather than an arbitrary sorted name, so
+        # the out-of-the-box pairing is scan=wlan1 / attack=wlan0.
+
+        alfa = detect_alfa_pair(ifaces)
         if ifaces and not self.adapter_var.get():
-            self.adapter_var.set(ifaces[0])
+            if alfa is not None:
+                self.adapter_var.set(alfa[0])
+            else:
+                self.adapter_var.set(ifaces[0])
         self._sync_iface_display(self.adapter_var, self.adapter_display_var)
         self._update_adapter_mac_label()
 
         saved_iface_ap = self.settings.get("iface_ap", "")
-        if saved_iface_ap and saved_iface_ap in ifaces:
+        # Never let the AP iface collapse onto the scan adapter — a rogue AP
+        # needs a distinct interface, and a persisted bad pairing (both on
+        # the same adapter) is the reported default-state bug.
+        if saved_iface_ap and saved_iface_ap in ifaces and saved_iface_ap != self.adapter_var.get():
             self.iface_ap_var.set(saved_iface_ap)
-        elif not self.iface_ap_var.get() or self.iface_ap_var.get() not in ifaces:
-            # Rogue-AP workflows need a *second* interface distinct from the
-            # monitor/scan adapter to host the AP on — default to the
-            # first one that isn't already selected as the scan adapter.
+        elif not self.iface_ap_var.get() or self.iface_ap_var.get() not in ifaces or self.iface_ap_var.get() == self.adapter_var.get():
             others = [i for i in ifaces if i != self.adapter_var.get()]
-            self.iface_ap_var.set((others or ifaces or [""])[0])
+            if alfa is not None and alfa[1] in ifaces and alfa[1] != self.adapter_var.get():
+                self.iface_ap_var.set(alfa[1])
+            else:
+                self.iface_ap_var.set((others or ifaces or [""])[0])
         self._sync_iface_display(self.iface_ap_var, self.iface_ap_display_var)
 
         self.alfa_pair = detect_alfa_pair(ifaces)

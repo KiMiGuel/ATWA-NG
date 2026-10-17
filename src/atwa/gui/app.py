@@ -152,6 +152,13 @@ class App(
         if saved_adapter and saved_adapter in self._iface_display_to_name.values():
             self.adapter_var.set(saved_adapter)
             self._sync_iface_display(self.adapter_var, self.adapter_display_var)
+        # Guard against a persisted pairing where both adapters collapsed
+        # onto the same interface: force the AP iface onto the other adapter.
+        if self.iface_ap_var.get() == self.adapter_var.get():
+            others = [i for i in self._iface_display_to_name.values() if i != self.adapter_var.get()]
+            if others:
+                self.iface_ap_var.set(others[0])
+                self._sync_iface_display(self.iface_ap_var, self.iface_ap_display_var)
 
         self.root.after(100, self._drain_queue)
         self.root.after(5000, self._check_channel_lock)

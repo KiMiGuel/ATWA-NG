@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import tkinter.font as tk_font
 from tkinter import ttk
+from typing import Any
 
 THEME = {
     # 2026-08-28: softened pure #000 to a dark slate for a less flat/harsh
@@ -68,7 +69,7 @@ def apply(root) -> dict[str, tk_font.Font]:
     try:
         from ttkthemes import ThemedStyle
 
-        style = ThemedStyle(root)
+        style: Any = ThemedStyle(root)
         style.set_theme("black")
     except Exception:  # noqa: BLE001 - ttkthemes missing or failed to init; degrade, don't crash the GUI
         style = ttk.Style(root)

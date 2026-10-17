@@ -110,7 +110,11 @@ def _cmd_eapol_hunt(args) -> int:
     from scapy.sendrecv import AsyncSniffer
 
     from ..eapol.scanner import EapolScanner
-    from ..radio import ALL_CHANNELS, ChannelHopper, check_kill_interfering_processes
+    from ..radio import (
+        ALL_CHANNELS,
+        ChannelHopper,
+        ensure_network_manager_not_interfering,
+    )
 
     iface, duration = args.iface, args.duration
     scanner = EapolScanner()
@@ -124,7 +128,7 @@ def _cmd_eapol_hunt(args) -> int:
             return
         scanner.observe_packet(bytes(eapol), addr1, addr2)
 
-    check_kill_interfering_processes()
+    ensure_network_manager_not_interfering(iface)
     hopper = ChannelHopper(iface=iface, channels=list(ALL_CHANNELS))
     stop = threading.Event()
 
