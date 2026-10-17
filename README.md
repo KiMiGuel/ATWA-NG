@@ -11,6 +11,10 @@ git clone https://github.com/KiMiGuel/ATWA-NG
 cd ATWA-NG && pip install -e .
 ```
 
+## Usage
+
+Full (concise) guide: [`docs/usage.md`](docs/usage.md).
+
 ## Quick start
 
 ```bash
