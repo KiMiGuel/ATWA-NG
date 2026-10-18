@@ -15,7 +15,7 @@
 <h3 align="center">Una herramienta WiFi. Dos radios. Cero piedad para una contraseña débil.</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.7.0-%2300c8ff?style=flat-square" alt="Versión">
+  <img src="https://img.shields.io/badge/version-2.8.0-%2300c8ff?style=flat-square" alt="Versión">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/Kali-compatible-purple?style=flat-square" alt="Kali">
   <img src="https://img.shields.io/badge/subcomandos-23-00c8ff?style=flat-square" alt="23 subcomandos CLI">
