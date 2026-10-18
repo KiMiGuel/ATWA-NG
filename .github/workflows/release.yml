@@ -76,10 +76,13 @@ jobs:
           REPO = Path(".")
           data = tomllib.loads((REPO / "pyproject.toml").read_text())
           version = str(data["project"]["version"])
-          out = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q"],
-                              capture_output=True, text=True, cwd=REPO, check=False).stdout
+          res = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q"],
+                              capture_output=True, text=True, cwd=REPO, check=False)
+          out = res.stdout
           m = re.search(r"^(\d+) tests? collected", out, re.M)
           if not m:
+              print("STDOUT:", out[-500:])
+              print("STDERR:", res.stderr[-1000:])
               sys.exit("sync: could not count tests")
           tests = int(m.group(1))
           sys.path.insert(0, str(REPO / "src"))
