@@ -13,7 +13,9 @@ soon as the matching GitHub Release is published.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -158,14 +160,100 @@ def _find_checkout() -> Path | None:
     return None
 
 
+def _venv_python(checkout: Path) -> Path | None:
+    """Return the venv interpreter inside ``checkout`` if present."""
+    candidates = (
+        checkout / ".venv" / "bin" / "python",
+        checkout / ".venv" / "Scripts" / "python.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _base_python() -> str:
+    """Pick a usable base interpreter for creating a venv."""
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return sys.executable
+
+
+def _run(cmd: list[str], cwd: Path, timeout: float) -> tuple[int, str, str]:
+    """subprocess.run wrapper that never raises."""
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            cwd=str(cwd),
+            timeout=timeout,
+            check=False,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out after {timeout}s"
+    except OSError as exc:
+        return 1, "", str(exc)
+
+
+def _ensure_venv(checkout: Path, timeout: float) -> tuple[Path | None, str]:
+    """Ensure a usable venv exists in ``checkout``, creating it if needed.
+
+    Returns ``(python_path, message)``. ``python_path`` is ``None`` on
+    failure. A freshly created venv gets the project + its dependencies
+    installed; an existing venv is repaired (deps installed) only if it
+    cannot already import ``atwa``.
+    """
+    existing = _venv_python(checkout)
+    if existing is not None:
+        # Verify it can import atwa; repair deps if not.
+        rc, _out, _err = _run([str(existing), "-c", "import atwa"], checkout, timeout)
+        if rc != 0:
+            rc2, _out2, err2 = _run(
+                [str(existing), "-m", "pip", "install", "-e", "."],
+                checkout,
+                timeout,
+            )
+            if rc2 != 0:
+                return None, f"existing venv cannot import atwa and repair failed: {err2.strip()}"
+        return existing, "existing venv"
+
+    # Create a fresh venv.
+    venv_dir = checkout / ".venv"
+    base = _base_python()
+    rc, _out, err = _run([base, "-m", "venv", str(venv_dir)], checkout, timeout)
+    if rc != 0:
+        return None, f"could not create venv: {err.strip()}"
+
+    py = _venv_python(checkout)
+    if py is None:
+        return None, "venv created but interpreter not found"
+
+    # Install project + dependencies into the fresh venv.
+    rc, _out, err = _run([str(py), "-m", "pip", "install", "-e", "."], checkout, timeout)
+    if rc != 0:
+        return None, f"venv created but dependency install failed: {err.strip()}"
+
+    return py, "created venv and installed dependencies"
+
+
 def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
     """Pull the latest ATWA-NG code from GitHub and re-install.
 
     The package is installed in editable mode from the local clone, so
-    `git pull` is the correct update mechanism -- run inside that clone
+    ``git pull`` is the correct update mechanism -- run inside that clone
     (resolved by :func:`_find_checkout`), not the caller's CWD. After
     pulling, re-install so the installed package metadata (version, entry
     points) refreshes.
+
+    The reinstall uses the project's own venv when present and creates one
+    automatically when it is missing, so updating does not require the
+    caller to have activated ``.venv`` first. Falls back to the running
+    interpreter only when a venv cannot be created.
 
     Returns (success, message). Never raises -- update failures are
     reported to the caller, not raised past it.
@@ -173,58 +261,52 @@ def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
     checkout = _find_checkout()
     if checkout is None:
         return False, "ATWA-NG source checkout not found next to the installed package; update manually with git pull"
+
     # Resolve the branch explicitly: a clone without upstream tracking
     # (common after a fresh clone or a detached HEAD) makes a bare
     # `git pull` fail with "no tracking information". Pinning origin/<branch>
     # avoids that and also repairs the tracking config for next time.
-    try:
-        branch_proc = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-            cwd=str(checkout), timeout=timeout, check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return False, f"could not determine current branch: {exc}"
-    branch = (branch_proc.stdout or "").strip()
+    rc, branch_out, branch_err = _run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], checkout, timeout
+    )
+    # _run returns rc from subprocess; but branch determination failure
+    # handling: treat non-zero as undetermined.
+    if rc != 0:
+        return False, f"could not determine current branch: {branch_err.strip() or branch_out.strip()}"
+    branch = (branch_out or "").strip()
     if not branch or branch == "HEAD":
         branch = "main"
-    try:
-        proc = subprocess.run(
-            ["git", "pull", "origin", branch],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-            cwd=str(checkout), timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
+
+    rc, pull_stdout, pull_stderr = _run(
+        ["git", "pull", "origin", branch], checkout, timeout
+    )
+    if rc == 124:
         return False, f"git pull timed out after {timeout}s"
-    except OSError as exc:
-        return False, f"git pull failed: {exc}"
-    if proc.returncode != 0:
-        return False, f"git pull failed: {proc.stderr.strip()}"
-    pull_msg = proc.stdout.strip() or "already up to date"
+    if rc != 0:
+        return False, f"git pull failed: {pull_stderr.strip()}"
+    pull_msg = pull_stdout.strip() or "already up to date"
+
     # Repair upstream tracking so future bare `git pull`s work too.
-    try:
-        subprocess.run(
-            ["git", "branch", "--set-upstream-to", f"origin/{branch}", branch],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-            cwd=str(checkout), timeout=timeout, check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    _run(
+        ["git", "branch", "--set-upstream-to", f"origin/{branch}", branch],
+        checkout,
+        timeout,
+    )
+
+    # Resolve (or create) the venv interpreter to reinstall into.
+    py, venv_msg = _ensure_venv(checkout, timeout)
+    if py is None:
+        py = Path(sys.executable)
+        venv_msg = f"venv unavailable ({venv_msg}); falling back to {py}"
+
     # Re-install so the installed package metadata refreshes.
-    try:
-        reinstall = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            cwd=str(checkout),
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+    rc, _out, err = _run(
+        [str(py), "-m", "pip", "install", "--no-deps", "-e", "."],
+        checkout,
+        timeout,
+    )
+    if rc == 124:
         return False, f"pull succeeded ({pull_msg}) but pip reinstall timed out after {timeout}s"
-    except OSError as exc:
-        return False, f"pull succeeded ({pull_msg}) but pip reinstall failed: {exc}"
-    if reinstall.returncode != 0:
-        return False, f"pull succeeded ({pull_msg}) but pip reinstall failed: {reinstall.stderr.strip()}"
-    return True, f"{pull_msg}; reinstalled successfully"
+    if rc != 0:
+        return False, f"pull succeeded ({pull_msg}) but pip reinstall failed: {err.strip()}"
+    return True, f"{pull_msg}; reinstalled via {venv_msg} ({py})"

@@ -60,6 +60,14 @@ def ensure_root(demo: bool) -> None:
     extra = os.pathsep.join([src_dir, usersite, env.get("PYTHONPATH", "")])
     py_path = f"PYTHONPATH={extra}"
 
+    # Prefer the project's own venv interpreter when one exists, so a GUI
+    # launched outside an activated shell still runs (and updates) against
+    # the venv that holds the installed package + dependencies.
+    venv_py = Path(src_dir).parent / ".venv" / "bin" / "python"
+    if not venv_py.is_file():
+        venv_py = Path(src_dir).parent / ".venv" / "Scripts" / "python.exe"
+    python_to_use = str(venv_py) if venv_py.is_file() else sys.executable
+
     cached = _sudo_cached()
     if not cached:
         import tkinter as tk
@@ -78,7 +86,7 @@ def ensure_root(demo: bool) -> None:
     else:
         sudo_input = None
 
-    args = ["sudo", "-n" if cached else "-S", py_path, sys.executable, "-m", "atwa.cli", "gui"]
+    args = ["sudo", "-n" if cached else "-S", py_path, python_to_use, "-m", "atwa.cli", "gui"]
     proc = subprocess.Popen(
         args,
         stdin=subprocess.PIPE if sudo_input else subprocess.DEVNULL,
