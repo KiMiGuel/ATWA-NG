@@ -8,7 +8,7 @@ version = "2.8.0"
 description = "ATWA-NG: native WiFi security auditing engine with vendored scanning/cracking binaries, self-contained"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "KiMiGuel", email = "contact@indepentest.pro" }]
 keywords = ["wifi", "security", "auditing", "pentest", "wireless", "802.11"]
 classifiers = [
@@ -16,7 +16,6 @@ classifiers = [
     "Environment :: Console",
     "Environment :: X11 Applications",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
