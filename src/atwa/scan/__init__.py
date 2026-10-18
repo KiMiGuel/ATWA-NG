@@ -360,6 +360,128 @@ class RawFrameSniffer:
         self._stop_event.set()
 
 
+def _freq_to_channel(freq: int) -> int | None:
+    """Map an 802.11 centre frequency (MHz) to its channel number."""
+    if freq == 2484:
+        return 14
+    if 2412 <= freq <= 2472:
+        return (freq - 2407) // 5
+    if 5180 <= freq <= 5885:
+        return (freq - 5000) // 5
+    if 5955 <= freq <= 7115:
+        return (freq - 5950) // 5
+    return None
+
+
+def scan_managed(iface: str) -> ScanResult:
+    """Discover APs using the kernel managed-mode scan (``iw dev <iface> scan``).
+
+    Works while the interface is associated (no monitor mode required) and
+    is typically more thorough than the passive monitor-mode sniffer: the
+    kernel hops channels internally and collects beacons/probe responses
+    from every AP in range. Trade-off: no passive PMKID sniffing and no
+    client tracking -- use the monitor-mode ``scan()`` for those.
+
+    Returns the same ``ScanResult`` shape as ``scan()`` so callers are
+    interchangeable.
+    """
+    import subprocess
+    import time
+
+    result = ScanResult()
+    try:
+        proc = subprocess.run(
+            ["iw", "dev", iface, "scan"],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    output = proc.stdout or ""
+
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in output.splitlines():
+        if line.startswith("BSS "):
+            if current:
+                blocks.append(current)
+            current = [line]
+        else:
+            if current:
+                current.append(line)
+    if current:
+        blocks.append(current)
+
+    for block in blocks:
+        first = block[0]
+        bssid = first.split()[1].split("(")[0].strip().lower()
+        if not bssid or ":" not in bssid:
+            continue
+
+        freq = None
+        signal = None
+        ssid: str | None = None
+        channel = None
+        has_rsn = False
+        has_wpa = False
+        has_privacy = False
+
+        for line in block:
+            s = line.strip()
+            if s.startswith("freq:"):
+                try:
+                    freq = int(float(s.split(":", 1)[1].strip()))
+                except ValueError:
+                    freq = None
+            elif s.startswith("signal:"):
+                try:
+                    signal = int(float(s.split(":", 1)[1].split()[0]))
+                except (ValueError, IndexError):
+                    signal = None
+            elif s.startswith("SSID:"):
+                val = s.split(":", 1)[1].strip()
+                if val and "\\x" not in val:
+                    ssid = val
+                else:
+                    ssid = None
+            elif s.startswith("DS Parameter set:"):
+                try:
+                    channel = int(s.split(":", 1)[1].strip().split()[0])
+                except (ValueError, IndexError):
+                    channel = None
+            elif s.startswith("capability:"):
+                if "Privacy" in s:
+                    has_privacy = True
+            elif s.startswith("RSN:"):
+                has_rsn = True
+            elif s.startswith("WPA:"):
+                has_wpa = True
+
+        if channel is None and freq is not None:
+            channel = _freq_to_channel(freq)
+
+        if has_rsn:
+            security = "WPA2"
+        elif has_wpa:
+            security = "WPA"
+        elif has_privacy:
+            security = "WEP"
+        else:
+            security = "open"
+
+        ap = AccessPoint(
+            bssid=bssid,
+            ssid=ssid,
+            channel=channel,
+            security=security,
+            signal=signal,
+            beacon_count=1,
+            first_seen=time.time(),
+            last_seen=time.time(),
+        )
+        result.aps[bssid] = ap
+    return result
+
+
 def scan(
     iface: str,
     duration: float = 10.0,

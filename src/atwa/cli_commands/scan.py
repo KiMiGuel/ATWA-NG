@@ -7,7 +7,7 @@ import time
 
 from ..injection_test import injection_test
 from ..radio import get_allowed_channels, get_mode
-from ..scan import channels_for_band, parse_channel_range, scan
+from ..scan import channels_for_band, parse_channel_range, scan, scan_managed
 
 
 def _cmd_scan(args) -> int:
@@ -31,7 +31,14 @@ def _cmd_scan(args) -> int:
         print(f"note: regulatory domain blocks {len(skipped)} of {len(channels)} "
               f"requested channels -- NOT scanned: {','.join(str(c) for c in skipped)}",
               file=sys.stderr)
-    result = scan(args.iface, duration=args.duration, channels=channels, active_probe_interval=args.active_probe)
+    mode = get_mode(args.iface)
+    if mode == "managed":
+        # Managed-mode scan uses the kernel's own scan (iw dev <iface> scan),
+        # which is more thorough than the passive monitor-mode sniffer and
+        # needs no monitor mode -- keeps the interface connected.
+        result = scan_managed(args.iface)
+    else:
+        result = scan(args.iface, duration=args.duration, channels=channels, active_probe_interval=args.active_probe)
     for ap in sorted(result.aps.values(), key=lambda a: a.bssid):
         print(f"{ap.bssid}  ch={ap.channel}  {ap.security}  "
               f"pwr={ap.signal}  beacons={ap.beacon_count}  ssid={ap.ssid!r}")
@@ -47,10 +54,9 @@ def _cmd_scan(args) -> int:
     # nothing instead of looking identical to a genuinely empty area.
     if not result.aps:
         mode = get_mode(args.iface)
-        if mode != "monitor":
-            print(f"error: {args.iface} is in '{mode}' mode, not 'monitor' -- "
-                  f"a managed-mode interface cannot see 802.11 frames.\n"
-                  f"       fix: sudo iw dev {args.iface} set monitor", file=sys.stderr)
+        if mode == "managed":
+            print(f"no APs seen on {args.iface} (managed-mode scan returned nothing)",
+                  file=sys.stderr)
         else:
             print(f"no APs seen on {args.iface} in {args.duration}s "
                   f"(channel spec: {channels or 'all'})", file=sys.stderr)
