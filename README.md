@@ -145,4 +145,3 @@ Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Please keep chang
 ## License
 
 [MIT](LICENSE) — © KiMiGuel / INDEPENTEST LLC.
-path: README.md
