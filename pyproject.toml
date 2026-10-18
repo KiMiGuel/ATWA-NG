@@ -6,10 +6,32 @@ build-backend = "setuptools.build_meta"
 name = "atwa"
 version = "2.7.2"
 description = "ATWA-NG: native WiFi security auditing engine with vendored scanning/cracking binaries, self-contained"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "KiMiGuel", email = "contact@indepentest.pro" }]
+keywords = ["wifi", "security", "auditing", "pentest", "wireless", "802.11"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
 # Self-contained as of 2026-08-25 — no runtime dependency on n2ng2.
-# Just: ~/ATWA-NG/.venv/bin/pip install -e ~/ATWA-NG
 dependencies = ["scapy>=2.5", "cryptography>=42", "pycryptodome>=3.20", "dpkt>=1.9.8", "ttkthemes>=3.2"]
+
+[project.urls]
+Homepage = "https://indepentest.pro"
+Repository = "https://github.com/KiMiGuel/ATWA-NG"
+Issues = "https://github.com/KiMiGuel/ATWA-NG/issues"
 
 [project.optional-dependencies]
 dev = ["ruff>=0.15", "mypy>=1.10", "pyflakes>=3.2"]
