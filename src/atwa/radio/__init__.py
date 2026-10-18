@@ -64,7 +64,7 @@ def get_driver(iface: str) -> str | None:
     replug (a fresh device node, i.e. a different iface name in the
     common case, or an explicit clear_driver_cache() call after one),
     so repeated calls against the same iface (dual-Alfa detection,
-    apply_achm_txpower_patch on every set_monitor_mode()) don't need a
+    and the per-interface work in set_monitor_mode()) don't need a
     fresh `ethtool -i` subprocess each time.
     """
     if iface in _driver_cache:

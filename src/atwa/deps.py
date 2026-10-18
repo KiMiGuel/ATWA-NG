@@ -16,23 +16,25 @@ REQUIRED_TOOLS = {
     "iw": {"apt": "sudo apt install -y iw", "feature": "monitor mode, channel control"},
     "ip": {"apt": "sudo apt install -y iproute2", "feature": "interface up/down"},
     # Shelled out unconditionally by radio.py (get_driver/get_permanent_mac
-    # need ethtool; check_kill_interfering_processes needs pkill; the ACHM
-    # txpower patch needs mount for debugfs) -- previously missing from
-    # this list entirely, so the dependency check could pass on a system
-    # where radio control still failed.
+    # need ethtool; check_kill_interfering_processes needs pkill) -- previously
+    # missing from this list entirely, so the dependency check could pass on
+    # a system where radio control still failed.
     "ethtool": {"apt": "sudo apt install -y ethtool", "feature": "driver detection, permanent MAC"},
     "pkill": {"apt": "sudo apt install -y procps", "feature": "killing interfering processes (airmon-ng check kill)"},
-    "mount": {"apt": "sudo apt install -y mount", "feature": "debugfs for the ACHM txpower patch"},
 }
 
-# Each of these gates exactly one Captures-tab action; missing one just
-# disables that specific action; it does not affect scanning/attacks.
+# Missing one of these disables the specific feature it backs; none of them
+# affect core scanning/monitor-mode/deauth/capture. Some are heavy (john,
+# aircrack-ng) and may be replaced by native implementations later.
 OPTIONAL_TOOLS = {
     "hcxpcapngtool": {"apt": "sudo apt install -y hcxtools", "feature": "convert captures to 22000"},
-    "john": {"apt": "install John the Ripper jumbo (not always packaged as plain 'john' — see openwall.com/john)", "feature": "password cracking (22000 hashes)"},
-    "aircrack-ng": {"apt": "sudo apt install -y aircrack-ng", "feature": "password cracking (raw .cap, simpler than John)"},
+    "john": {"apt": "install John the Ripper jumbo (not always packaged as plain 'john' — see openwall.com/john)", "feature": "password cracking (22000 hashes, fast backend)"},
+    "aircrack-ng": {"apt": "sudo apt install -y aircrack-ng", "feature": "password cracking (raw .cap, fast backend)"},
     "pcapfix": {"apt": "sudo apt install -y pcapfix", "feature": "repair a malformed capture"},
     "mergecap": {"apt": "sudo apt install -y wireshark-common", "feature": "merge captures"},
+    "hostapd": {"apt": "sudo apt install -y hostapd", "feature": "rogue AP / evil-twin / downgrade attacks"},
+    "dnsmasq": {"apt": "sudo apt install -y dnsmasq", "feature": "DHCP/DNS for rogue AP attacks"},
+    "wpa_supplicant": {"apt": "sudo apt install -y wpasupplicant", "feature": "WPS oneshot attack"},
 }
 
 
