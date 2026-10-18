@@ -490,20 +490,30 @@ class ToolbarMixin(GuiState):
 
 
     def _check_dependencies(self, *, startup: bool = False):
-        from ..deps import check_all, missing_required
+        from ..deps import check_all, missing_recommended, missing_required
 
         statuses = check_all()
         missing = missing_required(statuses)
+        recommended_missing = missing_recommended(statuses)
         if startup:
             # Quiet by default — only interrupt if something REQUIRED is
             # missing (app is largely nonfunctional without it). Optional
             # tools just get a one-line log summary instead of a modal
             # on every single launch.
-            opt_missing = [s.name for s in statuses if not s.required and not s.found]
+            opt_missing = [s.name for s in statuses if not s.required and not s.recommended and not s.found]
             if opt_missing:
                 self._log(f"optional tools not found (some Captures actions will report unavailable): {', '.join(opt_missing)}")
             else:
                 self._log("all optional tools found")
+            if recommended_missing:
+                names = ", ".join(s.name for s in recommended_missing)
+                self._log(f"\u26a0 recommended tools not found (fast cracking / rogue-AP features unavailable): {names}")
+                messagebox.showwarning(
+                    "ATWA-NG",
+                    f"Recommended tool(s) missing: {names}\n\n"
+                    "Fast cracking and rogue-AP features will fall back to slower "
+                    "native implementations (or be unavailable) until these are installed.",
+                )
             if missing:
                 names = ", ".join(s.name for s in missing)
                 messagebox.showwarning(
@@ -518,9 +528,15 @@ class ToolbarMixin(GuiState):
                 continue
             mark = "✓" if s.found else "✗ MISSING"
             lines.append(f"  {mark}  {s.name} — {s.feature}" + ("" if s.found else f"  ({s.apt})"))
+        lines.append("\nRecommended (headline features; native fallback available):")
+        for s in statuses:
+            if not s.recommended:
+                continue
+            mark = "✓" if s.found else "✗ missing"
+            lines.append(f"  {mark}  {s.name} — {s.feature}" + ("" if s.found else f"  ({s.apt})"))
         lines.append("\nOptional (gates one Captures action each):")
         for s in statuses:
-            if s.required:
+            if s.required or s.recommended:
                 continue
             mark = "✓" if s.found else "✗ missing"
             lines.append(f"  {mark}  {s.name} — {s.feature}" + ("" if s.found else f"  ({s.apt})"))
