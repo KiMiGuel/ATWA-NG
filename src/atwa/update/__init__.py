@@ -362,19 +362,29 @@ def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
         except Exception:  # noqa: BLE001
             _current_version = "0.0.0-dev"
 
+        # Prefer PyPI (standard, fastest, no manual wheel URL needed).
+        rc, out, err = _run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "atwa"],
+            Path.cwd(),
+            timeout,
+        )
+        if rc == 0:
+            return True, (out.strip() or "updated via PyPI") + "; restart ATWA-NG to use the new version"
+
+        # Fall back to GitHub Releases (offline PyPI / not yet published).
         release = _fetch_latest_release(timeout)
         if release is None:
-            return False, ("ATWA-NG source checkout not found and the latest release "
-                           "could not be fetched from GitHub; update manually")
+            return False, ("ATWA-NG source checkout not found; PyPI update failed "
+                           f"({err.strip() or 'unknown error'}) and the latest "
+                           "release could not be fetched from GitHub; update manually")
         tag = release["tag"]
         if not tag:
             return False, "latest GitHub release has no tag name"
         if not is_newer(tag, _current_version):
             return True, f"already up to date ({_current_version})"
-
         if not release.get("wheel_url"):
             return False, (f"release {tag} has no wheel asset to install; "
-                           f"update manually from {release.get('tag') and 'https://github.com/' + REPOSITORY + '/releases/tag/' + tag}")
+                           f"update manually")
 
         # Download the wheel.
         import tempfile

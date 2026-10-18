@@ -24,26 +24,15 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev libnl-3-dev libnl-genl-3-dev \
-            autoconf automake libtool pkg-config patchelf
-
-      - name: Build aircrack-ng binaries
-        run: |
-          cd vendor/aircrack-ng
-          ./autogen.sh
-          ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu
-          make -j"$(nproc)"
-          patchelf --set-rpath '$ORIGIN' .libs/aircrack-ng
-          patchelf --set-rpath '$ORIGIN' .libs/aireplay-ng
+          sudo apt-get install -y patchelf
 
       - name: Stage binaries
         run: |
-          mkdir -p src/atwa/bin
-          cp vendor/aircrack-ng/.libs/aircrack-ng src/atwa/bin/
-          cp vendor/aircrack-ng/.libs/aireplay-ng src/atwa/bin/
-          cp vendor/aircrack-ng/.libs/libaircrack-ce-wpa*.so* src/atwa/bin/
-          cp vendor/aircrack-ng/.libs/libaircrack-osdep*.so* src/atwa/bin/
-          chmod +x src/atwa/bin/*
+          # Binaries are committed under src/atwa/bin/ (built locally with
+          # patchelf RUNPATH=$ORIGIN). Verify they are present and executable.
+          ls -lh src/atwa/bin/
+          test -x src/atwa/bin/aircrack-ng
+          test -x src/atwa/bin/aireplay-ng
 
       - name: Install Python dependencies
         run: |
