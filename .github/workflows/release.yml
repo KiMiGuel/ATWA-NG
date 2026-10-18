@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev libnl-3-dev libnl-genl-3-dev patchelf
+
+      - name: Build aircrack-ng binaries
+        run: |
+          cd vendor/aircrack-ng
+          ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu
+          make -j"$(nproc)"
+          patchelf --set-rpath '$ORIGIN' .libs/aircrack-ng
+          patchelf --set-rpath '$ORIGIN' .libs/aireplay-ng
+
+      - name: Stage binaries
+        run: |
+          mkdir -p src/atwa/bin
+          cp vendor/aircrack-ng/.libs/aircrack-ng src/atwa/bin/
+          cp vendor/aircrack-ng/.libs/aireplay-ng src/atwa/bin/
+          cp vendor/aircrack-ng/.libs/libaircrack-ce-wpa*.so* src/atwa/bin/
+          cp vendor/aircrack-ng/.libs/libaircrack-osdep*.so* src/atwa/bin/
+          chmod +x src/atwa/bin/*
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install scapy cryptography pycryptodome dpkt ttkthemes pyinstaller build
+
+      - name: Create PyInstaller entry point
+        run: |
+          cat > pyi_entry.py <<'EOF'
+          import sys
+          sys.path.insert(0, "src")
+          from atwa.cli import main
+          if __name__ == "__main__":
+              main()
+          EOF
+
+      - name: Build one-file binary
+        run: |
+          PYTHONPATH=src pyinstaller --onefile --name atwa --paths src \
+            --add-data "src/atwa/gui/assets:atwa/gui/assets" \
+            --add-data "src/atwa/bin:atwa/bin" \
+            --hidden-import scapy.all --hidden-import scapy.layers.all \
+            --hidden-import cryptography --hidden-import dpkt --hidden-import ttkthemes \
+            --collect-submodules atwa --collect-submodules scapy \
+            pyi_entry.py
+
+      - name: Build wheel and sdist
+        run: |
+          python -m build
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/atwa
+            dist/*.whl
+            dist/*.tar.gz
+          draft: false
+          prerelease: false
+
+      - name: Publish to PyPI
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
