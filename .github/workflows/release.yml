@@ -44,7 +44,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install scapy cryptography pycryptodome dpkt ttkthemes pyinstaller build pytest
+          pip install scapy cryptography pycryptodome dpkt ttkthemes pyinstaller build
 
       - name: Create PyInstaller entry point
         run: |
@@ -76,32 +76,22 @@ jobs:
           REPO = Path(".")
           data = tomllib.loads((REPO / "pyproject.toml").read_text())
           version = str(data["project"]["version"])
-          res = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q"],
-                              capture_output=True, text=True, cwd=REPO, check=False)
-          out = res.stdout
-          m = re.search(r"^(\d+) tests? collected", out, re.M)
-          if not m:
-              print("STDOUT:", out[-500:])
-              print("STDERR:", res.stderr[-1000:])
-              sys.exit("sync: could not count tests")
-          tests = int(m.group(1))
           sys.path.insert(0, str(REPO / "src"))
           from atwa.cli import build_parser
           subs = len(build_parser()._subparsers._group_actions[0].choices)
-          print(f"syncing: version={version} subcommands={subs} tests={tests}")
+          print(f"syncing: version={version} subcommands={subs} (tests counted locally only)")
           jobs = [
             (REPO / "README.md", [
               (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
               (r"badge/subcommands-\d+-", f"badge/subcommands-{subs}-"),
-              (r"badge/tests-\d+%20passing", f"badge/tests-{tests}%20passing"),
             ]),
             (REPO / "README_ES.md", [
               (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
               (r"badge/subcomandos-\d+-", f"badge/subcomandos-{subs}-"),
-              (r"badge/tests-\d+%20passing", f"badge/tests-{tests}%20passing"),
             ]),
             (REPO / "docs" / "index.html", [
               (r'<span class="badge-ver">v[\d.]+</span>', f'<span class="badge-ver">v{version}</span>'),
+              (r"Full CLI reference \(\d+ subcommands\)", f"Full CLI reference ({subs} subcommands)"),
             ]),
           ]
           touched = []
