@@ -12,6 +12,10 @@ bin/
 atwa.spec
 cli.spec
 
+# Ship prebuilt native binaries inside the package (do not ignore).
+!src/atwa/bin/
+!src/atwa/bin/*
+
 # Editor swap/backup files
 *.swp
 *.swo
