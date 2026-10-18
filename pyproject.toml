@@ -21,7 +21,7 @@ atwa = "atwa.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-atwa = ["gui/assets/*.png"]
+atwa = ["gui/assets/*.png", "bin/*"]
 
 # Keep `pytest` (run from the repo root) scoped to tests/. Without this, the
 # default collection walks the entire tree and imports the aircrack-ng

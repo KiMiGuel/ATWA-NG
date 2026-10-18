@@ -1,7 +1,9 @@
 """Capture file utilities: convert to 22000 (John's wpapsk format), repair,
-and merge captures. hcxpcapngtool/pcapfix/mergecap are generic pcap-file
-tools, not attack-logic — fine to shell out to, per the project's
-native-attack-logic (not native-file-format-parsing) scope.
+and merge captures.
+
+merge_captures is native (scapy). hcxpcapngtool and pcapfix remain generic
+pcap-file tools shelled out to, per the project's native-attack-logic
+(not native-file-format-parsing) scope.
 """
 
 from __future__ import annotations
@@ -144,7 +146,7 @@ def merge_captures(
     capfiles: list[str], *, output_dir: str | Path | None = None,
     output_name: str | None = None,
 ) -> str:
-    """Merge 2+ captures into one via mergecap; return the merged file's path.
+    """Merge 2+ captures into one (native, via scapy); return the merged file's path.
 
     By default output goes under ``capture_root()/merged/YYYY-MM-DD/``.  A
     caller that is already operating inside one target folder can pass
@@ -155,8 +157,6 @@ def merge_captures(
     """
     if len(capfiles) < 2:
         raise ValueError("need at least two captures to merge")
-    if shutil.which("mergecap") is None:
-        raise MergeUnavailableError("mergecap not found; install wireshark-common to merge captures")
     first = Path(capfiles[0])
     if any(Path(p).suffix.lower() not in {".cap", ".pcap", ".pcapng"} for p in capfiles):
         raise ValueError("merge_captures accepts .cap, .pcap, and .pcapng files only")
@@ -171,12 +171,39 @@ def merge_captures(
         out = unique_path(out_dir / (output_name or f"{first.stem}.merged{suffix}"))
     else:
         out = organized_output_path("merged", output_name or f"{first.stem}.merged{suffix}")
-    proc = subprocess.run(
-        ["mergecap", "-w", str(out), *capfiles], capture_output=True, text=True, timeout=120, check=False
-    )
-    if proc.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+    # Native merge via scapy (no mergecap dependency). Import scapy's
+    # dot11 dissector first so linktype 105 captures decode as 802.11.
+    from scapy.layers import dot11 as _scapy_dot11  # noqa: F401
+    from scapy.utils import PcapReader, PcapWriter
+
+    linktype = None
+    packets: list = []
+    try:
+        for cf in capfiles:
+            with PcapReader(str(cf)) as reader:
+                lt = getattr(reader, "linktype", None)
+                if linktype is None:
+                    linktype = lt
+                elif lt is not None and lt != linktype:
+                    raise ValueError(
+                        f"merge_captures requires identical link types "
+                        f"(got {linktype} and {lt}); capture on the same interface"
+                    )
+                packets.extend(list(reader))
+        if not packets:
+            raise RuntimeError("merge failed: no packets read from inputs")
+        writer = PcapWriter(str(out), linktype=linktype if linktype is not None else 1)
+        for pkt in packets:
+            writer.write(pkt)
+        writer.close()
+    except Exception as exc:
         out.unlink(missing_ok=True)
-        raise RuntimeError(f"mergecap failed: {proc.stderr.strip() or 'no output written'}")
+        if isinstance(exc, ValueError):
+            raise
+        raise RuntimeError(f"merge failed: {exc}") from exc
+    if not out.exists() or out.stat().st_size == 0:
+        out.unlink(missing_ok=True)
+        raise RuntimeError("merge failed: no output written")
     return str(out)
 
 
