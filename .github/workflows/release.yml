@@ -24,11 +24,13 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev libnl-3-dev libnl-genl-3-dev patchelf
+          sudo apt-get install -y build-essential libssl-dev libnl-3-dev libnl-genl-3-dev \
+            autoconf automake libtool pkg-config patchelf
 
       - name: Build aircrack-ng binaries
         run: |
           cd vendor/aircrack-ng
+          ./autogen.sh
           ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu
           make -j"$(nproc)"
           patchelf --set-rpath '$ORIGIN' .libs/aircrack-ng
