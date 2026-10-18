@@ -241,26 +241,172 @@ def _ensure_venv(checkout: Path, timeout: float) -> tuple[Path | None, str]:
     return py, "created venv and installed dependencies"
 
 
+RELEASES_API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+
+
+def _fetch_latest_release(timeout: float = 30.0) -> dict | None:
+    """Fetch the latest published GitHub release and its assets.
+
+    Returns a dict with keys ``tag``, ``wheel_url``, ``wheel_name`` and
+    ``checksum_url`` (the latter may be ``None``), or ``None`` on any
+    failure. Used by the release-based update path for packaged installs.
+    """
+    request = Request(
+        RELEASES_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tag = str(payload.get("tag_name") or "").strip()
+    assets = payload.get("assets")
+    if not isinstance(assets, list):
+        assets = []
+    wheel_url = None
+    wheel_name = None
+    checksum_url = None
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        if name.endswith(".whl") and wheel_url is None:
+            wheel_url = str(asset.get("browser_download_url") or "")
+            wheel_name = name
+        elif name.endswith((".sha256", ".sha256sum", ".checksum")) and checksum_url is None:
+            checksum_url = str(asset.get("browser_download_url") or "")
+    return {
+        "tag": tag,
+        "wheel_url": wheel_url or None,
+        "wheel_name": wheel_name,
+        "checksum_url": checksum_url,
+    }
+
+
+def _download_file(url: str, dest: Path, timeout: float) -> bool:
+    """Download ``url`` to ``dest``. Returns True on success."""
+    request = Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("wb") as fh:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+        return dest.is_file() and dest.stat().st_size > 0
+    except (HTTPError, URLError, TimeoutError, OSError):
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _expected_sha256(checksum_url: str, timeout: float) -> str | None:
+    """Fetch a checksum file and return the expected hex digest, or None."""
+    request = Request(checksum_url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except (HTTPError, URLError, TimeoutError, OSError):
+        return None
+    for token in text.split():
+        token = token.strip().lower()
+        if len(token) == 64 and all(c in "0123456789abcdef" for c in token):
+            return token
+    return None
+
+
+def _verify_sha256(path: Path, expected: str) -> bool:
+    import hashlib
+
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+    except OSError:
+        return False
+    return h.hexdigest().lower() == expected.lower()
+
+
 def apply_update(timeout: float = 120.0) -> tuple[bool, str]:
-    """Pull the latest ATWA-NG code from GitHub and re-install.
+    """Update ATWA-NG to the latest release.
 
-    The package is installed in editable mode from the local clone, so
-    ``git pull`` is the correct update mechanism -- run inside that clone
-    (resolved by :func:`_find_checkout`), not the caller's CWD. After
-    pulling, re-install so the installed package metadata (version, entry
-    points) refreshes.
+    Two paths:
 
-    The reinstall uses the project's own venv when present and creates one
-    automatically when it is missing, so updating does not require the
-    caller to have activated ``.venv`` first. Falls back to the running
-    interpreter only when a venv cannot be created.
+    * Editable/developer install (a git checkout next to the package):
+      ``git pull`` + reinstall into the project venv.
+    * Packaged install (wheel/pip/binary): download the latest release
+      wheel from GitHub Releases, verify its SHA-256 when published, and
+      install it into the running interpreter's environment.
 
     Returns (success, message). Never raises -- update failures are
     reported to the caller, not raised past it.
     """
     checkout = _find_checkout()
     if checkout is None:
-        return False, "ATWA-NG source checkout not found next to the installed package; update manually with git pull"
+        # Packaged install (wheel/pip/binary): no git checkout available.
+        # Fall back to downloading the latest release from GitHub.
+        try:
+            from .. import __version__ as _current_version
+        except Exception:  # noqa: BLE001
+            _current_version = "0.0.0-dev"
+
+        release = _fetch_latest_release(timeout)
+        if release is None:
+            return False, ("ATWA-NG source checkout not found and the latest release "
+                           "could not be fetched from GitHub; update manually")
+        tag = release["tag"]
+        if not tag:
+            return False, "latest GitHub release has no tag name"
+        if not is_newer(tag, _current_version):
+            return True, f"already up to date ({_current_version})"
+
+        if not release.get("wheel_url"):
+            return False, (f"release {tag} has no wheel asset to install; "
+                           f"update manually from {release.get('tag') and 'https://github.com/' + REPOSITORY + '/releases/tag/' + tag}")
+
+        # Download the wheel.
+        import tempfile
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="atwa-update-"))
+        wheel_path = tmp_dir / (release["wheel_name"] or f"atwa-{tag}.whl")
+        if not _download_file(release["wheel_url"], wheel_path, timeout):
+            return False, f"failed to download release {tag} wheel"
+
+        # Verify checksum when a checksum asset is published.
+        expected = None
+        if release.get("checksum_url"):
+            expected = _expected_sha256(release["checksum_url"], timeout)
+        if expected is not None and not _verify_sha256(wheel_path, expected):
+            try:
+                wheel_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"release {tag} wheel failed SHA-256 verification"
+
+        # Install into the running interpreter's environment.
+        rc, _out, err = _run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-deps", str(wheel_path)],
+            tmp_dir,
+            timeout,
+        )
+        if rc == 124:
+            return False, f"downloaded {tag} but pip install timed out after {timeout}s"
+        if rc != 0:
+            return False, f"downloaded {tag} but pip install failed: {err.strip()}"
+        note = "" if expected is not None else " (no checksum published; not verified)"
+        return True, f"updated to {tag}{note}; restart ATWA-NG to use the new version"
 
     # Resolve the branch explicitly: a clone without upstream tracking
     # (common after a fresh clone or a detached HEAD) makes a bare
