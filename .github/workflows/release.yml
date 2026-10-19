@@ -65,54 +65,151 @@ jobs:
             --hidden-import cryptography --hidden-import dpkt --hidden-import ttkthemes \
             --collect-submodules atwa --collect-submodules scapy \
             pyi_entry.py
-
-      - name: Sync version badges
-        env:
-          PYTHONPATH: src
-        run: |
-          python - <<'PY'
-          import re, subprocess, sys, tomllib
-          from pathlib import Path
-          REPO = Path(".")
-          data = tomllib.loads((REPO / "pyproject.toml").read_text())
-          version = str(data["project"]["version"])
-          sys.path.insert(0, str(REPO / "src"))
-          from atwa.cli import build_parser
-          subs = len(build_parser()._subparsers._group_actions[0].choices)
-          print(f"syncing: version={version} subcommands={subs} (tests counted locally only)")
-          jobs = [
-            (REPO / "README.md", [
-              (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
-              (r"badge/subcommands-\d+-", f"badge/subcommands-{subs}-"),
-            ]),
-            (REPO / "README_ES.md", [
-              (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
-              (r"badge/subcomandos-\d+-", f"badge/subcomandos-{subs}-"),
-            ]),
-            (REPO / "docs" / "index.html", [
-              (r'<span class="badge-ver">v[\d.]+</span>', f'<span class="badge-ver">v{version}</span>'),
-              (r"Full CLI reference \(\d+ subcommands\)", f"Full CLI reference ({subs} subcommands)"),
-            ]),
-          ]
-          touched = []
-          for path, subs_list in jobs:
-              text = path.read_text()
-              changed = False
-              for pat, repl in subs_list:
-                  text, n = re.subn(pat, repl, text)
-                  changed = changed or bool(n)
-              if changed:
-                  path.write_text(text)
-                  touched.append(str(path))
-          print("updated: " + (", ".join(touched) if touched else "nothing (already in sync)"))
-          PY
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add README.md README_ES.md docs/index.html
-            git commit -m "chore: sync version badges [skip ci]"
-            git push origin HEAD:main
-          fi
+*** Begin Patch
+*** Update File: .github/workflows/release.yml
+@@
+-      - name: Sync version badges
+-        env:
+-          PYTHONPATH: src
+-        run: |
+-          python - <<'PY'
+-          import re, subprocess, sys, tomllib
+-          from pathlib import Path
+-          REPO = Path(".")
+-          data = tomllib.loads((REPO / "pyproject.toml").read_text())
+-          version = str(data["project"]["version"])
+-          res = subprocess.run([sys.executable, "-m", "pytest", 
+"--collect-only", "-q"],
+-                              capture_output=True, text=True, cwd=REPO, 
+check=False)
+-          out = res.stdout
+-          m = re.search(r"^(\d+) tests? collected", out, re.M)
+-          if not m:
+-              print("STDOUT:", out[-500:])
+-              print("STDERR:", res.stderr[-1000:])
+-              sys.exit("sync: could not count tests")
+-          tests = int(m.group(1))
+-          sys.path.insert(0, str(REPO / "src"))
+-          from atwa.cli import build_parser
+-          subs = 
+len(build_parser()._subparsers._group_actions[0].choices)
+-          print(f"syncing: version={version} subcommands={subs} 
+tests={tests}")
+-          jobs = [
+-            (REPO / "README.md", [
+-              (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
+-              (r"badge/subcommands-\d+-", f"badge/subcommands-{subs}-"),
+-              (r"badge/tests-\d+%20passing", 
+f"badge/tests-{tests}%20passing"),
+-            ]),
+-            (REPO / "README_ES.md", [
+-              (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
+-              (r"badge/subcomandos-\d+-", f"badge/subcomandos-{subs}-"),
+-              (r"badge/tests-\d+%20passing", 
+f"badge/tests-{tests}%20passing"),
+-            ]),
+-            (REPO / "docs" / "index.html", [
+-              (r'<span class="badge-ver">v[\d.]+</span>', f'<span 
+class="badge-ver">v{version}</span>'),
+-            ]),
+-          ]
+-          touched = []
+-          for path, subs_list in jobs:
+-              text = path.read_text()
+-              changed = False
+-              for pat, repl in subs_list:
+-                  text, n = re.subn(pat, repl, text)
+-                  changed = changed or bool(n)
+-              if changed:
+-                  path.write_text(text)
+-                  touched.append(str(path))
+-          print("updated: " + (", ".join(touched) if touched else 
+"nothing (already in sync)"))
+-          PY
+-          if ! git diff --quiet; then
+-            git config user.name "github-actions[bot]"
+-            git config user.email 
+"github-actions[bot]@users.noreply.github.com"
+-            git add README.md README_ES.md docs/index.html
+-            git commit -m "chore: sync version badges [skip ci]"
+-            git push origin HEAD:main
+-          fi
++      - name: Sync version badges
++        env:
++          PYTHONPATH: src
++        run: |
++          python - <<'PY'
++          import re, subprocess, sys, tomllib
++          from pathlib import Path
++          REPO = Path('.')
++          data = tomllib.loads((REPO / 'pyproject.toml').read_text())
++          version = str(data['project']['version'])
++          # Run pytest collect-only and accept both "N tests collected" 
+and
++          # "N items collected" formats, and treat an explicit "no tests 
+collected"
++          # message as zero tests instead of failing the whole workflow.
++          res = subprocess.run([sys.executable, '-m', 'pytest', 
+'--collect-only', '-q'],
++                              capture_output=True, text=True, cwd=REPO, 
+check=False)
++          out = (res.stdout or '')
++          if 'no tests collected' in out.lower():
++              tests = 0
++          else:
++              m = re.search(r"^(\d+) (?:tests?|items?) collected", out, 
+re.M)
++              if not m:
++                  print("STDOUT:", out[-500:])
++                  print("STDERR:", (res.stderr or '')[-1000:])
++                  sys.exit('sync: could not count tests')
++              tests = int(m.group(1))
++          sys.path.insert(0, str(REPO / 'src'))
++          from atwa.cli import build_parser
++          subs = 
+len(build_parser()._subparsers._group_actions[0].choices)
++          print(f"syncing: version={version} subcommands={subs} 
+tests={tests}")
++          jobs = [
++            (REPO / 'README.md', [
++              (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
++              (r"badge/subcommands-\d+-", f"badge/subcommands-{subs}-"),
++              (r"badge/tests-\d+%20passing", 
+f"badge/tests-{tests}%20passing"),
++            ]),
++            (REPO / 'README_ES.md', [
++              (r"badge/version-[\d.]+-", f"badge/version-{version}-"),
++              (r"badge/subcomandos-\d+-", f"badge/subcomandos-{subs}-"),
++              (r"badge/tests-\d+%20passing", 
+f"badge/tests-{tests}%20passing"),
++            ]),
++            (REPO / 'docs' / 'index.html', [
++              (r'<span class=\"badge-ver\">v[\d.]+</span>', f'<span 
+class=\"badge-ver\">v{version}</span>'),
++            ]),
++          ]
++          touched = []
++          for path, subs_list in jobs:
++              text = path.read_text()
++              changed = False
++              for pat, repl in subs_list:
++                  text, n = re.subn(pat, repl, text)
++                  changed = changed or bool(n)
++              if changed:
++                  path.write_text(text)
++                  touched.append(str(path))
++          print('updated: ' + (', '.join(touched) if touched else 
+'nothing (already in sync)'))
++          PY
++          if ! git diff --quiet; then
++            git config user.name "github-actions[bot]"
++            git config user.email 
+"github-actions[bot]@users.noreply.github.com"
++            git add README.md README_ES.md docs/index.html
++            git commit -m "chore: sync version badges [skip ci]"
++            git push origin HEAD:main
++          fi
+*** End Patch
 
       - name: Build wheel and sdist
         run: |
