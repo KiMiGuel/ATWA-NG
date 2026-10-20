@@ -35,3 +35,23 @@ Pycharm/
 # Code knowledge graph — regenerable dev-tooling output, rebuilt locally by
 # the post-commit hook. Not published.
 graphify-out/
+
+# Internal docs & working files — never commit
+AGENTS.md
+USAGE.md
+STATUS.md
+CHECKPOINT.md
+
+# Test & tooling directories
+tests/
+tools/
+
+# Local captures & logs
+gui_shot.log
+repo_dump.md
+creds.json
+
+# Local configs
+.env
+*.local.*
+.vscode/

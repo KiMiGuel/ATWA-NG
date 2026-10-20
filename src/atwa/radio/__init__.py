@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import random
 import re
+import struct
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -101,6 +102,13 @@ ALFA_ATTACK_DRIVERS = {"rtw88_8814au"}
 # cannot prove the enclosure brand.
 ALFA_USB_VENDORS = {"0cf3", "0e8d"}
 
+# AWUS036ACHM (mt76x0u) txpower fix: EEPROM offset 0x52 -> 0x1e raises
+# 5GHz output from a stuck ~4 dBm to the real 17 dBm per-channel baseline.
+# Only applies to mt76x0u adapters; no-op (with a log) if debugfs isn't
+# accessible (non-root, debugfs not mounted, or different adapter variant).
+_ACHM_EEPROM_OFFSET = 0x52
+_ACHM_EEPROM_VALUE = 0x1E
+
 
 def get_usb_vendor_id(iface: str) -> str | None:
     """Return the interface's USB vendor ID, or None when unavailable."""
@@ -182,6 +190,45 @@ def _phy_for_iface(iface: str) -> str | None:
         return link.resolve().name if link.is_symlink() else None
     except OSError:
         return None
+
+
+def apply_achm_txpower_patch(iface: str) -> bool:
+    """Apply the mt76x0u EEPROM txpower patch for iface. Returns True if
+    patch was written (or was already in place), False if iface is not an
+    mt76x0u or debugfs is inaccessible (non-fatal — caller just logs)."""
+    if get_driver(iface) not in ALFA_SCAN_DRIVERS:
+        return False
+    phy = _phy_for_iface(iface)
+    if not phy:
+        return False
+    eeprom = Path(f"/sys/kernel/debug/ieee80211/{phy}/mt76/eeprom")
+    # mount debugfs if not already mounted
+    debugfs_root = Path("/sys/kernel/debug")
+    if not debugfs_root.is_mount():
+        try:
+            subprocess.run(
+                ["mount", "-t", "debugfs", "none", str(debugfs_root)],
+                capture_output=True,
+                check=False,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+    if not eeprom.exists():
+        return False
+    try:
+        with open(eeprom, "rb") as fh:
+            fh.seek(_ACHM_EEPROM_OFFSET)
+            current = fh.read(1)
+        if current and current[0] == _ACHM_EEPROM_VALUE:
+            return True  # already patched
+        with open(eeprom, "r+b") as fh:
+            fh.seek(_ACHM_EEPROM_OFFSET)
+            fh.write(struct.pack("B", _ACHM_EEPROM_VALUE))
+        return True
+    except OSError:
+        return False
 
 
 def fix_antenna_mask(iface: str) -> bool:
@@ -524,6 +571,7 @@ def set_monitor_mode(
     set_regdomain_us(iface)
     fix_antenna_mask(iface)
     disable_power_save(iface)
+    apply_achm_txpower_patch(iface)
     return iface, permanent_mac
 
 
